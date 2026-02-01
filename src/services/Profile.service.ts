@@ -1,5 +1,14 @@
 import { Op } from "sequelize";
-import { User, Post, PostLike, SavedPost } from "../models";
+import path from "path";
+import { User, UserProfile, PendingProfileUpdate, Post, PostLike, SavedPost } from "../models";
+import { getPresignedPutUrl, getCdnPublicUrl } from "../utils/r2Client";
+import type {
+  CommunitySection,
+  PersonalSection,
+  MatrimonySection,
+  BusinessSection,
+  FamilySection
+} from "../models/UserProfile.model";
 
 // ---------------------------------------------------------------------------
 // Masking – sensitive fields (no raw email/mobile in profile API)
@@ -24,6 +33,27 @@ export function maskEmail(email: string): string {
 // ---------------------------------------------------------------------------
 // DTOs – API response shape (snake_case per spec)
 // ---------------------------------------------------------------------------
+
+/** Basic section (from User) – API snake_case */
+export type BasicSectionDto = {
+  full_name: string;
+  date_of_birth: string | null;
+  email: string;
+  mobile: string | null;
+  gender: string | null;
+  native_district: string | null;
+  role: string | null;
+};
+
+/** Sections in API response (snake_case) */
+export type ProfileSectionsDto = {
+  basic: BasicSectionDto;
+  community: CommunitySection | null;
+  personal: PersonalSection | null;
+  matrimony: MatrimonySection | null;
+  business: BusinessSection | null;
+  family: FamilySection | null;
+};
 
 export type ProfileMeResponse = {
   id: number;
@@ -53,6 +83,14 @@ export type ProfileMeResponse = {
     marketplace_items: number;
     help_requests: number;
   };
+  /** Extended: modular sections + completion (optional for backward compat) */
+  completion_percentage?: number;
+  show_matrimony?: boolean;
+  show_business?: boolean;
+  sections?: ProfileSectionsDto;
+  /** Pending approval status for restricted sections (do not block login) */
+  pending_matrimony?: { status: "PENDING" | "APPROVED" | "REJECTED"; admin_remarks?: string | null } | null;
+  pending_business?: { status: "PENDING" | "APPROVED" | "REJECTED"; admin_remarks?: string | null } | null;
 };
 
 /** Editable fields only – no role/status; on update → PENDING_REVIEW */
@@ -95,15 +133,114 @@ export type ProfileActivityDto = {
 // Service
 // ---------------------------------------------------------------------------
 
-/** GET /api/profile/me – full profile (masked email/mobile) + stats in one response. */
+/** Count non-empty fields in an object (strings, numbers; exclude null/undefined/empty string). */
+function countFilled(obj: Record<string, unknown> | null): number {
+  if (!obj || typeof obj !== "object") return 0;
+  return Object.values(obj).filter(
+    (v) => v != null && v !== "" && (typeof v !== "number" || !Number.isNaN(v))
+  ).length;
+}
+
+/** Build sections DTO and completion % from User + UserProfile. */
+function buildSectionsAndCompletion(
+  user: User,
+  profile: UserProfile | null
+): { sections: ProfileSectionsDto; completion_percentage: number; show_matrimony: boolean; show_business: boolean } {
+  const basic: BasicSectionDto = {
+    full_name: user.fullName,
+    date_of_birth: user.dob ? String(user.dob) : null,
+    email: user.email,
+    mobile: user.mobile ?? null,
+    gender: user.gender ?? null,
+    native_district: null,
+    role: null
+  };
+  const community = (profile?.community as CommunitySection) ?? null;
+  const personal = (profile?.personal as PersonalSection) ?? null;
+  const matrimony = (profile?.matrimony as MatrimonySection) ?? null;
+  const business = (profile?.business as BusinessSection) ?? null;
+  const family = (profile?.family as FamilySection) ?? null;
+
+  const show_matrimony = matrimony?.matrimonyProfileActive === true;
+  const show_business = business?.businessProfileActive === true;
+
+  const basicFields = 7;
+  const communityFields = 4;
+  const personalFields = 7;
+  const familyFields = 5;
+  const matrimonyFields = show_matrimony ? 14 : 0;
+  const businessFields = show_business ? 7 : 0;
+  const totalFields = basicFields + communityFields + personalFields + familyFields + matrimonyFields + businessFields;
+
+  let filled = countFilled(basic as unknown as Record<string, unknown>);
+  filled += countFilled(community as unknown as Record<string, unknown>);
+  filled += countFilled(personal as unknown as Record<string, unknown>);
+  filled += countFilled(family as unknown as Record<string, unknown>);
+  if (show_matrimony) filled += countFilled(matrimony as unknown as Record<string, unknown>);
+  if (show_business) filled += countFilled(business as unknown as Record<string, unknown>);
+
+  const completion_percentage = totalFields > 0 ? Math.round(100 * filled / totalFields) : 0;
+
+  return {
+    sections: { basic, community, personal, matrimony, business, family },
+    completion_percentage: Math.min(100, completion_percentage),
+    show_matrimony,
+    show_business
+  };
+}
+
+/** Sections that require admin approval before going live. Others apply immediately. */
+export const RESTRICTED_PROFILE_SECTIONS = ["matrimony", "business"] as const;
+
+/** GET /api/profile/me – full profile (masked email/mobile) + stats + sections + completion + pending status. */
 export async function getProfile(userId: number): Promise<ProfileMeResponse> {
-  const [user, stats] = await Promise.all([
+  const [user, profileRow, stats, pendingMatrimony, pendingBusiness] = await Promise.all([
     User.findByPk(userId),
-    getProfileStats(userId)
+    UserProfile.findOne({ where: { userId } }).then((p) => p ?? UserProfile.create({ userId } as any)),
+    getProfileStats(userId),
+    PendingProfileUpdate.findOne({
+      where: { userId, section: "MATRIMONY", status: "PENDING" },
+      order: [["submittedAt", "DESC"]]
+    }),
+    PendingProfileUpdate.findOne({
+      where: { userId, section: "BUSINESS", status: "PENDING" },
+      order: [["submittedAt", "DESC"]]
+    })
   ]);
   if (!user) throw new Error("User not found");
+  const profile = profileRow!;
 
   const member_since = user.createdAt ? new Date(user.createdAt).getFullYear().toString() : "—";
+  const { sections, completion_percentage, show_matrimony, show_business } = buildSectionsAndCompletion(user, profile);
+
+  // Latest rejected/approved pending for status chip (if user had submitted and it was rejected)
+  const [lastMatrimony, lastBusiness] = await Promise.all([
+    PendingProfileUpdate.findOne({
+      where: { userId, section: "MATRIMONY" },
+      order: [["submittedAt", "DESC"]]
+    }),
+    PendingProfileUpdate.findOne({
+      where: { userId, section: "BUSINESS" },
+      order: [["submittedAt", "DESC"]]
+    })
+  ]);
+
+  const pending_matrimony =
+    pendingMatrimony
+      ? { status: "PENDING" as const, admin_remarks: null as string | null }
+      : lastMatrimony?.status === "REJECTED"
+        ? { status: "REJECTED" as const, admin_remarks: lastMatrimony.adminRemarks ?? null }
+        : lastMatrimony?.status === "APPROVED"
+          ? { status: "APPROVED" as const, admin_remarks: null as string | null }
+          : null;
+  const pending_business =
+    pendingBusiness
+      ? { status: "PENDING" as const, admin_remarks: null as string | null }
+      : lastBusiness?.status === "REJECTED"
+        ? { status: "REJECTED" as const, admin_remarks: lastBusiness.adminRemarks ?? null }
+        : lastBusiness?.status === "APPROVED"
+          ? { status: "APPROVED" as const, admin_remarks: null as string | null }
+          : null;
 
   return {
     id: user.id,
@@ -132,14 +269,19 @@ export async function getProfile(userId: number): Promise<ProfileMeResponse> {
       jobs_posted: stats.jobsPosted,
       marketplace_items: stats.marketplaceListings,
       help_requests: stats.helpingHandRequests
-    }
+    },
+    completion_percentage,
+    show_matrimony,
+    show_business,
+    sections,
+    pending_matrimony: pending_matrimony ?? undefined,
+    pending_business: pending_business ?? undefined
   };
 }
 
 /**
- * PUT /api/profile/me – update editable fields only.
- * On update sets status = PENDING_REVIEW; admin must re-approve.
- * No role/status manipulation – only whitelisted fields.
+ * PUT /api/profile/me – update editable fields only (non-restricted).
+ * Applied immediately; login is never blocked by profile updates.
  */
 export async function updateProfile(userId: number, payload: ProfileUpdatePayload): Promise<ProfileMeResponse> {
   const user = await User.findByPk(userId);
@@ -156,7 +298,6 @@ export async function updateProfile(userId: number, payload: ProfileUpdatePayloa
   if (payload.skills !== undefined) updates.skills = payload.skills?.trim() || null;
 
   if (Object.keys(updates).length > 0) {
-    updates.status = "PENDING_REVIEW";
     await user.update(updates as any);
   }
 
@@ -259,11 +400,107 @@ export async function getProfileActivity(
   return { items, page, limit, total: count };
 }
 
+/**
+ * PATCH /api/profile/me/sections/:section – update one section.
+ * Non-restricted (basic, community, personal, family): apply immediately; do NOT block login.
+ * Restricted (matrimony, business): save to pending_profile_updates; do NOT overwrite approved data.
+ */
+export async function updateProfileSection(
+  userId: number,
+  section: "basic" | "community" | "personal" | "matrimony" | "business" | "family",
+  payload: Record<string, unknown>
+): Promise<ProfileMeResponse> {
+  const user = await User.findByPk(userId);
+  if (!user) throw new Error("User not found");
+
+  const isRestricted = section === "matrimony" || section === "business";
+
+  if (isRestricted) {
+    // Save to pending_profile_updates; do not touch user_profiles or user.status
+    const existing = await PendingProfileUpdate.findOne({
+      where: { userId, section: section.toUpperCase() as "MATRIMONY" | "BUSINESS", status: "PENDING" }
+    });
+    const data = { ...(existing?.data as Record<string, unknown> ?? {}), ...payload };
+    if (existing) {
+      await existing.update({ data, submittedAt: new Date(), updatedAt: new Date() } as any);
+    } else {
+      await PendingProfileUpdate.create({
+        userId,
+        section: section.toUpperCase() as "MATRIMONY" | "BUSINESS",
+        data,
+        status: "PENDING",
+        submittedAt: new Date(),
+        reviewedAt: null,
+        adminRemarks: null,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      } as any);
+    }
+    return getProfile(userId);
+  }
+
+  // Non-restricted: apply immediately
+  if (section === "basic") {
+    const updates: Record<string, unknown> = {};
+    if (payload.full_name !== undefined) updates.fullName = String(payload.full_name).trim() || null;
+    if (payload.date_of_birth !== undefined) updates.dob = payload.date_of_birth ? new Date(String(payload.date_of_birth)) : null;
+    if (payload.mobile !== undefined) updates.mobile = payload.mobile != null ? String(payload.mobile).trim() : null;
+    if (payload.gender !== undefined) updates.gender = payload.gender != null ? String(payload.gender).trim() : null;
+    if (Object.keys(updates).length > 0) {
+      await user.update(updates as any);
+    }
+    return getProfile(userId);
+  }
+
+  let profile = await UserProfile.findOne({ where: { userId } });
+  if (!profile) profile = await UserProfile.create({ userId } as any);
+
+  const current = (profile.get(section) as Record<string, unknown>) ?? {};
+  const merged = { ...current, ...payload };
+  await profile.update({ [section]: merged } as any);
+  return getProfile(userId);
+}
+
+const HOROSCOPE_ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png"];
+const HOROSCOPE_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+
+/**
+ * POST /api/profile/me/horoscope-upload-url – presigned URL for horoscope (PDF/image).
+ * Client uploads to R2 then PATCHes sections/matrimony with horoscopeDocumentUrl.
+ */
+export async function getHoroscopeUploadUrl(
+  userId: number,
+  fileName: string,
+  fileType: string,
+  fileSize: number
+): Promise<{ uploadUrl: string; publicUrl: string }> {
+  const mime = fileType.toLowerCase().trim();
+  if (!HOROSCOPE_ALLOWED_TYPES.includes(mime)) {
+    const err = new Error("Horoscope must be PDF or image (jpeg, png)");
+    (err as any).status = 400;
+    throw err;
+  }
+  if (fileSize > HOROSCOPE_MAX_BYTES) {
+    const err = new Error("Horoscope file must be ≤ 10 MB");
+    (err as any).status = 400;
+    throw err;
+  }
+  const ext = path.extname(fileName).toLowerCase() || (mime.includes("pdf") ? ".pdf" : ".jpg");
+  const key = `digital-house/profile/${userId}/horoscope/${Date.now()}${ext}`;
+  const [uploadUrl, publicUrl] = await Promise.all([
+    getPresignedPutUrl(key, mime),
+    Promise.resolve(getCdnPublicUrl(key))
+  ]);
+  return { uploadUrl, publicUrl };
+}
+
 export const profileService = {
   getProfile,
   getProfileStats,
   getProfileActivity,
   updateProfile,
+  updateProfileSection,
+  getHoroscopeUploadUrl,
   maskMobile,
   maskEmail
 };

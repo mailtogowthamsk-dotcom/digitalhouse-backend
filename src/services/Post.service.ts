@@ -1,4 +1,5 @@
 import { User, Post, PostLike, Comment, Notification, PostReport } from "../models";
+import { toSignedUrlIfR2 } from "../utils/r2Client";
 import type { PostType, JobStatus } from "../models";
 
 const APPROVED = "APPROVED";
@@ -183,10 +184,11 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
   const author = (post as any).User as User;
   await ensureCommunityVisible(post, userId);
 
-  const [likeCount, commentCount, likedByMe] = await Promise.all([
+  const [likeCount, commentCount, likedByMe, mediaUrl] = await Promise.all([
     PostLike.count({ where: { postId } }),
     Comment.count({ where: { postId } }),
-    PostLike.findOne({ where: { postId, userId } }).then(r => !!r)
+    PostLike.findOne({ where: { postId, userId } }).then(r => !!r),
+    toSignedUrlIfR2(post.mediaUrl ?? null)
   ]);
 
   return {
@@ -195,7 +197,7 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     post_type: post.postType,
     title: post.title,
     description: post.description ?? null,
-    media_url: post.mediaUrl ?? null,
+    media_url: mediaUrl,
     pinned: post.pinned,
     urgent: post.urgent,
     meetup_at: post.meetupAt ? post.meetupAt.toISOString() : null,

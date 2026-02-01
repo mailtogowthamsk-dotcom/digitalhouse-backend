@@ -1,4 +1,6 @@
 import { User } from "./user.model";
+import { UserProfile } from "./UserProfile.model";
+import { PendingProfileUpdate } from "./PendingProfileUpdate.model";
 import { Otp } from "./otp.model";
 import { AdminVerification } from "./AdminVerification.model";
 import { Location } from "./Location.model";
@@ -10,10 +12,15 @@ import { PostLike } from "./PostLike.model";
 import { Comment } from "./Comment.model";
 import { SavedPost } from "./SavedPost.model";
 import { PostReport } from "./PostReport.model";
+import { MediaFile } from "./MediaFile.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
 Otp.belongsTo(User, { foreignKey: "userId" });
+User.hasOne(UserProfile, { foreignKey: "userId" });
+UserProfile.belongsTo(User, { foreignKey: "userId" });
+User.hasMany(PendingProfileUpdate, { foreignKey: "userId" });
+PendingProfileUpdate.belongsTo(User, { foreignKey: "userId" });
 User.hasMany(AdminVerification, { foreignKey: "userId" });
 AdminVerification.belongsTo(User, { foreignKey: "userId" });
 
@@ -42,13 +49,19 @@ Post.hasMany(PostReport, { foreignKey: "postId" });
 PostReport.belongsTo(Post, { foreignKey: "postId" });
 User.hasMany(PostReport, { foreignKey: "reporterId" });
 PostReport.belongsTo(User, { foreignKey: "reporterId" });
+User.hasMany(MediaFile, { foreignKey: "userId" });
+MediaFile.belongsTo(User, { foreignKey: "userId" });
 
 export type { UserStatus } from "./user.model";
 export type { PostType, JobStatus } from "./Post.model";
 export { POST_TYPES, JOB_STATUSES } from "./Post.model";
 export type { ReportStatus } from "./PostReport.model";
+export type { MediaStatus, MediaFileType, MediaModule } from "./MediaFile.model";
+export { MEDIA_MODULES } from "./MediaFile.model";
 export {
   User,
+  UserProfile,
+  PendingProfileUpdate,
   Otp,
   AdminVerification,
   Location,
@@ -59,5 +72,6 @@ export {
   PostLike,
   Comment,
   SavedPost,
-  PostReport
+  PostReport,
+  MediaFile
 };

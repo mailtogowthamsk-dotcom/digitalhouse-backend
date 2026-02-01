@@ -1,5 +1,6 @@
 import { Op } from "sequelize";
 import { User, Post, Notification, Message, PostLike, Comment } from "../models";
+import { toSignedUrlIfR2 } from "../utils/r2Client";
 
 // --- DTOs (type-safe, no email/mobile) ---
 
@@ -199,25 +200,28 @@ export async function getFeed(page: number, limit: number, currentUserId: number
     })
   ]);
 
-  const items: FeedItemDto[] = posts.map(p => {
-    const author = (p as any).User;
-    return {
-      postId: p.id,
-      postType: p.postType,
-      title: p.title,
-      description: p.description ?? null,
-      mediaUrl: p.mediaUrl ?? null,
-      createdAt: p.createdAt.toISOString(),
-      author: author ? toFeedAuthor(author) : { name: "Unknown", profileImage: null, verified: false },
-      counts: {
-        likes: likeCounts[p.id] ?? 0,
-        comments: commentCounts[p.id] ?? 0
-      }
-    };
-  });
+  const itemsWithMedia = await Promise.all(
+    posts.map(async (p) => {
+      const author = (p as any).User;
+      const mediaUrl = await toSignedUrlIfR2(p.mediaUrl ?? null);
+      return {
+        postId: p.id,
+        postType: p.postType,
+        title: p.title,
+        description: p.description ?? null,
+        mediaUrl,
+        createdAt: p.createdAt.toISOString(),
+        author: author ? toFeedAuthor(author) : { name: "Unknown", profileImage: null, verified: false },
+        counts: {
+          likes: likeCounts[p.id] ?? 0,
+          comments: commentCounts[p.id] ?? 0
+        }
+      };
+    })
+  );
 
   return {
-    items,
+    items: itemsWithMedia,
     page,
     limit,
     total: count

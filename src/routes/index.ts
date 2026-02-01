@@ -5,6 +5,7 @@ import { optionsRouter } from "./options.routes";
 import { homeRouter } from "./home.routes";
 import { profileRouter } from "./profile.routes";
 import { postRouter } from "./post.routes";
+import { mediaRouter } from "./media.routes";
 
 export const apiRouter = Router();
 
@@ -14,3 +15,4 @@ apiRouter.use("/options", optionsRouter);
 apiRouter.use("/home", homeRouter);
 apiRouter.use("/profile", profileRouter);
 apiRouter.use("/posts", postRouter);
+apiRouter.use("/media", mediaRouter);

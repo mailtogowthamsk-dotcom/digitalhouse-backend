@@ -1,7 +1,13 @@
 import { Request, Response } from "express";
 import { profileService } from "../services/Profile.service";
 import { success, error } from "../utils/response";
-import { validateProfileActivityQuery, validateUpdateProfileBody } from "../validations/profile.validation";
+import {
+  validateProfileActivityQuery,
+  validateUpdateProfileBody,
+  validateSectionParam,
+  validateSectionPayload,
+  validateHoroscopeUploadUrlBody
+} from "../validations/profile.validation";
 import type { User } from "../models";
 
 type AuthRequest = Request & { user?: User };
@@ -52,6 +58,35 @@ export async function getActivity(req: AuthRequest, res: Response) {
     query.tab,
     query.page,
     query.limit
+  );
+  return success(res, data);
+}
+
+/**
+ * PATCH /api/profile/me/sections/:section
+ * Update one profile section (basic | community | personal | matrimony | business | family).
+ * On update sets status = PENDING_REVIEW.
+ */
+export async function updateProfileSection(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const section = validateSectionParam(req.params.section);
+  const body = validateSectionPayload(section, req.body);
+  const data = await profileService.updateProfileSection(req.user.id, section, body);
+  return success(res, data);
+}
+
+/**
+ * POST /api/profile/me/horoscope-upload-url
+ * Get presigned PUT URL for horoscope document (PDF/image). Client uploads to R2 then PATCHes matrimony with publicUrl.
+ */
+export async function getHoroscopeUploadUrl(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const body = validateHoroscopeUploadUrlBody(req.body);
+  const data = await profileService.getHoroscopeUploadUrl(
+    req.user.id,
+    body.fileName,
+    body.fileType,
+    body.fileSize
   );
   return success(res, data);
 }

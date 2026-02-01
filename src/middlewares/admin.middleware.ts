@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { error } from "../utils/response";
+import { verifyAdminToken } from "../utils/jwt.util";
 
 /** Normalize: trim and strip line endings + control chars */
 function normalizeKey(value: string): string {
@@ -18,37 +19,41 @@ function normalizeHexKey(value: string): string {
 }
 
 /**
- * Protect admin routes: require X-Admin-Key or Authorization: Bearer to match ADMIN_API_KEY.
+ * Protect admin routes: require X-Admin-Key, or Authorization: Bearer <JWT> (admin login token).
  */
 export function adminMiddleware(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  const bearer = authHeader?.trim().toLowerCase().startsWith("bearer ");
+  const token = bearer ? authHeader!.trim().slice(7).trim() : null;
+
+  // 1) Try JWT (admin login)
+  if (token) {
+    try {
+      const decoded = verifyAdminToken(token);
+      (req as any).adminEmail = decoded.email;
+      return next();
+    } catch (_) {
+      // Not a valid admin JWT; fall through to API key
+    }
+  }
+
+  // 2) X-Admin-Key or Bearer as API key
   const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
   if (!ADMIN_API_KEY) {
     return error(res, "Admin API key not configured. Set ADMIN_API_KEY in .env", 500);
   }
   const expectedRaw = normalizeKey(ADMIN_API_KEY);
   const expectedHex = normalizeHexKey(expectedRaw);
-  // Accept X-Admin-Key header
   let key: string | undefined;
   const rawHeader = req.headers["x-admin-key"];
   if (rawHeader != null) key = normalizeKey(String(rawHeader));
-  if (!key && req.headers.authorization) {
-    const auth = String(req.headers.authorization).trim();
-    if (auth.toLowerCase().startsWith("bearer ")) key = normalizeKey(auth.slice(7));
-  }
+  if (!key && token) key = normalizeKey(token);
   const keyHex = key ? normalizeHexKey(key) : "";
   const match =
     key === expectedRaw ||
     (expectedHex && keyHex && keyHex === expectedHex);
   if (!key || !match) {
-    console.log(
-      "[Admin auth] Header present:",
-      !!rawHeader || !!req.headers.authorization,
-      "| Received length:",
-      key?.length ?? 0,
-      "| Expected length:",
-      expectedRaw.length
-    );
-    return error(res, "Unauthorized. Use header X-Admin-Key: <your key> or Authorization: Bearer <your key>", 401);
+    return error(res, "Unauthorized. Use admin login or X-Admin-Key.", 401);
   }
   next();
 }
