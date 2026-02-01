@@ -10,7 +10,6 @@ import {
   approveProfileUpdateSchema,
   rejectProfileUpdateSchema
 } from "../validations/admin.validation";
-import * as adminService from "../services/admin.service";
 
 const ADMIN_ID = process.env.ADMIN_API_KEY || "admin";
 
