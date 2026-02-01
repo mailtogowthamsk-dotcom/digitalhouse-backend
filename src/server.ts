@@ -1,28 +1,32 @@
 import "./config/env";
 import { app } from "./app";
 import { sequelize } from "./config/db";
-import { User, Otp, AdminVerification } from "./models";
 import { seedOptionsIfEmpty } from "./seed/options.seed";
+import { setDbReady, setDbFailed } from "./state";
 
 const PORT = Number(process.env.PORT) || 4000;
 
-async function start() {
+// Listen immediately so Railway gets a response (avoids "Application Failed to respond").
+// DB init runs in background; API returns 503 until ready.
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Digital House API listening on http://0.0.0.0:${PORT}`);
+  initDb();
+});
+
+async function initDb() {
   try {
     await sequelize.authenticate();
-    // Use sync() without alter to avoid "Too many keys" on existing tables (MySQL limit 64 indexes).
-    // New tables (e.g. post_reports) are still created; schema changes to existing tables need migrations.
     await sequelize.sync();
     await seedOptionsIfEmpty();
+    setDbReady(true);
+    console.log("Database ready.");
     if (!process.env.ADMIN_API_KEY) {
       console.warn("Warning: ADMIN_API_KEY is not set in .env — admin APIs will return 500.");
     }
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Digital House API running on http://0.0.0.0:${PORT}`);
-    });
   } catch (e) {
-    console.error("Failed to start server:", e);
-    process.exit(1);
+    console.error("Database init failed:", e);
+    setDbFailed(true);
+    // Do NOT exit – keep server up so Railway gets 200 on /api/health and 503 on other routes.
+    // Fix DB env vars (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME) on Railway and redeploy.
   }
 }
-
-start();
