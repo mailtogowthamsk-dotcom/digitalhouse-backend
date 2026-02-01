@@ -133,6 +133,47 @@ export type ProfileActivityDto = {
 // Service
 // ---------------------------------------------------------------------------
 
+/** Allowed keys per JSON section – only these are persisted to avoid corrupted (string-spread) data. Exported for admin.service. */
+export const SECTION_ALLOWED_KEYS: Record<string, Set<string>> = {
+  community: new Set(["kulam", "kulaDeivam", "nativeVillage", "nativeTaluk"]),
+  personal: new Set(["currentLocation", "occupation", "instagram", "facebook", "linkedin", "hobbies", "fatherName", "maritalStatus"]),
+  matrimony: new Set(["matrimonyProfileActive", "lookingFor", "education", "maritalStatus", "rashi", "nakshatram", "dosham", "familyType", "familyStatus", "motherName", "fatherOccupation", "numberOfSiblings", "partnerPreferences", "horoscopeDocumentUrl"]),
+  business: new Set(["businessProfileActive", "businessName", "businessType", "businessDescription", "businessAddress", "businessPhone", "businessWebsite"]),
+  family: new Set(["familyMemberId1", "familyMemberId2", "familyMemberId3", "familyMemberId4", "familyMemberId5"])
+};
+
+/**
+ * Normalize a JSON column value from DB: may be string (driver) or corrupted object (string was spread).
+ * Returns a plain object with only allowed keys, or null/empty object. Exported for admin.service.
+ */
+export function normalizeJsonColumn(
+  value: unknown,
+  allowedKeys?: Set<string>
+): Record<string, unknown> | null {
+  if (value == null) return null;
+  let obj: Record<string, unknown>;
+  if (typeof value === "string") {
+    try {
+      obj = JSON.parse(value) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  } else if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    obj = value as Record<string, unknown>;
+  } else {
+    return null;
+  }
+  // If corrupted (numeric keys from spreading a string), keep only allowed keys
+  const keys = allowedKeys ? [...allowedKeys] : Object.keys(obj).filter((k) => !/^\d+$/.test(k));
+  const out: Record<string, unknown> = {};
+  for (const k of keys) {
+    if (Object.prototype.hasOwnProperty.call(obj, k)) {
+      out[k] = obj[k];
+    }
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 /** Count non-empty fields in an object (strings, numbers; exclude null/undefined/empty string). */
 function countFilled(obj: Record<string, unknown> | null): number {
   if (!obj || typeof obj !== "object") return 0;
@@ -155,11 +196,11 @@ function buildSectionsAndCompletion(
     native_district: null,
     role: null
   };
-  const community = (profile?.community as CommunitySection) ?? null;
-  const personal = (profile?.personal as PersonalSection) ?? null;
-  const matrimony = (profile?.matrimony as MatrimonySection) ?? null;
-  const business = (profile?.business as BusinessSection) ?? null;
-  const family = (profile?.family as FamilySection) ?? null;
+  const community = (normalizeJsonColumn(profile?.community, SECTION_ALLOWED_KEYS.community) as CommunitySection) ?? null;
+  const personal = (normalizeJsonColumn(profile?.personal, SECTION_ALLOWED_KEYS.personal) as PersonalSection) ?? null;
+  const matrimony = (normalizeJsonColumn(profile?.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection) ?? null;
+  const business = (normalizeJsonColumn(profile?.business, SECTION_ALLOWED_KEYS.business) as BusinessSection) ?? null;
+  const family = (normalizeJsonColumn(profile?.family, SECTION_ALLOWED_KEYS.family) as FamilySection) ?? null;
 
   const show_matrimony = matrimony?.matrimonyProfileActive === true;
   const show_business = business?.businessProfileActive === true;
@@ -417,17 +458,23 @@ export async function updateProfileSection(
 
   if (isRestricted) {
     // Save to pending_profile_updates; do not touch user_profiles or user.status
+    const allowedKeys = SECTION_ALLOWED_KEYS[section];
     const existing = await PendingProfileUpdate.findOne({
       where: { userId, section: section.toUpperCase() as "MATRIMONY" | "BUSINESS", status: "PENDING" }
     });
-    const data = { ...(existing?.data as Record<string, unknown> ?? {}), ...payload };
+    const existingData = normalizeJsonColumn(existing?.data, allowedKeys) ?? {};
+    const merged = { ...existingData, ...payload };
+    const cleaned = Object.fromEntries(
+      Object.entries(merged)
+        .filter(([k, v]) => v !== undefined && allowedKeys.has(k))
+    ) as Record<string, unknown>;
     if (existing) {
-      await existing.update({ data, submittedAt: new Date(), updatedAt: new Date() } as any);
+      await existing.update({ data: cleaned, submittedAt: new Date(), updatedAt: new Date() } as any);
     } else {
       await PendingProfileUpdate.create({
         userId,
         section: section.toUpperCase() as "MATRIMONY" | "BUSINESS",
-        data,
+        data: cleaned,
         status: "PENDING",
         submittedAt: new Date(),
         reviewedAt: null,
@@ -455,9 +502,15 @@ export async function updateProfileSection(
   let profile = await UserProfile.findOne({ where: { userId } });
   if (!profile) profile = await UserProfile.create({ userId } as any);
 
-  const current = (profile.get(section) as Record<string, unknown>) ?? {};
+  const allowedKeys = SECTION_ALLOWED_KEYS[section];
+  const current = normalizeJsonColumn(profile.get(section), allowedKeys) ?? {};
   const merged = { ...current, ...payload };
-  await profile.update({ [section]: merged } as any);
+  // Only persist allowed keys; strip undefined so JSON column stores cleanly
+  const cleaned = Object.fromEntries(
+    Object.entries(merged)
+      .filter(([k, v]) => v !== undefined && (!allowedKeys || allowedKeys.has(k)))
+  ) as Record<string, unknown>;
+  await profile.update({ [section]: cleaned } as any);
   return getProfile(userId);
 }
 

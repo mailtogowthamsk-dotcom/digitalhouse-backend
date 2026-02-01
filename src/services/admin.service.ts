@@ -2,6 +2,7 @@ import { User, UserProfile, PendingProfileUpdate, AdminVerification, PostReport 
 import { sendApprovalEmail, sendRejectionEmail } from "./mail.service";
 import type { MatrimonySection, BusinessSection } from "../models/UserProfile.model";
 import { signAdminToken } from "../utils/jwt.util";
+import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
 
 const PENDING = "PENDING";
 
@@ -171,30 +172,38 @@ export async function listPendingProfileUpdates(): Promise<PendingProfileUpdateD
   const profiles = await UserProfile.findAll({ where: { userId: userIds } });
   const profileByUser = new Map(profiles.map((p) => [p.userId, p]));
 
+  const allowedKeysBySection = {
+    MATRIMONY: SECTION_ALLOWED_KEYS.matrimony,
+    BUSINESS: SECTION_ALLOWED_KEYS.business
+  };
+
   return list.map((row) => {
     const user = (row as any).User as User;
     const profile = profileByUser.get(row.userId);
-    const currentApproved =
+    const allowedKeys = allowedKeysBySection[row.section];
+    const currentApprovedRaw =
       row.section === "MATRIMONY"
-        ? (profile?.matrimony as MatrimonySection) ?? null
-        : (profile?.business as BusinessSection) ?? null;
+        ? profile?.matrimony
+        : profile?.business;
+    const currentApproved = normalizeJsonColumn(currentApprovedRaw, allowedKeys) as Record<string, unknown> | null;
+    const data = normalizeJsonColumn(row.data, allowedKeys) ?? {};
     return {
       id: row.id,
       userId: row.userId,
       userEmail: user?.email ?? "",
       userName: user?.fullName ?? "",
       section: row.section,
-      data: (row.data as Record<string, unknown>) ?? {},
+      data,
       status: row.status,
       submittedAt: row.submittedAt.toISOString(),
       reviewedAt: row.reviewedAt ? row.reviewedAt.toISOString() : null,
       adminRemarks: row.adminRemarks,
-      currentApproved: currentApproved as Record<string, unknown> | null
+      currentApproved
     };
   });
 }
 
-/** Approve pending profile update: copy data to user_profiles, mark update as APPROVED */
+/** Approve pending profile update: copy data to user_profiles (clean JSON only), mark update as APPROVED */
 export async function approveProfileUpdate(
   updateId: number,
   adminId: string,
@@ -207,8 +216,9 @@ export async function approveProfileUpdate(
   let profile = await UserProfile.findOne({ where: { userId: row.userId } });
   if (!profile) profile = await UserProfile.create({ userId: row.userId } as any);
 
-  const data = (row.data as Record<string, unknown>) ?? {};
   const sectionKey = row.section === "MATRIMONY" ? "matrimony" : "business";
+  const allowedKeys = SECTION_ALLOWED_KEYS[sectionKey];
+  const data = normalizeJsonColumn(row.data, allowedKeys) ?? {};
   await profile.update({ [sectionKey]: data } as any);
   await row.update({
     status: "APPROVED",
