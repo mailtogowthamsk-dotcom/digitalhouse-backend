@@ -7,6 +7,9 @@ import { dbReady, dbFailed } from "./state";
 
 export const app = express();
 
+// Required behind Railway (or any reverse proxy): express-rate-limit needs req.ip from X-Forwarded-For
+app.set("trust proxy", 1);
+
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json());
 
