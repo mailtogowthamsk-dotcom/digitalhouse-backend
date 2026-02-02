@@ -1,6 +1,6 @@
 import { mailer } from "../config/mail";
 
-const MAIL_SEND_TIMEOUT_MS = 15000;
+const MAIL_SEND_TIMEOUT_MS = 25000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([

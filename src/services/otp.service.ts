@@ -39,9 +39,13 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
   } as any);
 
   // Send email in background so API responds quickly (avoids client timeout on slow SMTP)
-  sendOtpEmail(email, code, OTP_EXPIRES_MIN).catch((err) =>
-    console.error("[OTP] Failed to send email to", email, err)
-  );
+  sendOtpEmail(email, code, OTP_EXPIRES_MIN).catch((err) => {
+    const msg = err?.message || String(err);
+    console.error("[OTP] Failed to send email to", email, msg);
+    if (msg.includes("timeout")) {
+      console.error("[OTP] Check Railway: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_FROM. Use a cloud SMTP (Resend/SendGrid/Mailgun) if Gmail times out.");
+    }
+  });
 
   return { ok: true, message: "OTP sent to your email." };
 }
