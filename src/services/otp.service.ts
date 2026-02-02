@@ -38,6 +38,11 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
     createdAt: now
   } as any);
 
+  // Temporary: log OTP to server console when email is broken (set LOG_OTP_FOR_DEV=true on Railway)
+  if (process.env.LOG_OTP_FOR_DEV === "true") {
+    console.log("[OTP] DEV — use this code for", email, "→", code);
+  }
+
   // Send email in background so API responds quickly (avoids client timeout on slow SMTP)
   sendOtpEmail(email, code, OTP_EXPIRES_MIN).catch((err) => {
     const msg = err?.message || String(err);
