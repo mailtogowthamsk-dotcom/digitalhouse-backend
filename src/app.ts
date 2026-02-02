@@ -15,6 +15,11 @@ app.get("/", (_req, res) => {
   res.status(200).json({ ok: true, service: "Digital House API" });
 });
 
+// Railway healthcheck uses GET /health (no /api) – must return 200 so deploy succeeds
+app.get("/health", (_req, res) => {
+  res.status(200).json({ ok: true });
+});
+
 // Health check: responds immediately so Railway doesn't show "Application Failed to respond"
 app.get("/api/health", (_req, res) => {
   res.status(200).json({ ok: true, ready: dbReady, dbFailed });
