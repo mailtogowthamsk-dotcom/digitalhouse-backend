@@ -22,7 +22,7 @@ app.get("/api/health", (_req, res) => {
 
 // Return 503 until DB is ready (cold start) or if DB failed; mobile can retry
 app.use("/api", (req, res, next) => {
-  if (req.path === "/health") return next();
+  if (req.path === "/health" || req.path === "/landing") return next();
   if (!dbReady) {
     return res.status(503).json({
       ok: false,
