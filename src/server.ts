@@ -26,7 +26,7 @@ async function initDb() {
   } catch (e) {
     console.error("Database init failed:", e);
     setDbFailed(true);
-    // Do NOT exit – keep server up so Railway gets 200 on /api/health and 503 on other routes.
+    // Do NOT exit – keep server up so Railway gets 200 on /health and 503 on other routes.
     // Fix DB env vars (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME) on Railway and redeploy.
   }
 }

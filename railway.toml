@@ -1,0 +1,6 @@
+# Railway deploy config for Digital House backend
+# Ensure "Root Directory" is set to the folder containing this file (backend).
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 120

@@ -15,8 +15,8 @@ app.get("/", (_req, res) => {
   res.status(200).json({ ok: true, service: "Digital House API" });
 });
 
-// Railway healthcheck uses GET /health (no /api) – must return 200 so deploy succeeds
-app.get("/health", (_req, res) => {
+// Railway healthcheck: GET /health must return 200 so deploy succeeds (also accept /health/)
+app.get(["/health", "/health/"], (_req, res) => {
   res.status(200).json({ ok: true });
 });
 
