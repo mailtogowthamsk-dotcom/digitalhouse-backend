@@ -38,7 +38,10 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
     createdAt: now
   } as any);
 
-  await sendOtpEmail(email, code, OTP_EXPIRES_MIN);
+  // Send email in background so API responds quickly (avoids client timeout on slow SMTP)
+  sendOtpEmail(email, code, OTP_EXPIRES_MIN).catch((err) =>
+    console.error("[OTP] Failed to send email to", email, err)
+  );
 
   return { ok: true, message: "OTP sent to your email." };
 }

@@ -1,13 +1,27 @@
 import { mailer } from "../config/mail";
 
-/** Send OTP email to user (community-friendly copy) */
+const MAIL_SEND_TIMEOUT_MS = 15000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Mail send timeout after ${ms}ms`)), ms)
+    )
+  ]);
+}
+
+/** Send OTP email to user (community-friendly copy). Timeout so slow SMTP doesn't hang. */
 export async function sendOtpEmail(to: string, otp: string, expiresMinutes: number): Promise<void> {
-  await mailer.sendMail({
-    from: process.env.MAIL_FROM,
-    to: to.toLowerCase().trim(),
-    subject: "Your Digital House verification code",
-    text: `Your verification code is ${otp}. It expires in ${expiresMinutes} minutes. Welcome to the community!`
-  });
+  await withTimeout(
+    mailer.sendMail({
+      from: process.env.MAIL_FROM,
+      to: to.toLowerCase().trim(),
+      subject: "Your Digital House verification code",
+      text: `Your verification code is ${otp}. It expires in ${expiresMinutes} minutes. Welcome to the community!`
+    }),
+    MAIL_SEND_TIMEOUT_MS
+  );
 }
 
 /** Send approval notification to user after admin approves their account */
