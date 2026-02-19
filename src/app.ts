@@ -42,9 +42,10 @@ app.use("/api", (req, res, next) => {
   next();
 });
 
-// Log every API request so you can see if the phone hits the backend
+// Log API requests only when LOG_REQUESTS=true or NODE_ENV=development. Reduces memory churn and log volume in production.
+const shouldLogRequests = process.env.LOG_REQUESTS === "true" || process.env.NODE_ENV === "development";
 app.use("/api", (req, _res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
+  if (shouldLogRequests) console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 }, apiRouter);
 
