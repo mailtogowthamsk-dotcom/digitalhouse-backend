@@ -38,19 +38,26 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
     createdAt: now
   } as any);
 
-  // Temporary: log OTP to server console when email is broken (set LOG_OTP_FOR_DEV=true on Railway)
+  // Temporary: log OTP to server console when email is broken (set LOG_OTP_FOR_DEV=true)
   if (process.env.LOG_OTP_FOR_DEV === "true") {
     console.log("[OTP] DEV — use this code for", email, "→", code);
   }
 
-  // Send email in background so API responds quickly (avoids client timeout on slow SMTP)
-  sendOtpEmail(email, code, OTP_EXPIRES_MIN).catch((err) => {
+  // Await email so we can tell the client if sending failed (e.g. production SMTP misconfigured).
+  // Timeout in mail.service (25s) prevents long hangs.
+  try {
+    await sendOtpEmail(email, code, OTP_EXPIRES_MIN);
+  } catch (err: any) {
     const msg = err?.message || String(err);
     console.error("[OTP] Failed to send email to", email, msg);
     if (msg.includes("timeout")) {
-      console.error("[OTP] Check Railway: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_FROM. Use a cloud SMTP (Resend/SendGrid/Mailgun) if Gmail times out.");
+      console.error("[OTP] Check SMTP: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_FROM. Use a cloud SMTP (Resend/SendGrid/Mailgun) if provider times out.");
     }
-  });
+    return {
+      ok: false,
+      message: "Could not send verification email. Please try again or contact support."
+    };
+  }
 
   return { ok: true, message: "OTP sent to your email." };
 }

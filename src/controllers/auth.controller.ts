@@ -41,6 +41,9 @@ export async function loginRequest(req: Request, res: Response) {
     return error(res, "Your account was not approved. Please contact support.", 403);
   }
   const result = await otpService.createAndSendOtp(user);
+  if (!result.ok) {
+    return error(res, result.message, 503);
+  }
   return success(res, { message: result.message });
 }
 
