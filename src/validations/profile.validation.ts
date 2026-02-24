@@ -143,3 +143,21 @@ export type HoroscopeUploadUrlBody = z.infer<typeof horoscopeUploadUrlSchema>;
 export function validateHoroscopeUploadUrlBody(body: unknown): HoroscopeUploadUrlBody {
   return horoscopeUploadUrlSchema.parse(body);
 }
+
+// ---------------------------------------------------------------------------
+// POST /api/profile/me/profile-photo-upload-url
+// ---------------------------------------------------------------------------
+
+const PROFILE_PHOTO_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+
+export const profilePhotoUploadUrlSchema = z.object({
+  fileName: z.string().trim().min(1).max(255).refine((n) => !n.includes("..") && !n.includes("/"), { message: "Invalid fileName" }),
+  fileType: z.enum(["image/jpeg", "image/png"]),
+  fileSize: z.number().int().positive().max(PROFILE_PHOTO_MAX_BYTES, "Profile photo must be ≤ 5 MB")
+}).strict();
+
+export type ProfilePhotoUploadUrlBody = z.infer<typeof profilePhotoUploadUrlSchema>;
+
+export function validateProfilePhotoUploadUrlBody(body: unknown): ProfilePhotoUploadUrlBody {
+  return profilePhotoUploadUrlSchema.parse(body);
+}

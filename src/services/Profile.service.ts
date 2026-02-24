@@ -1,7 +1,7 @@
 import { Op } from "sequelize";
 import path from "path";
 import { User, UserProfile, PendingProfileUpdate, Post, PostLike, SavedPost } from "../models";
-import { getPresignedPutUrl, getCdnPublicUrl } from "../utils/r2Client";
+import { getPresignedPutUrl, getCdnPublicUrl, toSignedUrlIfR2 } from "../utils/r2Client";
 import type {
   CommunitySection,
   PersonalSection,
@@ -283,10 +283,11 @@ export async function getProfile(userId: number): Promise<ProfileMeResponse> {
           ? { status: "APPROVED" as const, admin_remarks: null as string | null }
           : null;
 
+  const profile_image = (await toSignedUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
   return {
     id: user.id,
     name: user.fullName,
-    profile_image: user.profilePhoto ?? null,
+    profile_image,
     verified: user.status === "APPROVED",
     member_since,
     personal_info: {
@@ -547,6 +548,39 @@ export async function getHoroscopeUploadUrl(
   return { uploadUrl, publicUrl };
 }
 
+const PROFILE_PHOTO_ALLOWED_TYPES = ["image/jpeg", "image/png"];
+const PROFILE_PHOTO_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+
+/**
+ * POST /api/profile/me/profile-photo-upload-url – presigned URL for profile photo (image only).
+ * Stores in R2 folder: profile-photos/{userId}/. Client uploads then PUT /profile/me with profile_image: publicUrl.
+ */
+export async function getProfilePhotoUploadUrl(
+  userId: number,
+  fileName: string,
+  fileType: string,
+  fileSize: number
+): Promise<{ uploadUrl: string; publicUrl: string }> {
+  const mime = fileType.toLowerCase().trim();
+  if (!PROFILE_PHOTO_ALLOWED_TYPES.includes(mime)) {
+    const err = new Error("Profile photo must be JPEG or PNG");
+    (err as any).status = 400;
+    throw err;
+  }
+  if (fileSize > PROFILE_PHOTO_MAX_BYTES) {
+    const err = new Error("Profile photo must be ≤ 5 MB");
+    (err as any).status = 400;
+    throw err;
+  }
+  const ext = path.extname(fileName).toLowerCase() || (mime.includes("png") ? ".png" : ".jpg");
+  const key = `digital-house/profile-photos/${userId}/${Date.now()}${ext}`;
+  const [uploadUrl, publicUrl] = await Promise.all([
+    getPresignedPutUrl(key, mime),
+    Promise.resolve(getCdnPublicUrl(key))
+  ]);
+  return { uploadUrl, publicUrl };
+}
+
 export const profileService = {
   getProfile,
   getProfileStats,
@@ -554,6 +588,7 @@ export const profileService = {
   updateProfile,
   updateProfileSection,
   getHoroscopeUploadUrl,
+  getProfilePhotoUploadUrl,
   maskMobile,
   maskEmail
 };

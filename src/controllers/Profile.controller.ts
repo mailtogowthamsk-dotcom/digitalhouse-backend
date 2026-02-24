@@ -6,7 +6,8 @@ import {
   validateUpdateProfileBody,
   validateSectionParam,
   validateSectionPayload,
-  validateHoroscopeUploadUrlBody
+  validateHoroscopeUploadUrlBody,
+  validateProfilePhotoUploadUrlBody
 } from "../validations/profile.validation";
 import type { User } from "../models";
 
@@ -20,6 +21,7 @@ type AuthRequest = Request & { user?: User };
  */
 export async function getProfile(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
+  res.setHeader("Cache-Control", "no-store");
   const data = await profileService.getProfile(req.user.id);
   return success(res, data);
 }
@@ -83,6 +85,22 @@ export async function getHoroscopeUploadUrl(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const body = validateHoroscopeUploadUrlBody(req.body);
   const data = await profileService.getHoroscopeUploadUrl(
+    req.user.id,
+    body.fileName,
+    body.fileType,
+    body.fileSize
+  );
+  return success(res, data);
+}
+
+/**
+ * POST /api/profile/me/profile-photo-upload-url
+ * Get presigned PUT URL for profile photo (image only). Stored in R2 profile-photos folder. Client uploads then PUT /profile/me with profile_image: publicUrl.
+ */
+export async function getProfilePhotoUploadUrl(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const body = validateProfilePhotoUploadUrlBody(req.body);
+  const data = await profileService.getProfilePhotoUploadUrl(
     req.user.id,
     body.fileName,
     body.fileType,

@@ -100,8 +100,9 @@ export async function getSummary(userId: number): Promise<HomeSummaryDto> {
 
   if (!user) throw new Error("User not found");
 
+  const profileImage = (await toSignedUrlIfR2(user.profileImage ?? null)) ?? user.profileImage ?? null;
   return {
-    user,
+    user: { ...user, profileImage },
     quickActionCounts,
     unreadNotificationsCount,
     unreadMessagesCount
@@ -203,7 +204,10 @@ export async function getFeed(page: number, limit: number, currentUserId: number
   const itemsWithMedia = await Promise.all(
     posts.map(async (p) => {
       const author = (p as any).User;
-      const mediaUrl = await toSignedUrlIfR2(p.mediaUrl ?? null);
+      const [mediaUrl, profileImage] = await Promise.all([
+        toSignedUrlIfR2(p.mediaUrl ?? null),
+        author ? toSignedUrlIfR2(author.profilePhoto ?? null) : Promise.resolve(null)
+      ]);
       return {
         postId: p.id,
         postType: p.postType,
@@ -211,7 +215,9 @@ export async function getFeed(page: number, limit: number, currentUserId: number
         description: p.description ?? null,
         mediaUrl,
         createdAt: p.createdAt.toISOString(),
-        author: author ? toFeedAuthor(author) : { name: "Unknown", profileImage: null, verified: false },
+        author: author
+          ? { ...toFeedAuthor(author), profileImage: profileImage ?? author.profilePhoto ?? null }
+          : { name: "Unknown", profileImage: null, verified: false },
         counts: {
           likes: likeCounts[p.id] ?? 0,
           comments: commentCounts[p.id] ?? 0

@@ -72,6 +72,17 @@ function toAuthorDto(user: User): PostAuthorDto {
   };
 }
 
+/** Like toAuthorDto but with profile_image as signed R2 URL so images load when bucket is private. */
+async function toAuthorDtoSigned(user: User): Promise<PostAuthorDto> {
+  const profile_image = (await toSignedUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
+  return {
+    id: user.id,
+    name: user.fullName,
+    profile_image,
+    verified: user.status === APPROVED
+  };
+}
+
 /** Ensure post is visible to current user (same community). */
 async function ensureCommunityVisible(post: Post, currentUserId: number): Promise<void> {
   const author = await User.findByPk(post.userId, { attributes: ["community"] });
@@ -111,6 +122,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     jobStatus: payload.job_status ?? null
   } as any);
   const author = await User.findByPk(userId, { attributes: ["id", "fullName", "profilePhoto", "status"] });
+  const authorDto = author ? await toAuthorDtoSigned(author) : { id: userId, name: "Unknown", profile_image: null as string | null, verified: false };
   return {
     id: post.id,
     user_id: post.userId,
@@ -124,7 +136,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     job_status: post.jobStatus ?? null,
     created_at: post.createdAt.toISOString(),
     updated_at: post.updatedAt.toISOString(),
-    author: author ? toAuthorDto(author) : { id: userId, name: "Unknown", profile_image: null, verified: false },
+    author: authorDto,
     like_count: 0,
     comment_count: 0,
     liked_by_me: false
@@ -184,11 +196,12 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
   const author = (post as any).User as User;
   await ensureCommunityVisible(post, userId);
 
-  const [likeCount, commentCount, likedByMe, mediaUrl] = await Promise.all([
+  const [likeCount, commentCount, likedByMe, mediaUrl, authorDto] = await Promise.all([
     PostLike.count({ where: { postId } }),
     Comment.count({ where: { postId } }),
     PostLike.findOne({ where: { postId, userId } }).then(r => !!r),
-    toSignedUrlIfR2(post.mediaUrl ?? null)
+    toSignedUrlIfR2(post.mediaUrl ?? null),
+    toAuthorDtoSigned(author)
   ]);
 
   return {
@@ -204,7 +217,7 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     job_status: post.jobStatus ?? null,
     created_at: post.createdAt.toISOString(),
     updated_at: post.updatedAt.toISOString(),
-    author: toAuthorDto(author),
+    author: authorDto,
     like_count: likeCount,
     comment_count: commentCount,
     liked_by_me: likedByMe
@@ -258,13 +271,14 @@ export async function addComment(userId: number, postId: number, body: string): 
       body: `${author.fullName} commented on your post "${post.title.slice(0, 50)}${post.title.length > 50 ? "…" : ""}"`
     } as any);
   }
+  const authorDto = await toAuthorDtoSigned(author!);
   return {
     id: comment.id,
     post_id: comment.postId,
     user_id: comment.userId,
     body: comment.body,
     created_at: comment.createdAt.toISOString(),
-    author: toAuthorDto(author!)
+    author: authorDto
   };
 }
 
@@ -290,17 +304,20 @@ export async function getComments(
     limit,
     offset
   });
-  const items: CommentDto[] = rows.map(c => {
-    const author = (c as any).User as User;
-    return {
-      id: c.id,
-      post_id: c.postId,
-      user_id: c.userId,
-      body: c.body,
-      created_at: c.createdAt.toISOString(),
-      author: toAuthorDto(author)
-    };
-  });
+  const items: CommentDto[] = await Promise.all(
+    rows.map(async (c) => {
+      const author = (c as any).User as User;
+      const authorDto = await toAuthorDtoSigned(author);
+      return {
+        id: c.id,
+        post_id: c.postId,
+        user_id: c.userId,
+        body: c.body,
+        created_at: c.createdAt.toISOString(),
+        author: authorDto
+      };
+    })
+  );
   return { items, page, limit, total: count };
 }
 

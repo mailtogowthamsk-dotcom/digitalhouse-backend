@@ -76,19 +76,60 @@ export async function getPresignedGetUrl(key: string, expiresInSeconds = 3600): 
 }
 
 /**
- * If url is our R2 CDN URL (private bucket), return a signed GET URL so the image loads.
- * Otherwise return url unchanged (e.g. YouTube, external links).
+ * Extract R2 object key from a URL or path.
+ * Upload uses keys like digital-house/profile-photos/{userId}/{file}; retrieve needs the same key.
+ * Handles: full URL, path-only, and URL-encoded path.
+ */
+function extractR2KeyFromUrl(u: string): string | null {
+  const trimmed = u.replace(/^\//, "").trim();
+  if (trimmed.startsWith("digital-house/")) return decodeIfEncoded(trimmed);
+  try {
+    const pathMatch = u.match(/^(https?:\/\/[^/]+)(\/.*)$/);
+    if (!pathMatch) return null;
+    const path = pathMatch[2].replace(/^\//, "");
+    if (path.startsWith("digital-house/")) return decodeIfEncoded(path);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeIfEncoded(path: string): string {
+  try {
+    if (path.includes("%")) return decodeURIComponent(path);
+  } catch {
+    /* ignore decode errors */
+  }
+  return path;
+}
+
+/** Default expiry for signed GET URLs (1 hour) so app can display R2 images. */
+const SIGNED_GET_EXPIRY_SEC = 3600;
+
+/**
+ * Retrieve: turn stored R2 URL (or key) into a signed GET URL so the app can load the image.
+ * Upload is separate (presigned PUT); this is only for display. Same bucket/key as upload
+ * (e.g. digital-house/profile-photos/…). Requires R2_* env vars on the server.
  */
 export async function toSignedUrlIfR2(url: string | null | undefined): Promise<string | null> {
   if (!url || typeof url !== "string" || !url.trim()) return null;
   const u = url.trim();
   const cdnBase = process.env.R2_CDN_PUBLIC_URL?.replace(/\/$/, "");
-  if (!cdnBase || !u.startsWith(cdnBase)) return u;
-  const key = u.slice(cdnBase.length).replace(/^\//, "");
+  let key: string | null = null;
+  if (cdnBase && u.startsWith(cdnBase)) {
+    const raw = u.slice(cdnBase.length).replace(/^\//, "") || null;
+    key = raw ? decodeIfEncoded(raw) : null;
+  }
+  if (!key) key = extractR2KeyFromUrl(u);
   if (!key) return u;
   try {
-    return await getPresignedGetUrl(key);
-  } catch {
+    return await getPresignedGetUrl(key, SIGNED_GET_EXPIRY_SEC);
+  } catch (err) {
+    // Retrieve fails if R2_* env vars are missing on server (upload can still work from another env).
+    console.warn(
+      "[R2] Retrieve/signed GET failed — images will not display. Set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME on this server.",
+      err instanceof Error ? err.message : ""
+    );
     return u;
   }
 }

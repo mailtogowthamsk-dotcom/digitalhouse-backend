@@ -24,5 +24,6 @@ profileRouter.patch("/me/sections/:section", asyncHandler(ProfileController.upda
 // PUT /api/profile/:section (basic | community | personal | matrimony | business | family)
 profileRouter.put("/:section", asyncHandler(ProfileController.updateProfileSection));
 profileRouter.post("/me/horoscope-upload-url", asyncHandler(ProfileController.getHoroscopeUploadUrl));
+profileRouter.post("/me/profile-photo-upload-url", asyncHandler(ProfileController.getProfilePhotoUploadUrl));
 profileRouter.get("/stats", asyncHandler(ProfileController.getStats));
 profileRouter.get("/activity", asyncHandler(ProfileController.getActivity));
