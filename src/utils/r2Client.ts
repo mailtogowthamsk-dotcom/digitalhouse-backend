@@ -86,7 +86,8 @@ function extractR2KeyFromUrl(u: string): string | null {
   try {
     const pathMatch = u.match(/^(https?:\/\/[^/]+)(\/.*)$/);
     if (!pathMatch) return null;
-    const path = pathMatch[2].replace(/^\//, "");
+    const pathWithQuery = pathMatch[2];
+    const path = pathWithQuery.split("?")[0].replace(/^\//, "");
     if (path.startsWith("digital-house/")) return decodeIfEncoded(path);
     return null;
   } catch {
@@ -117,8 +118,8 @@ export async function toSignedUrlIfR2(url: string | null | undefined): Promise<s
   const cdnBase = process.env.R2_CDN_PUBLIC_URL?.replace(/\/$/, "");
   let key: string | null = null;
   if (cdnBase && u.startsWith(cdnBase)) {
-    const raw = u.slice(cdnBase.length).replace(/^\//, "") || null;
-    key = raw ? decodeIfEncoded(raw) : null;
+    const pathPart = u.slice(cdnBase.length).split("?")[0].replace(/^\//, "") || null;
+    key = pathPart ? decodeIfEncoded(pathPart) : null;
   }
   if (!key) key = extractR2KeyFromUrl(u);
   if (!key) return u;

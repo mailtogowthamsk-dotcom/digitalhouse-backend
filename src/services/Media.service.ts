@@ -28,7 +28,8 @@ function inferFileType(mime: string): MediaFileType {
 function buildKey(module: MediaModule, userId: number, uniqueName: string): string {
   const safeName = path.basename(uniqueName).replace(/[^a-zA-Z0-9._-]/g, "_");
   if (module === "profile") {
-    return `${R2_PREFIX}/profile/${userId}/${safeName}`;
+    // Use same folder as profile-photo-upload-url so fallback (media/upload-url) and main flow match.
+    return `${R2_PREFIX}/profile-photos/${userId}/${safeName}`;
   }
   // posts, jobs, marketplace, matrimony, help → under posts/{module}/
   return `${R2_PREFIX}/posts/${module}/${safeName}`;
