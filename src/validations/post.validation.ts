@@ -43,7 +43,8 @@ export function validateUpdatePostBody(body: unknown): UpdatePostBody {
 
 export const addCommentSchema = z
   .object({
-    body: z.string().trim().min(1).max(2000)
+    body: z.string().trim().min(1).max(2000),
+    parent_id: z.coerce.number().int().positive().optional().nullable()
   })
   .strict();
 
@@ -67,11 +68,22 @@ export function validateReportPostBody(body: unknown): ReportPostBody {
 
 const commentsPaginationSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(50).default(20)
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+  sort: z.enum(["newest", "top"]).default("newest")
 });
 
 export type CommentsQuery = z.infer<typeof commentsPaginationSchema>;
 
 export function validateCommentsQuery(query: unknown): CommentsQuery {
   return commentsPaginationSchema.parse(query);
+}
+
+export const updateCommentSchema = z
+  .object({
+    body: z.string().trim().min(1).max(2000)
+  })
+  .strict();
+
+export function validateUpdateCommentBody(body: unknown): z.infer<typeof updateCommentSchema> {
+  return updateCommentSchema.parse(body);
 }

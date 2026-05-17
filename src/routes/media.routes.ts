@@ -19,3 +19,4 @@ mediaRouter.use(mediaLimiter);
 mediaRouter.use(authMiddleware);
 
 mediaRouter.post("/upload-url", asyncHandler(MediaController.getUploadUrl));
+mediaRouter.post("/finalize", asyncHandler(MediaController.finalizeUpload));

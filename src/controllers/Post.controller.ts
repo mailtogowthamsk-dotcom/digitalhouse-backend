@@ -6,11 +6,18 @@ import {
   validateUpdatePostBody,
   validateAddCommentBody,
   validateReportPostBody,
-  validateCommentsQuery
+  validateCommentsQuery,
+  validateUpdateCommentBody
 } from "../validations/post.validation";
 import type { User, PostType, JobStatus } from "../models";
+import { z } from "zod";
 
-type AuthRequest = { user?: User } & { params?: { postId?: string }; query?: unknown; body?: unknown };
+type AuthRequest = {
+  user?: User;
+  params?: { postId?: string; commentId?: string };
+  query?: unknown;
+  body?: unknown;
+};
 
 function parsePostId(postId: string | undefined): number | null {
   if (!postId) return null;
@@ -18,10 +25,12 @@ function parsePostId(postId: string | undefined): number | null {
   return Number.isNaN(n) ? null : n;
 }
 
-/**
- * POST /api/posts
- * Create a new post (community engagement).
- */
+function parseCommentId(commentId: string | undefined): number | null {
+  if (!commentId) return null;
+  const n = parseInt(commentId, 10);
+  return Number.isNaN(n) ? null : n;
+}
+
 export async function createPost(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const body = validateCreatePostBody(req.body);
@@ -39,10 +48,6 @@ export async function createPost(req: AuthRequest, res: Response) {
   return success(res, data, 201);
 }
 
-/**
- * GET /api/posts/:postId
- * Get single post (community-only visibility).
- */
 export async function getPost(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const postId = parsePostId(req.params?.postId);
@@ -56,10 +61,6 @@ export async function getPost(req: AuthRequest, res: Response) {
   }
 }
 
-/**
- * PUT /api/posts/:postId
- * Update post (author only).
- */
 export async function updatePost(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const postId = parsePostId(req.params?.postId);
@@ -84,10 +85,6 @@ export async function updatePost(req: AuthRequest, res: Response) {
   }
 }
 
-/**
- * DELETE /api/posts/:postId
- * Delete post (author only).
- */
 export async function deletePost(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const postId = parsePostId(req.params?.postId);
@@ -102,10 +99,6 @@ export async function deletePost(req: AuthRequest, res: Response) {
   }
 }
 
-/**
- * POST /api/posts/:postId/like
- * Toggle like on post.
- */
 export async function likePost(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const postId = parsePostId(req.params?.postId);
@@ -119,35 +112,33 @@ export async function likePost(req: AuthRequest, res: Response) {
   }
 }
 
-/**
- * POST /api/posts/:postId/comments
- * Add comment to post.
- */
 export async function addComment(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const postId = parsePostId(req.params?.postId);
   if (postId == null) return error(res, "Invalid post id", 400);
   const body = validateAddCommentBody(req.body);
   try {
-    const data = await postService.addComment(req.user.id, postId, body.body);
+    const data = await postService.addComment(req.user.id, postId, body.body, body.parent_id ?? null);
     return success(res, data, 201);
   } catch (e: any) {
-    if (e?.status === 404) return error(res, "Post not found", 404);
+    if (e?.status === 404) return error(res, e.message ?? "Post not found", 404);
     throw e;
   }
 }
 
-/**
- * GET /api/posts/:postId/comments
- * Get comments for post (paginated). Community-only.
- */
 export async function getComments(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const postId = parsePostId(req.params?.postId);
   if (postId == null) return error(res, "Invalid post id", 400);
   const query = validateCommentsQuery(req.query ?? {});
   try {
-    const data = await postService.getComments(postId, query.page, query.limit, req.user.id);
+    const data = await postService.getComments(
+      postId,
+      query.page,
+      query.limit,
+      req.user.id,
+      query.sort
+    );
     return success(res, data);
   } catch (e: any) {
     if (e?.status === 404) return error(res, "Post not found", 404);
@@ -155,10 +146,63 @@ export async function getComments(req: AuthRequest, res: Response) {
   }
 }
 
-/**
- * POST /api/posts/:postId/report
- * Report post (abuse).
- */
+export async function updateComment(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  const commentId = parseCommentId(req.params?.commentId);
+  if (postId == null || commentId == null) return error(res, "Invalid id", 400);
+  const body = validateUpdateCommentBody(req.body);
+  try {
+    const data = await postService.updateComment(req.user.id, postId, commentId, body.body);
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status === 404) return error(res, e.message ?? "Not found", 404);
+    if (e?.status === 403) return error(res, "Forbidden", 403);
+    throw e;
+  }
+}
+
+export async function deleteComment(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  const commentId = parseCommentId(req.params?.commentId);
+  if (postId == null || commentId == null) return error(res, "Invalid id", 400);
+  try {
+    await postService.deleteComment(req.user.id, postId, commentId);
+    return success(res, { message: "Comment deleted" });
+  } catch (e: any) {
+    if (e?.status === 404) return error(res, e.message ?? "Not found", 404);
+    if (e?.status === 403) return error(res, "Forbidden", 403);
+    throw e;
+  }
+}
+
+export async function savePost(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  if (postId == null) return error(res, "Invalid post id", 400);
+  try {
+    const data = await postService.savePost(req.user.id, postId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status === 404) return error(res, "Post not found", 404);
+    throw e;
+  }
+}
+
+export async function unsavePost(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  if (postId == null) return error(res, "Invalid post id", 400);
+  try {
+    const data = await postService.unsavePost(req.user.id, postId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status === 404) return error(res, "Post not found", 404);
+    throw e;
+  }
+}
+
 export async function reportPost(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const postId = parsePostId(req.params?.postId);
@@ -172,4 +216,17 @@ export async function reportPost(req: AuthRequest, res: Response) {
     if (e?.status === 409) return error(res, "You have already reported this post", 409);
     throw e;
   }
+}
+
+const trackEventSchema = z.object({
+  event_type: z.string().max(40),
+  post_id: z.coerce.number().int().positive().optional(),
+  meta: z.record(z.unknown()).optional()
+});
+
+export async function trackEvent(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const body = trackEventSchema.parse(req.body ?? {});
+  await postService.trackFeedEvent(req.user.id, body.event_type, body.post_id, body.meta);
+  return success(res, { ok: true });
 }

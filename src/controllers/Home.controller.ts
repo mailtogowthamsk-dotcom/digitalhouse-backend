@@ -32,7 +32,10 @@ export async function getQuickActions(_req: AuthRequest, res: Response) {
 export async function getFeed(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const query = validateFeedQuery(req.query);
-  const data = await homeService.getFeed(query.page, query.limit, req.user.id);
+  const data = await homeService.getFeed(query.page, query.limit, req.user.id, {
+    cursor: query.cursor,
+    sort: query.sort
+  });
   return success(res, data);
 }
 

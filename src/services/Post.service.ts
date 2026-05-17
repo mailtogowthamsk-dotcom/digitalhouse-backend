@@ -1,6 +1,9 @@
-import { User, Post, PostLike, Comment, Notification, PostReport } from "../models";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { Op } from "sequelize";
+import { User, Post, PostLike, Comment, Notification, PostReport, SavedPost } from "../models";
+import { toSignedUrlIfR2, deleteR2ImageVariants } from "../utils/r2Client";
 import type { PostType, JobStatus } from "../models";
+import { emitFeedLike, emitFeedComment, emitFeedSave, emitFeedNewPost } from "../realtime/feedEvents";
+import { logFeedEvent } from "../utils/feedAnalytics";
 
 const APPROVED = "APPROVED";
 
@@ -30,15 +33,21 @@ export type PostDetailDto = {
   like_count: number;
   comment_count: number;
   liked_by_me: boolean;
+  saved_by_me: boolean;
 };
 
 export type CommentDto = {
   id: number;
   post_id: number;
   user_id: number;
+  parent_id: number | null;
   body: string;
   created_at: string;
+  updated_at: string;
   author: PostAuthorDto;
+  is_mine: boolean;
+  reply_count: number;
+  replies?: CommentDto[];
 };
 
 export type CommentsResultDto = {
@@ -97,6 +106,26 @@ async function ensureCommunityVisible(post: Post, currentUserId: number): Promis
   }
 }
 
+async function viewerCommunity(userId: number): Promise<string | null> {
+  const u = await User.findByPk(userId, { attributes: ["community"] });
+  return u?.community ?? null;
+}
+
+function commentToDto(c: Comment, author: User, currentUserId: number, replyCount = 0): CommentDto {
+  return {
+    id: c.id,
+    post_id: c.postId,
+    user_id: c.userId,
+    parent_id: c.parentId ?? null,
+    body: c.body,
+    created_at: c.createdAt.toISOString(),
+    updated_at: c.updatedAt.toISOString(),
+    author: toAuthorDto(author),
+    is_mine: c.userId === currentUserId,
+    reply_count: replyCount
+  };
+}
+
 /** Get approved user IDs in the same community as userId (for feed visibility). */
 async function approvedUserIdsInCommunity(userId: number): Promise<number[]> {
   const me = await User.findByPk(userId, { attributes: ["community"] });
@@ -121,6 +150,9 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     meetupAt: payload.meetup_at ? new Date(payload.meetup_at) : null,
     jobStatus: payload.job_status ?? null
   } as any);
+  const community = await viewerCommunity(userId);
+  emitFeedNewPost(community, post.id);
+  logFeedEvent(userId, "post_impression", post.id, { action: "create" });
   const author = await User.findByPk(userId, { attributes: ["id", "fullName", "profilePhoto", "status"] });
   const authorDto = author ? await toAuthorDtoSigned(author) : { id: userId, name: "Unknown", profile_image: null as string | null, verified: false };
   return {
@@ -139,7 +171,8 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     author: authorDto,
     like_count: 0,
     comment_count: 0,
-    liked_by_me: false
+    liked_by_me: false,
+    saved_by_me: false
   };
 }
 
@@ -181,7 +214,9 @@ export async function deletePost(userId: number, postId: number): Promise<void> 
     (err as any).status = 403;
     throw err;
   }
+  const mediaUrl = post.mediaUrl;
   await post.destroy();
+  await deleteR2ImageVariants(mediaUrl);
 }
 
 export async function getPost(userId: number, postId: number): Promise<PostDetailDto> {
@@ -196,10 +231,11 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
   const author = (post as any).User as User;
   await ensureCommunityVisible(post, userId);
 
-  const [likeCount, commentCount, likedByMe, mediaUrl, authorDto] = await Promise.all([
+  const [likeCount, commentCount, likedByMe, savedByMe, mediaUrl, authorDto] = await Promise.all([
     PostLike.count({ where: { postId } }),
     Comment.count({ where: { postId } }),
     PostLike.findOne({ where: { postId, userId } }).then(r => !!r),
+    SavedPost.findOne({ where: { postId, userId } }).then(r => !!r),
     toSignedUrlIfR2(post.mediaUrl ?? null),
     toAuthorDtoSigned(author)
   ]);
@@ -220,7 +256,8 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     author: authorDto,
     like_count: likeCount,
     comment_count: commentCount,
-    liked_by_me: likedByMe
+    liked_by_me: likedByMe,
+    saved_by_me: savedByMe
   };
 }
 
@@ -237,10 +274,16 @@ export async function likePost(userId: number, postId: number): Promise<{ liked:
   if (existing) {
     await existing.destroy();
     const count = await PostLike.count({ where: { postId } });
+    const community = await viewerCommunity(userId);
+    emitFeedLike(community, { postId, likeCount: count, likedByUserId: userId, liked: false });
+    logFeedEvent(userId, "unlike", postId);
     return { liked: false, like_count: count };
   }
   await PostLike.create({ postId, userId } as any);
   const count = await PostLike.count({ where: { postId } });
+  const community = await viewerCommunity(userId);
+  emitFeedLike(community, { postId, likeCount: count, likedByUserId: userId, liked: true });
+  logFeedEvent(userId, "like", postId);
 
   if (post.userId !== userId) {
     const liker = await User.findByPk(userId, { attributes: ["fullName"] });
@@ -253,7 +296,12 @@ export async function likePost(userId: number, postId: number): Promise<{ liked:
   return { liked: true, like_count: count };
 }
 
-export async function addComment(userId: number, postId: number, body: string): Promise<CommentDto> {
+export async function addComment(
+  userId: number,
+  postId: number,
+  body: string,
+  parentId?: number | null
+): Promise<CommentDto> {
   const post = await Post.findByPk(postId);
   if (!post) {
     const err = new Error("Post not found");
@@ -262,7 +310,21 @@ export async function addComment(userId: number, postId: number, body: string): 
   }
   await ensureCommunityVisible(post, userId);
 
-  const comment = await Comment.create({ postId, userId, body: body.trim() } as any);
+  if (parentId) {
+    const parent = await Comment.findOne({ where: { id: parentId, postId } });
+    if (!parent) {
+      const err = new Error("Parent comment not found");
+      (err as any).status = 404;
+      throw err;
+    }
+  }
+
+  const comment = await Comment.create({
+    postId,
+    userId,
+    parentId: parentId ?? null,
+    body: body.trim()
+  } as any);
   const author = await User.findByPk(userId, { attributes: ["id", "fullName", "profilePhoto", "status"] });
   if (post.userId !== userId && author) {
     await Notification.create({
@@ -271,13 +333,20 @@ export async function addComment(userId: number, postId: number, body: string): 
       body: `${author.fullName} commented on your post "${post.title.slice(0, 50)}${post.title.length > 50 ? "…" : ""}"`
     } as any);
   }
+  const commentCount = await Comment.count({ where: { postId } });
+  const community = await viewerCommunity(userId);
+  emitFeedComment(community, {
+    postId,
+    commentCount,
+    commentId: comment.id,
+    userId,
+    preview: body.trim().slice(0, 80)
+  });
+  logFeedEvent(userId, "comment", postId, { parentId: parentId ?? null });
+
   const authorDto = await toAuthorDtoSigned(author!);
   return {
-    id: comment.id,
-    post_id: comment.postId,
-    user_id: comment.userId,
-    body: comment.body,
-    created_at: comment.createdAt.toISOString(),
+    ...commentToDto(comment, author!, userId, 0),
     author: authorDto
   };
 }
@@ -286,7 +355,8 @@ export async function getComments(
   postId: number,
   page: number,
   limit: number,
-  currentUserId: number
+  currentUserId: number,
+  sort: "newest" | "top" = "newest"
 ): Promise<CommentsResultDto> {
   const post = await Post.findByPk(postId);
   if (!post) {
@@ -297,28 +367,158 @@ export async function getComments(
   await ensureCommunityVisible(post, currentUserId);
 
   const offset = (page - 1) * limit;
-  const { count, rows } = await Comment.findAndCountAll({
-    where: { postId },
+  const topLevelWhere = { postId, parentId: { [Op.is]: null } };
+
+  const { count, rows: topLevel } = await Comment.findAndCountAll({
+    where: topLevelWhere,
     include: [{ association: "User", attributes: ["id", "fullName", "profilePhoto", "status"], required: true }],
-    order: [["createdAt", "ASC"]],
+    order: sort === "top" ? [["createdAt", "DESC"]] : [["createdAt", "DESC"]],
     limit,
     offset
   });
+
+  const topIds = topLevel.map((c) => c.id);
+  const replies =
+    topIds.length > 0
+      ? await Comment.findAll({
+          where: { postId, parentId: { [Op.in]: topIds } },
+          include: [{ association: "User", attributes: ["id", "fullName", "profilePhoto", "status"], required: true }],
+          order: [["createdAt", "ASC"]]
+        })
+      : [];
+
+  const replyCountMap: Record<number, number> = {};
+  topIds.forEach((id) => (replyCountMap[id] = 0));
+  replies.forEach((r) => {
+    if (r.parentId) replyCountMap[r.parentId] = (replyCountMap[r.parentId] || 0) + 1;
+  });
+
   const items: CommentDto[] = await Promise.all(
-    rows.map(async (c) => {
+    topLevel.map(async (c) => {
       const author = (c as any).User as User;
       const authorDto = await toAuthorDtoSigned(author);
+      const childReplies = replies.filter((r) => r.parentId === c.id);
+      const replyDtos = await Promise.all(
+        childReplies.map(async (r) => {
+          const ra = (r as any).User as User;
+          const raDto = await toAuthorDtoSigned(ra);
+          return { ...commentToDto(r, ra, currentUserId, 0), author: raDto };
+        })
+      );
       return {
-        id: c.id,
-        post_id: c.postId,
-        user_id: c.userId,
-        body: c.body,
-        created_at: c.createdAt.toISOString(),
-        author: authorDto
+        ...commentToDto(c, author, currentUserId, replyCountMap[c.id] ?? 0),
+        author: authorDto,
+        replies: replyDtos
       };
     })
   );
+
+  if (sort === "top") {
+    items.sort((a, b) => b.reply_count - a.reply_count || b.created_at.localeCompare(a.created_at));
+  }
+
   return { items, page, limit, total: count };
+}
+
+export async function updateComment(
+  userId: number,
+  postId: number,
+  commentId: number,
+  body: string
+): Promise<CommentDto> {
+  const post = await Post.findByPk(postId);
+  if (!post) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
+  await ensureCommunityVisible(post, userId);
+
+  const comment = await Comment.findOne({ where: { id: commentId, postId } });
+  if (!comment) {
+    const err = new Error("Comment not found");
+    (err as any).status = 404;
+    throw err;
+  }
+  if (comment.userId !== userId) {
+    const err = new Error("Forbidden");
+    (err as any).status = 403;
+    throw err;
+  }
+  await comment.update({ body: body.trim() });
+  const author = await User.findByPk(userId, { attributes: ["id", "fullName", "profilePhoto", "status"] });
+  const authorDto = await toAuthorDtoSigned(author!);
+  return { ...commentToDto(comment, author!, userId, 0), author: authorDto };
+}
+
+export async function deleteComment(userId: number, postId: number, commentId: number): Promise<void> {
+  const post = await Post.findByPk(postId);
+  if (!post) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
+  await ensureCommunityVisible(post, userId);
+
+  const comment = await Comment.findOne({ where: { id: commentId, postId } });
+  if (!comment) {
+    const err = new Error("Comment not found");
+    (err as any).status = 404;
+    throw err;
+  }
+  if (comment.userId !== userId) {
+    const err = new Error("Forbidden");
+    (err as any).status = 403;
+    throw err;
+  }
+  await Comment.destroy({ where: { [Op.or]: [{ id: commentId }, { parentId: commentId }] } });
+  const commentCount = await Comment.count({ where: { postId } });
+  const community = await viewerCommunity(userId);
+  emitFeedComment(community, { postId, commentCount, commentId, userId, preview: "" });
+}
+
+export async function savePost(userId: number, postId: number): Promise<{ saved: boolean }> {
+  const post = await Post.findByPk(postId);
+  if (!post) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
+  await ensureCommunityVisible(post, userId);
+
+  const existing = await SavedPost.findOne({ where: { postId, userId } });
+  if (existing) return { saved: true };
+
+  await SavedPost.create({ postId, userId } as any);
+  const community = await viewerCommunity(userId);
+  emitFeedSave(community, { postId, userId, saved: true });
+  logFeedEvent(userId, "save", postId);
+  return { saved: true };
+}
+
+export async function unsavePost(userId: number, postId: number): Promise<{ saved: boolean }> {
+  const post = await Post.findByPk(postId);
+  if (!post) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
+  await ensureCommunityVisible(post, userId);
+
+  await SavedPost.destroy({ where: { postId, userId } });
+  const community = await viewerCommunity(userId);
+  emitFeedSave(community, { postId, userId, saved: false });
+  logFeedEvent(userId, "unsave", postId);
+  return { saved: false };
+}
+
+export async function trackFeedEvent(
+  userId: number,
+  eventType: string,
+  postId?: number,
+  meta?: Record<string, unknown>
+): Promise<void> {
+  logFeedEvent(userId, eventType as any, postId ?? null, meta);
 }
 
 export async function reportPost(userId: number, postId: number, reason: string): Promise<{ id: number }> {
@@ -357,6 +557,11 @@ export const postService = {
   likePost,
   addComment,
   getComments,
+  updateComment,
+  deleteComment,
+  savePost,
+  unsavePost,
   reportPost,
+  trackFeedEvent,
   getApprovedUserIdsInCommunity
 };

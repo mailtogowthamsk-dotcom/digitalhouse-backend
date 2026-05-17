@@ -4,6 +4,7 @@ import { verifyAccessToken } from "../utils/jwt.util";
 import { User } from "../models";
 import { Message } from "../models";
 import { presenceAdd, presenceRemove, isOnline } from "./presence";
+import { setIo, communityRoom } from "./io";
 
 type AuthedSocketData = { userId: number };
 
@@ -11,6 +12,7 @@ export function initSocket(httpServer: HttpServer) {
   const io = new Server(httpServer, {
     cors: { origin: true, credentials: true }
   });
+  setIo(io);
 
   io.use(async (socket, next) => {
     try {
@@ -24,10 +26,11 @@ export function initSocket(httpServer: HttpServer) {
 
       if (!token) return next(new Error("Unauthorized"));
       const payload = verifyAccessToken(token) as { userId: number };
-      const user = await User.findByPk(payload.userId, { attributes: ["id", "status"] });
+      const user = await User.findByPk(payload.userId, { attributes: ["id", "status", "community"] });
       if (!user || user.status !== "APPROVED") return next(new Error("Unauthorized"));
 
       (socket.data as AuthedSocketData).userId = user.id;
+      (socket.data as AuthedSocketData & { community?: string | null }).community = user.community ?? null;
       return next();
     } catch {
       return next(new Error("Unauthorized"));
@@ -39,6 +42,8 @@ export function initSocket(httpServer: HttpServer) {
 
     presenceAdd(socket.id, userId);
     socket.join(`user:${userId}`);
+    const community = (socket.data as AuthedSocketData & { community?: string | null }).community ?? null;
+    socket.join(communityRoom(community));
 
     io.emit("presence:update", { userId, online: true });
 

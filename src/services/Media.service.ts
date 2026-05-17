@@ -36,9 +36,13 @@ function buildKey(module: MediaModule, userId: number, uniqueName: string): stri
 }
 
 /** Generate unique filename: timestamp + random to avoid collisions */
-function uniqueFileName(originalName: string): string {
-  const ext = path.extname(originalName) || "";
+function uniqueFileName(originalName: string, mime: string): string {
   const base = Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
+  const lower = mime.toLowerCase();
+  if ((ALLOWED_IMAGE_MIMES as Set<string>).has(lower)) {
+    return base + ".webp";
+  }
+  const ext = path.extname(originalName) || "";
   return base + (ext.toLowerCase() || ".bin");
 }
 
@@ -63,7 +67,7 @@ export async function generateUploadUrl(
   const mime = fileType.toLowerCase().trim();
   const fileTypeKind = inferFileType(mime);
   if (fileTypeKind === "image" && fileSize > IMAGE_MAX_BYTES) {
-    const err = new Error("Image size exceeds 5 MB");
+    const err = new Error("Image size exceeds 2 MB (compress before upload)");
     (err as any).status = 400;
     throw err;
   }
@@ -73,10 +77,12 @@ export async function generateUploadUrl(
     throw err;
   }
 
-  const uniqueName = uniqueFileName(fileName);
+  const uploadMime =
+    fileTypeKind === "image" && !mime.includes("webp") ? "image/webp" : mime;
+  const uniqueName = uniqueFileName(fileName, uploadMime);
   const key = buildKey(module, userId, uniqueName);
   const [uploadUrl, publicUrl] = await Promise.all([
-    getPresignedPutUrl(key, mime),
+    getPresignedPutUrl(key, uploadMime),
     Promise.resolve(getCdnPublicUrl(key))
   ]);
 
@@ -85,7 +91,9 @@ export async function generateUploadUrl(
     module,
     fileUrl: publicUrl,
     fileType: fileTypeKind,
-    status: "PENDING"
+    status: "PENDING",
+    objectKey: key,
+    processingStatus: fileTypeKind === "image" ? "pending_upload" : "ready"
   } as any);
 
   return {

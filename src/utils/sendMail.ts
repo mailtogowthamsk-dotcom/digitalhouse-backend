@@ -1,6 +1,6 @@
-import sgMail from "@sendgrid/mail";
+import type SMTPTransport from "nodemailer/lib/smtp-transport";
+import { getSmtpFrom, getSmtpTransporter } from "../config/smtp";
 
-/** HTTP API timeout — avoids hung requests if SendGrid is slow or unreachable */
 const SEND_TIMEOUT_MS = 25_000;
 
 export type SendMailResult =
@@ -14,20 +14,6 @@ export interface SendMailOptions {
   html?: string;
 }
 
-let sendGridInitialized = false;
-
-function initSendGrid(): string | null {
-  const apiKey = process.env.SENDGRID_API_KEY?.trim();
-  if (!apiKey) {
-    return "SENDGRID_API_KEY is not set";
-  }
-  if (!sendGridInitialized) {
-    sgMail.setApiKey(apiKey);
-    sendGridInitialized = true;
-  }
-  return null;
-}
-
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
     promise,
@@ -37,44 +23,41 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
-/** Normalize SendGrid / network errors into a single log-friendly string */
-function formatSendGridError(err: unknown): string {
+function formatSmtpError(err: unknown): string {
   const e = err as {
     message?: string;
-    response?: { body?: { errors?: Array<{ message?: string }> } };
+    code?: string;
+    response?: string;
+    responseCode?: number;
   };
-  const apiErrors = e.response?.body?.errors;
-  if (apiErrors?.length) {
-    return apiErrors.map((item) => item.message || "Unknown SendGrid error").join("; ");
-  }
-  return e.message || String(err);
+  const parts = [e.code, e.message, e.response].filter(Boolean);
+  return parts.length ? parts.join(" — ") : String(err);
 }
 
 /**
- * Send a single transactional email via SendGrid Web API.
- * Designed for high volume (OTP, approvals): one HTTP call per message, no SMTP connection pool.
+ * Send a single transactional email via SMTP (OTP, approvals, etc.).
  */
 export async function sendMail(options: SendMailOptions): Promise<SendMailResult> {
-  const configError = initSendGrid();
-  if (configError) {
-    console.error("[SendGrid] Configuration error:", configError);
-    return { success: false, error: configError };
+  const transportResult = getSmtpTransporter();
+  if ("error" in transportResult) {
+    console.error("[SMTP] Configuration error:", transportResult.error);
+    return { success: false, error: transportResult.error };
   }
 
-  const from = process.env.EMAIL_FROM?.trim();
+  const from = getSmtpFrom();
   if (!from) {
-    const msg = "EMAIL_FROM is not set";
-    console.error("[SendGrid] Configuration error:", msg);
+    const msg = "SMTP_FROM is not set";
+    console.error("[SMTP] Configuration error:", msg);
     return { success: false, error: msg };
   }
 
   const to = options.to.toLowerCase().trim();
 
   try {
-    const [response] = await withTimeout(
-      sgMail.send({
-        to,
+    const info = await withTimeout(
+      transportResult.transporter.sendMail({
         from,
+        to,
         subject: options.subject,
         text: options.text,
         ...(options.html ? { html: options.html } : {})
@@ -82,15 +65,17 @@ export async function sendMail(options: SendMailOptions): Promise<SendMailResult
       SEND_TIMEOUT_MS
     );
 
-    const messageId = response.headers["x-message-id"] as string | undefined;
+    const smtpInfo = info as SMTPTransport.SentMessageInfo;
+    const messageId = smtpInfo.messageId;
     return { success: true, messageId };
   } catch (err) {
-    const error = formatSendGridError(err);
-    console.error("[SendGrid] Failed to send email", {
+    const error = formatSmtpError(err);
+    console.error("[SMTP] Failed to send email", {
       to,
       subject: options.subject,
       error
     });
     return { success: false, error };
   }
+  
 }

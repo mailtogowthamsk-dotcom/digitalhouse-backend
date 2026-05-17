@@ -1,6 +1,15 @@
 import { Op } from "sequelize";
 import path from "path";
-import { User, UserProfile, PendingProfileUpdate, Post, PostLike, SavedPost } from "../models";
+import {
+  User,
+  UserProfile,
+  PendingProfileUpdate,
+  Post,
+  PostLike,
+  SavedPost,
+  Comment,
+  FeedEngagementEvent
+} from "../models";
 import { getPresignedPutUrl, getCdnPublicUrl, toSignedUrlIfR2 } from "../utils/r2Client";
 import type {
   CommunitySection,
@@ -124,6 +133,27 @@ export type ProfileActivityItemDto = {
 
 export type ProfileActivityDto = {
   items: ProfileActivityItemDto[];
+  page: number;
+  limit: number;
+  total: number;
+};
+
+export type ProfilePostItemDto = {
+  postId: number;
+  postType: string;
+  title: string;
+  description: string | null;
+  mediaUrl: string | null;
+  createdAt: string;
+  visibility: string;
+  status: string;
+  counts: { likes: number; comments: number; views: number };
+  likedByMe: boolean;
+  savedByMe: boolean;
+};
+
+export type ProfilePostsResultDto = {
+  items: ProfilePostItemDto[];
   page: number;
   limit: number;
   total: number;
@@ -442,6 +472,85 @@ export async function getProfileActivity(
   return { items, page, limit, total: count };
 }
 
+/** GET /api/profile/posts – paginated posts owned by the current user (latest first). */
+export async function getProfilePosts(
+  userId: number,
+  page: number,
+  limit: number
+): Promise<ProfilePostsResultDto> {
+  const offset = (page - 1) * limit;
+
+  const { count, rows: posts } = await Post.findAndCountAll({
+    where: { userId },
+    order: [["createdAt", "DESC"], ["id", "DESC"]],
+    limit,
+    offset
+  });
+
+  const postIds = posts.map((p) => p.id);
+  if (postIds.length === 0) {
+    return { items: [], page, limit, total: count };
+  }
+
+  const [likeCounts, commentCounts, viewCounts, myLikes, mySaves] = await Promise.all([
+    PostLike.findAll({ where: { postId: { [Op.in]: postIds } }, attributes: ["postId"], raw: true }),
+    Comment.findAll({ where: { postId: { [Op.in]: postIds } }, attributes: ["postId"], raw: true }),
+    FeedEngagementEvent.findAll({
+      where: { postId: { [Op.in]: postIds }, eventType: { [Op.in]: ["post_open", "post_impression"] } },
+      attributes: ["postId"],
+      raw: true
+    }),
+    PostLike.findAll({
+      where: { postId: { [Op.in]: postIds }, userId },
+      attributes: ["postId"],
+      raw: true
+    }),
+    SavedPost.findAll({
+      where: { postId: { [Op.in]: postIds }, userId },
+      attributes: ["postId"],
+      raw: true
+    })
+  ]);
+
+  const countMap = (rows: { postId: number }[]) => {
+    const m: Record<number, number> = {};
+    postIds.forEach((id) => (m[id] = 0));
+    rows.forEach((r) => (m[r.postId] = (m[r.postId] || 0) + 1));
+    return m;
+  };
+
+  const likesMap = countMap(likeCounts as { postId: number }[]);
+  const commentsMap = countMap(commentCounts as { postId: number }[]);
+  const viewsMap = countMap(viewCounts as { postId: number }[]);
+  const likedSet = new Set((myLikes as { postId: number }[]).map((r) => r.postId));
+  const savedSet = new Set((mySaves as { postId: number }[]).map((r) => r.postId));
+
+  const items: ProfilePostItemDto[] = await Promise.all(
+    posts.map(async (p) => {
+      const mediaUrl = await toSignedUrlIfR2(p.mediaUrl ?? null);
+      return {
+        postId: p.id,
+        postType: POST_TYPE_LABELS[p.postType] ?? p.postType,
+        title: p.title,
+        description: p.description ?? null,
+        mediaUrl,
+        createdAt: p.createdAt.toISOString(),
+        visibility: "Community",
+        status: p.postType === "JOB" && p.jobStatus === "CLOSED" ? "Closed" : "Active",
+        counts: {
+          likes: likesMap[p.id] ?? 0,
+          comments: commentsMap[p.id] ?? 0,
+          views: viewsMap[p.id] ?? 0
+        },
+        likedByMe: likedSet.has(p.id),
+        savedByMe: savedSet.has(p.id)
+      };
+    })
+  );
+
+  return { items, page, limit, total: count };
+}
+
 /**
  * PATCH /api/profile/me/sections/:section – update one section.
  * Non-restricted (basic, community, personal, family): apply immediately; do NOT block login.
@@ -585,6 +694,7 @@ export const profileService = {
   getProfile,
   getProfileStats,
   getProfileActivity,
+  getProfilePosts,
   updateProfile,
   updateProfileSection,
   getHoroscopeUploadUrl,

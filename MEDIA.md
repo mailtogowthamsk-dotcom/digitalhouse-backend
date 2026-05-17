@@ -40,12 +40,16 @@ R2_CDN_PUBLIC_URL=https://your-cdn-domain.com
 
 **Limits:**
 
-- Images: ≤ 5 MB (jpg, jpeg, png)
+- Images: ≤ 2 MB declared size after client compression (jpeg, png, webp) — see [IMAGE_OPTIMIZATION.md](./IMAGE_OPTIMIZATION.md)
 - Videos: ≤ 15 MB (mp4)
 
-**Response:** `uploadUrl` (pre-signed PUT), `publicUrl` (CDN URL to store in DB), `key`, `mediaFileId`.
+**Response:** `uploadUrl` (pre-signed PUT), `publicUrl` (staging CDN URL), `key`, `mediaFileId`.
 
-Client then `PUT` file to `uploadUrl` with `Content-Type: <fileType>` (no auth). Store `publicUrl` in post/profile.
+Client then:
+
+1. `PUT` optimized WebP to `uploadUrl` with `Content-Type: image/webp`
+2. `POST /api/media/finalize` with `{ mediaFileId }` — server creates thumb/md/full variants
+3. Store returned `publicUrl` (full variant) in post/profile
 
 ### Admin (X-Admin-Key)
 

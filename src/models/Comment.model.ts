@@ -5,6 +5,8 @@ export class Comment extends Model<InferAttributes<Comment>, InferCreationAttrib
   declare id: number;
   declare postId: number;
   declare userId: number;
+  /** Null = top-level comment; set for threaded replies */
+  declare parentId: number | null;
   declare body: string;
   declare createdAt: Date;
   declare updatedAt: Date;
@@ -15,6 +17,7 @@ Comment.init(
     id: { type: DataTypes.INTEGER.UNSIGNED, autoIncrement: true, primaryKey: true },
     postId: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false },
     userId: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false },
+    parentId: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
     body: { type: DataTypes.TEXT, allowNull: false },
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }

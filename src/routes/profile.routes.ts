@@ -26,4 +26,5 @@ profileRouter.put("/:section", asyncHandler(ProfileController.updateProfileSecti
 profileRouter.post("/me/horoscope-upload-url", asyncHandler(ProfileController.getHoroscopeUploadUrl));
 profileRouter.post("/me/profile-photo-upload-url", asyncHandler(ProfileController.getProfilePhotoUploadUrl));
 profileRouter.get("/stats", asyncHandler(ProfileController.getStats));
+profileRouter.get("/posts", asyncHandler(ProfileController.getPosts));
 profileRouter.get("/activity", asyncHandler(ProfileController.getActivity));

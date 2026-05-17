@@ -3,6 +3,7 @@ import { profileService } from "../services/Profile.service";
 import { success, error } from "../utils/response";
 import {
   validateProfileActivityQuery,
+  validateProfilePostsQuery,
   validateUpdateProfileBody,
   validateSectionParam,
   validateSectionPayload,
@@ -45,6 +46,17 @@ export async function updateProfile(req: AuthRequest, res: Response) {
 export async function getStats(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const data = await profileService.getProfileStats(req.user.id);
+  return success(res, data);
+}
+
+/**
+ * GET /api/profile/posts?page=1&limit=12
+ * Paginated posts created by the logged-in user (latest first).
+ */
+export async function getPosts(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const query = validateProfilePostsQuery(req.query);
+  const data = await profileService.getProfilePosts(req.user.id, query.page, query.limit);
   return success(res, data);
 }
 

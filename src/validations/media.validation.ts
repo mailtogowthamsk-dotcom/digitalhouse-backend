@@ -1,9 +1,15 @@
 import { z } from "zod";
 import { MEDIA_MODULES } from "../models/MediaFile.model";
 
-const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/jpg", "image/png"] as const;
+const ALLOWED_IMAGE_TYPES = [
+  "image/jpeg",
+  "image/jpg",
+  "image/png",
+  "image/webp"
+] as const;
 const ALLOWED_VIDEO_TYPES = ["video/mp4"] as const;
-const IMAGE_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+/** Client should upload pre-compressed images; server allows up to 2 MB declared size. */
+const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 15 * 1024 * 1024; // 15 MB
 
 const mediaModuleSchema = z.enum(MEDIA_MODULES as unknown as [string, ...string[]]);
@@ -31,7 +37,8 @@ export const uploadUrlSchema = z
       return false;
     },
     {
-      message: "Invalid fileType or fileSize: images ≤ 5 MB (jpg, jpeg, png), videos ≤ 15 MB (mp4)"
+      message:
+        "Invalid fileType or fileSize: images ≤ 2 MB (jpeg, png, webp), videos ≤ 15 MB (mp4)"
     }
   );
 
@@ -39,6 +46,16 @@ export type UploadUrlBody = z.infer<typeof uploadUrlSchema>;
 
 export function validateUploadUrlBody(body: unknown): UploadUrlBody {
   return uploadUrlSchema.parse(body);
+}
+
+const finalizeMediaSchema = z
+  .object({
+    mediaFileId: z.number().int().positive()
+  })
+  .strict();
+
+export function validateFinalizeMediaBody(body: unknown): { mediaFileId: number } {
+  return finalizeMediaSchema.parse(body);
 }
 
 export const ALLOWED_IMAGE_MIMES = new Set(ALLOWED_IMAGE_TYPES);

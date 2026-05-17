@@ -26,8 +26,7 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
     }
   }
 
-  // const code = generateOtp();
-  const code = "111111";
+  const code = generateOtp();
   const otpHash = hashEmailOtp(email, code);
   const expiresAt = new Date(now.getTime() + OTP_EXPIRES_MIN * 60 * 1000);
 
@@ -44,14 +43,21 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
     console.log("[OTP] DEV — use this code for", email, "→", code);
   }
 
-  // Await email so we can tell the client if sending failed (e.g. SendGrid misconfigured).
+  // Await email so we can tell the client if sending failed (e.g. SMTP misconfigured).
   try {
     await sendOtpEmail(email, code, OTP_EXPIRES_MIN);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[OTP] Failed to send email to", email, msg);
-    if (msg.includes("timeout") || msg.includes("SENDGRID") || msg.includes("EMAIL_FROM")) {
-      console.error("[OTP] Check SendGrid: SENDGRID_API_KEY, EMAIL_FROM (verified sender in SendGrid).");
+    if (
+      msg.includes("timeout") ||
+      msg.includes("SMTP") ||
+      msg.includes("ECONNREFUSED") ||
+      msg.includes("EAUTH")
+    ) {
+      console.error(
+        "[OTP] Check SMTP: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_ENCRYPTION (tls|ssl|none)."
+      );
     }
     return {
       ok: false,

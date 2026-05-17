@@ -12,6 +12,7 @@ import { PostLike } from "./PostLike.model";
 import { Comment } from "./Comment.model";
 import { SavedPost } from "./SavedPost.model";
 import { PostReport } from "./PostReport.model";
+import { FeedEngagementEvent } from "./FeedEngagementEvent.model";
 import { MediaFile } from "./MediaFile.model";
 
 // Auth / options
@@ -41,6 +42,10 @@ Post.hasMany(Comment, { foreignKey: "postId" });
 Comment.belongsTo(Post, { foreignKey: "postId" });
 User.hasMany(Comment, { foreignKey: "userId" });
 Comment.belongsTo(User, { foreignKey: "userId" });
+Comment.belongsTo(Comment, { as: "parent", foreignKey: "parentId" });
+Comment.hasMany(Comment, { as: "replies", foreignKey: "parentId" });
+User.hasMany(FeedEngagementEvent, { foreignKey: "userId" });
+FeedEngagementEvent.belongsTo(User, { foreignKey: "userId" });
 Post.hasMany(SavedPost, { foreignKey: "postId" });
 SavedPost.belongsTo(Post, { foreignKey: "postId" });
 User.hasMany(SavedPost, { foreignKey: "userId" });
@@ -73,5 +78,6 @@ export {
   Comment,
   SavedPost,
   PostReport,
-  MediaFile
+  MediaFile,
+  FeedEngagementEvent
 };

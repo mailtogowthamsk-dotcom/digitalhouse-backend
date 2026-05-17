@@ -41,6 +41,10 @@ export type FeedItemDto = {
   createdAt: string;
   author: FeedAuthorDto;
   counts: { likes: number; comments: number };
+  likedByMe?: boolean;
+  savedByMe?: boolean;
+  engagementScore?: number;
+  isTrending?: boolean;
 };
 
 export type FeedResultDto = {
@@ -155,83 +159,18 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
   };
 }
 
-/** Paginated community feed; order by latest; only posts from approved users in same community. */
-export async function getFeed(page: number, limit: number, currentUserId: number): Promise<FeedResultDto> {
-  const offset = (page - 1) * limit;
-  const me = await User.findByPk(currentUserId, { attributes: ["community"] });
-  const community = me?.community ?? null;
-  const approvedUserIds = await User.findAll({
-    where: { ...approvedUserScope, community },
-    attributes: ["id"]
-  }).then(users => users.map(u => u.id));
-
-  if (approvedUserIds.length === 0) {
-    return { items: [], page, limit, total: 0 };
-  }
-
-  const { count, rows: posts } = await Post.findAndCountAll({
-    where: { userId: { [Op.in]: approvedUserIds } },
-    include: [{ association: "User", attributes: ["id", "fullName", "profilePhoto", "status"], required: true }],
-    order: [["createdAt", "DESC"]],
-    limit,
-    offset
-  });
-
-  const postIds = posts.map(p => p.id);
-  const [likeCounts, commentCounts] = await Promise.all([
-    PostLike.findAll({
-      where: { postId: { [Op.in]: postIds } },
-      attributes: ["postId"],
-      raw: true
-    }).then(rows => {
-      const map: Record<number, number> = {};
-      postIds.forEach(id => (map[id] = 0));
-      rows.forEach((r: { postId: number }) => (map[r.postId] = (map[r.postId] || 0) + 1));
-      return map;
-    }),
-    Comment.findAll({
-      where: { postId: { [Op.in]: postIds } },
-      attributes: ["postId"],
-      raw: true
-    }).then(rows => {
-      const map: Record<number, number> = {};
-      postIds.forEach(id => (map[id] = 0));
-      rows.forEach((r: { postId: number }) => (map[r.postId] = (map[r.postId] || 0) + 1));
-      return map;
-    })
-  ]);
-
-  const itemsWithMedia = await Promise.all(
-    posts.map(async (p) => {
-      const author = (p as any).User;
-      const [mediaUrl, profileImage] = await Promise.all([
-        toSignedUrlIfR2(p.mediaUrl ?? null),
-        author ? toSignedUrlIfR2(author.profilePhoto ?? null) : Promise.resolve(null)
-      ]);
-      return {
-        postId: p.id,
-        postType: p.postType,
-        title: p.title,
-        description: p.description ?? null,
-        mediaUrl,
-        createdAt: p.createdAt.toISOString(),
-        author: author
-          ? { ...toFeedAuthor(author), profileImage: profileImage ?? author.profilePhoto ?? null }
-          : { name: "Unknown", profileImage: null, verified: false },
-        counts: {
-          likes: likeCounts[p.id] ?? 0,
-          comments: commentCounts[p.id] ?? 0
-        }
-      };
-    })
+/** Delegates to Feed.service (ranking, cursor, liked/saved flags). */
+export async function getFeed(
+  page: number,
+  limit: number,
+  currentUserId: number,
+  options?: { cursor?: number | null; sort?: "recent" | "popular" }
+): Promise<FeedResultDto & { nextCursor?: number | null; sort?: string }> {
+  const { feedService } = await import("./Feed.service");
+  return feedService.getFeed(
+    { page, limit, cursor: options?.cursor, sort: options?.sort },
+    currentUserId
   );
-
-  return {
-    items: itemsWithMedia,
-    page,
-    limit,
-    total: count
-  };
 }
 
 /** Pinned announcements, upcoming meetups, urgent help requests (approved users only). */

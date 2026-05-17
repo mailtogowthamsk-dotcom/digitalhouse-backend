@@ -16,11 +16,24 @@ const postLimiter = rateLimit({
 
 postRouter.use(postLimiter);
 
+postRouter.post("/events", authMiddleware, asyncHandler(PostController.trackEvent));
 postRouter.post("/", authMiddleware, asyncHandler(PostController.createPost));
 postRouter.get("/:postId", authMiddleware, asyncHandler(PostController.getPost));
 postRouter.put("/:postId", authMiddleware, asyncHandler(PostController.updatePost));
 postRouter.delete("/:postId", authMiddleware, asyncHandler(PostController.deletePost));
 postRouter.post("/:postId/like", authMiddleware, asyncHandler(PostController.likePost));
+postRouter.post("/:postId/save", authMiddleware, asyncHandler(PostController.savePost));
+postRouter.delete("/:postId/save", authMiddleware, asyncHandler(PostController.unsavePost));
 postRouter.post("/:postId/comments", authMiddleware, asyncHandler(PostController.addComment));
 postRouter.get("/:postId/comments", authMiddleware, asyncHandler(PostController.getComments));
+postRouter.patch(
+  "/:postId/comments/:commentId",
+  authMiddleware,
+  asyncHandler(PostController.updateComment)
+);
+postRouter.delete(
+  "/:postId/comments/:commentId",
+  authMiddleware,
+  asyncHandler(PostController.deleteComment)
+);
 postRouter.post("/:postId/report", authMiddleware, asyncHandler(PostController.reportPost));

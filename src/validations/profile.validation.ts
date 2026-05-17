@@ -16,6 +16,17 @@ export function validateProfileActivityQuery(query: unknown): ProfileActivityQue
   return paginationSchema.parse(query);
 }
 
+const profilePostsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(12)
+});
+
+export type ProfilePostsQuery = z.infer<typeof profilePostsQuerySchema>;
+
+export function validateProfilePostsQuery(query: unknown): ProfilePostsQuery {
+  return profilePostsQuerySchema.parse(query);
+}
+
 // ---------------------------------------------------------------------------
 // PUT /api/profile/me – editable fields only (no role/status/identity)
 // ---------------------------------------------------------------------------

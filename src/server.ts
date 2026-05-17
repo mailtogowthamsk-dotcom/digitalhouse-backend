@@ -41,7 +41,10 @@ httpServer.listen(PORT, "0.0.0.0", () => {
 async function initDb() {
   try {
     await sequelize.authenticate();
-    await sequelize.sync({ alter: true });
+    // Avoid alter:true on every boot — it duplicates indexes on MySQL (max 64 keys per table).
+    // Set DB_SYNC_ALTER=true only when you intentionally want Sequelize to ALTER tables.
+    const syncAlter = process.env.DB_SYNC_ALTER === "true";
+    await sequelize.sync(syncAlter ? { alter: true } : {});
     await seedOptionsIfEmpty();
     setDbReady(true);
     console.log("Database ready.");
