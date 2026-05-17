@@ -19,6 +19,8 @@ R2_BUCKET_NAME=digital-house
 R2_CDN_PUBLIC_URL=https://your-cdn-domain.com
 ```
 
+**Server deployment:** For profile/post images to **display** in the app, the server must have the same R2 env vars set. Otherwise signed URLs cannot be generated and images will not load. Copy `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`, `R2_CDN_PUBLIC_URL` to the server environment and restart the backend. Check server logs for `[R2] Signed URL failed` if images still do not load.
+
 - Create an R2 bucket (e.g. `digital-house`), keep it **private**.
 - Create API tokens with Object Read & Write (backend only; never expose to client).
 - For CDN: either attach a custom domain to the bucket, or use R2’s public bucket URL.
@@ -55,7 +57,8 @@ Client then `PUT` file to `uploadUrl` with `Content-Type: <fileType>` (no auth).
 
 ```
 digital-house/
-  profile/{userId}/
+  profile-photos/{userId}/   (profile pictures; also used by media/upload-url when module=profile)
+  profile/{userId}/          (e.g. horoscope under profile/{userId}/horoscope/)
   posts/
     announcements/ (via module "posts")
     jobs/

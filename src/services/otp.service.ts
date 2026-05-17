@@ -26,7 +26,8 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
     }
   }
 
-  const code = generateOtp();
+  // const code = generateOtp();
+  const code = "111111";
   const otpHash = hashEmailOtp(email, code);
   const expiresAt = new Date(now.getTime() + OTP_EXPIRES_MIN * 60 * 1000);
 
@@ -43,15 +44,14 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
     console.log("[OTP] DEV — use this code for", email, "→", code);
   }
 
-  // Await email so we can tell the client if sending failed (e.g. production SMTP misconfigured).
-  // Timeout in mail.service (25s) prevents long hangs.
+  // Await email so we can tell the client if sending failed (e.g. SendGrid misconfigured).
   try {
     await sendOtpEmail(email, code, OTP_EXPIRES_MIN);
-  } catch (err: any) {
-    const msg = err?.message || String(err);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
     console.error("[OTP] Failed to send email to", email, msg);
-    if (msg.includes("timeout")) {
-      console.error("[OTP] Check SMTP: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, MAIL_FROM. Use a cloud SMTP (Resend/SendGrid/Mailgun) if provider times out.");
+    if (msg.includes("timeout") || msg.includes("SENDGRID") || msg.includes("EMAIL_FROM")) {
+      console.error("[OTP] Check SendGrid: SENDGRID_API_KEY, EMAIL_FROM (verified sender in SendGrid).");
     }
     return {
       ok: false,

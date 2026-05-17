@@ -1,26 +1,22 @@
-import { mailer } from "../config/mail";
+import { sendMail } from "../utils/sendMail";
 
-const MAIL_SEND_TIMEOUT_MS = 25000;
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`Mail send timeout after ${ms}ms`)), ms)
-    )
-  ]);
+async function sendOrThrow(
+  to: string,
+  subject: string,
+  text: string
+): Promise<void> {
+  const result = await sendMail({ to, subject, text });
+  if (!result.success) {
+    throw new Error(result.error);
+  }
 }
 
-/** Send OTP email to user (community-friendly copy). Timeout so slow SMTP doesn't hang. */
+/** Send OTP email to user (community-friendly copy). */
 export async function sendOtpEmail(to: string, otp: string, expiresMinutes: number): Promise<void> {
-  await withTimeout(
-    mailer.sendMail({
-      from: process.env.MAIL_FROM,
-      to: to.toLowerCase().trim(),
-      subject: "Your Digital House verification code",
-      text: `Your verification code is ${otp}. It expires in ${expiresMinutes} minutes. Welcome to the community!`
-    }),
-    MAIL_SEND_TIMEOUT_MS
+  await sendOrThrow(
+    to,
+    "Your Digital House verification code",
+    `Your verification code is ${otp}. It expires in ${expiresMinutes} minutes. Welcome to the community!`
   );
 }
 
@@ -31,15 +27,12 @@ export async function sendApprovalEmail(
   remarks?: string | null
 ): Promise<void> {
   const name = fullName ? ` ${fullName}` : "";
-  const remarkLine = remarks?.trim()
-    ? `\n\nRemarks: ${remarks.trim()}`
-    : "";
-  await mailer.sendMail({
-    from: process.env.MAIL_FROM,
-    to: to.toLowerCase().trim(),
-    subject: "Your Digital House account has been approved",
-    text: `Hi${name},\n\nYour Digital House account has been approved. You can now sign in with your email and use the one-time code sent to your inbox. Welcome to the community!${remarkLine}\n\n— Digital House`
-  });
+  const remarkLine = remarks?.trim() ? `\n\nRemarks: ${remarks.trim()}` : "";
+  await sendOrThrow(
+    to,
+    "Your Digital House account has been approved",
+    `Hi${name},\n\nYour Digital House account has been approved. You can now sign in with your email and use the one-time code sent to your inbox. Welcome to the community!${remarkLine}\n\n— Digital House`
+  );
 }
 
 /** Send rejection notification to user after admin rejects their account */
@@ -52,10 +45,9 @@ export async function sendRejectionEmail(
   const remarkLine = remarks?.trim()
     ? `\n\nReason: ${remarks.trim()}`
     : "\n\nPlease contact support if you have questions.";
-  await mailer.sendMail({
-    from: process.env.MAIL_FROM,
-    to: to.toLowerCase().trim(),
-    subject: "Your Digital House account was not approved",
-    text: `Hi${name},\n\nAfter review, your Digital House account was not approved at this time.${remarkLine}\n\n— Digital House`
-  });
+  await sendOrThrow(
+    to,
+    "Your Digital House account was not approved",
+    `Hi${name},\n\nAfter review, your Digital House account was not approved at this time.${remarkLine}\n\n— Digital House`
+  );
 }

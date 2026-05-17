@@ -7,6 +7,8 @@ import { profileRouter } from "./profile.routes";
 import { postRouter } from "./post.routes";
 import { mediaRouter } from "./media.routes";
 import { landingRouter } from "./landing.routes";
+import { messagesRouter } from "./messages.routes";
+import { usersRouter } from "./users.routes";
 
 export const apiRouter = Router();
 
@@ -17,4 +19,6 @@ apiRouter.use("/home", homeRouter);
 apiRouter.use("/profile", profileRouter);
 apiRouter.use("/posts", postRouter);
 apiRouter.use("/media", mediaRouter);
+apiRouter.use("/messages", messagesRouter);
+apiRouter.use("/users", usersRouter);
 apiRouter.use("/landing", landingRouter);

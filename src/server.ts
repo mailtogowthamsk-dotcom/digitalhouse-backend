@@ -1,9 +1,11 @@
 import "./config/env";
 import os from "os";
+import http from "http";
 import { app } from "./app";
 import { sequelize } from "./config/db";
 import { seedOptionsIfEmpty } from "./seed/options.seed";
 import { setDbReady, setDbFailed } from "./state";
+import { initSocket } from "./realtime/socket";
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -21,7 +23,10 @@ function getLocalIps(): string[] {
 
 // Listen immediately so Railway gets a response (avoids "Application Failed to respond").
 // DB init runs in background; API returns 503 until ready.
-app.listen(PORT, "0.0.0.0", () => {
+const httpServer = http.createServer(app);
+initSocket(httpServer);
+
+httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`Digital House API listening on http://0.0.0.0:${PORT}`);
   const localIps = getLocalIps();
   if (localIps.length > 0) {
@@ -36,7 +41,7 @@ app.listen(PORT, "0.0.0.0", () => {
 async function initDb() {
   try {
     await sequelize.authenticate();
-    await sequelize.sync();
+    await sequelize.sync({ alter: true });
     await seedOptionsIfEmpty();
     setDbReady(true);
     console.log("Database ready.");
