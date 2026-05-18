@@ -8,13 +8,19 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     return res.status(400).json({ ok: false, message: msg });
   }
   const message = err instanceof Error ? err.message : "Server error";
-  const status =
-    message === "Unauthorized" ? 401
-    : message === "User not found" ? 404
-    : (err as any)?.status === 404 ? 404
-    : (err as any)?.status === 403 ? 403
-    : 400;
-  const statusCode = status >= 400 && status < 600 ? status : 500;
+  const explicit = (err as { status?: number })?.status;
+  const statusCode =
+    explicit === 401 || message === "Unauthorized"
+      ? 401
+      : explicit === 404 || message === "User not found"
+        ? 404
+        : explicit === 403
+          ? 403
+          : explicit === 400
+            ? 400
+            : explicit != null && explicit >= 400 && explicit < 600
+              ? explicit
+              : 500;
   return res.status(statusCode).json({ ok: false, message });
 }
 

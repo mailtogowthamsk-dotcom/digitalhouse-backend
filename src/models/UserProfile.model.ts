@@ -26,8 +26,33 @@ export type PersonalSection = {
 
 export type MatrimonySection = {
   matrimonyProfileActive?: boolean | null;
-  lookingFor?: "SELF" | "SON" | "DAUGHTER" | null;
+  lookingFor?: "SELF" | "SON" | "DAUGHTER" | "BROTHER" | "SISTER" | null;
+  partnerGenderPreference?: "MALE" | "FEMALE" | null;
+  /** Bride/groom matrimony photo — NOT the social account profile photo */
+  candidatePhotoUrl?: string | null;
+  /** @deprecated Legacy alias; synced with candidatePhotoUrl */
+  profilePhotoUrl?: string | null;
+  /** SELF only: user opted to reuse account profile photo for matrimony */
+  useAccountProfilePhoto?: boolean | null;
+  candidatePhotoStatus?: "PENDING_REVIEW" | "APPROVED" | "REJECTED" | "REUPLOAD_REQUESTED" | null;
+  candidatePhotos?: Array<{
+    id: string;
+    url: string;
+    status: "PENDING_REVIEW" | "APPROVED" | "REJECTED" | "REUPLOAD_REQUESTED";
+    isPrimary?: boolean;
+    adminRemarks?: string | null;
+  }> | null;
+  height?: string | null;
+  complexion?: string | null;
+  motherTongue?: string | null;
+  aboutMe?: string | null;
+  gotra?: string | null;
+  /** Kulam at time of approval (from community section) */
+  kulamSnapshot?: string | null;
   education?: string | null;
+  occupation?: string | null;
+  employer?: string | null;
+  annualIncome?: string | null;
   maritalStatus?: string | null;
   rashi?: string | null;
   nakshatram?: string | null;
@@ -37,8 +62,16 @@ export type MatrimonySection = {
   motherName?: string | null;
   fatherOccupation?: string | null;
   numberOfSiblings?: number | null;
+  brothersCount?: number | null;
+  sistersCount?: number | null;
+  partnerAgeMin?: number | null;
+  partnerAgeMax?: number | null;
+  preferredDistrictIds?: number[] | null;
+  preferredKulamIds?: number[] | null;
   partnerPreferences?: string | null;
   horoscopeDocumentUrl?: string | null;
+  /** Set by admin suspend action */
+  matrimonySuspended?: boolean | null;
 };
 
 export type BusinessSection = {

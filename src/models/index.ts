@@ -14,14 +14,20 @@ import { SavedPost } from "./SavedPost.model";
 import { PostReport } from "./PostReport.model";
 import { FeedEngagementEvent } from "./FeedEngagementEvent.model";
 import { MediaFile } from "./MediaFile.model";
+import { MatrimonyRequestMeta } from "./MatrimonyRequestMeta.model";
+import { MatrimonyAdminNote } from "./MatrimonyAdminNote.model";
+import { MatrimonyReviewAudit } from "./MatrimonyReviewAudit.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
 Otp.belongsTo(User, { foreignKey: "userId" });
 User.hasOne(UserProfile, { foreignKey: "userId" });
 UserProfile.belongsTo(User, { foreignKey: "userId" });
-User.hasMany(PendingProfileUpdate, { foreignKey: "userId" });
-PendingProfileUpdate.belongsTo(User, { foreignKey: "userId" });
+User.hasMany(PendingProfileUpdate, { foreignKey: "userId", as: "PendingProfileUpdates" });
+PendingProfileUpdate.belongsTo(User, { foreignKey: "userId", as: "User" });
+MatrimonyRequestMeta.belongsTo(PendingProfileUpdate, { foreignKey: "pendingUpdateId" });
+MatrimonyAdminNote.belongsTo(PendingProfileUpdate, { foreignKey: "pendingUpdateId" });
+MatrimonyReviewAudit.belongsTo(PendingProfileUpdate, { foreignKey: "pendingUpdateId" });
 User.hasMany(AdminVerification, { foreignKey: "userId" });
 AdminVerification.belongsTo(User, { foreignKey: "userId" });
 
@@ -79,5 +85,8 @@ export {
   SavedPost,
   PostReport,
   MediaFile,
-  FeedEngagementEvent
+  FeedEngagementEvent,
+  MatrimonyRequestMeta,
+  MatrimonyAdminNote,
+  MatrimonyReviewAudit
 };

@@ -8,6 +8,13 @@ const DEFAULT_LOCATIONS = [
   "Salem",
   "Tirunelveli",
   "Erode",
+  "Dharmapuri",
+  "Namakkal",
+  "Karur",
+  "Thanjavur",
+  "Tiruppur",
+  "Vellore",
+  "Kanchipuram",
   "Other"
 ];
 

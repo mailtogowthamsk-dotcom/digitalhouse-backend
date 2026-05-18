@@ -167,7 +167,43 @@ export type ProfilePostsResultDto = {
 export const SECTION_ALLOWED_KEYS: Record<string, Set<string>> = {
   community: new Set(["kulam", "kulaDeivam", "nativeVillage", "nativeTaluk"]),
   personal: new Set(["currentLocation", "occupation", "instagram", "facebook", "linkedin", "hobbies", "fatherName", "maritalStatus"]),
-  matrimony: new Set(["matrimonyProfileActive", "lookingFor", "education", "maritalStatus", "rashi", "nakshatram", "dosham", "familyType", "familyStatus", "motherName", "fatherOccupation", "numberOfSiblings", "partnerPreferences", "horoscopeDocumentUrl"]),
+  matrimony: new Set([
+    "matrimonyProfileActive",
+    "lookingFor",
+    "partnerGenderPreference",
+    "candidatePhotoUrl",
+    "profilePhotoUrl",
+    "useAccountProfilePhoto",
+    "candidatePhotoStatus",
+    "candidatePhotos",
+    "height",
+    "complexion",
+    "motherTongue",
+    "aboutMe",
+    "gotra",
+    "kulamSnapshot",
+    "education",
+    "occupation",
+    "employer",
+    "annualIncome",
+    "maritalStatus",
+    "rashi",
+    "nakshatram",
+    "dosham",
+    "familyType",
+    "familyStatus",
+    "motherName",
+    "fatherOccupation",
+    "numberOfSiblings",
+    "brothersCount",
+    "sistersCount",
+    "partnerAgeMin",
+    "partnerAgeMax",
+    "preferredDistrictIds",
+    "preferredKulamIds",
+    "partnerPreferences",
+    "horoscopeDocumentUrl"
+  ]),
   business: new Set(["businessProfileActive", "businessName", "businessType", "businessDescription", "businessAddress", "businessPhone", "businessWebsite"]),
   family: new Set(["familyMemberId1", "familyMemberId2", "familyMemberId3", "familyMemberId4", "familyMemberId5"])
 };
@@ -262,6 +298,8 @@ function buildSectionsAndCompletion(
 
 /** Sections that require admin approval before going live. Others apply immediately. */
 export const RESTRICTED_PROFILE_SECTIONS = ["matrimony", "business"] as const;
+
+const PENDING_SUBMITTED_FLAG = "_submittedForReview";
 
 /** GET /api/profile/me – full profile (masked email/mobile) + stats + sections + completion + pending status. */
 export async function getProfile(userId: number): Promise<ProfileMeResponse> {
@@ -360,7 +398,9 @@ export async function updateProfile(userId: number, payload: ProfileUpdatePayloa
   if (!user) throw new Error("User not found");
 
   const updates: Record<string, unknown> = {};
-  if (payload.profile_image !== undefined) updates.profilePhoto = payload.profile_image?.trim() || null;
+  if (payload.profile_image !== undefined) {
+    updates.profilePhoto = payload.profile_image?.trim() || null;
+  }
   if (payload.city !== undefined) updates.city = payload.city?.trim() || null;
   if (payload.district !== undefined) updates.district = payload.district?.trim() || null;
   if (payload.education !== undefined) updates.education = payload.education?.trim() || null;
@@ -371,6 +411,10 @@ export async function updateProfile(userId: number, payload: ProfileUpdatePayloa
 
   if (Object.keys(updates).length > 0) {
     await user.update(updates as any);
+    if (payload.profile_image !== undefined) {
+      const { onUserProfilePhotoUpdated } = await import("./Matrimony.service");
+      await onUserProfilePhotoUpdated(userId, updates.profilePhoto as string | null);
+    }
   }
 
   return getProfile(userId);
@@ -573,10 +617,14 @@ export async function updateProfileSection(
       where: { userId, section: section.toUpperCase() as "MATRIMONY" | "BUSINESS", status: "PENDING" }
     });
     const existingData = normalizeJsonColumn(existing?.data, allowedKeys) ?? {};
-    const merged = { ...existingData, ...payload };
+    const merged = {
+      ...existingData,
+      ...payload,
+      ...(section === "matrimony" ? { [PENDING_SUBMITTED_FLAG]: true } : {})
+    };
     const cleaned = Object.fromEntries(
       Object.entries(merged)
-        .filter(([k, v]) => v !== undefined && allowedKeys.has(k))
+        .filter(([k, v]) => v !== undefined && (allowedKeys.has(k) || k === PENDING_SUBMITTED_FLAG))
     ) as Record<string, unknown>;
     if (existing) {
       await existing.update({ data: cleaned, submittedAt: new Date(), updatedAt: new Date() } as any);
@@ -592,6 +640,10 @@ export async function updateProfileSection(
         createdAt: new Date(),
         updatedAt: new Date()
       } as any);
+    }
+    if (section === "matrimony" && payload.horoscopeDocumentUrl !== undefined) {
+      const { queueMatrimonyReReviewIfNeeded } = await import("./Matrimony.service");
+      await queueMatrimonyReReviewIfNeeded(userId, ["horoscopeDocumentUrl"]);
     }
     return getProfile(userId);
   }

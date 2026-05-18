@@ -9,6 +9,7 @@ import { mediaRouter } from "./media.routes";
 import { landingRouter } from "./landing.routes";
 import { messagesRouter } from "./messages.routes";
 import { usersRouter } from "./users.routes";
+import { matrimonyRouter } from "./matrimony.routes";
 
 export const apiRouter = Router();
 
@@ -21,4 +22,5 @@ apiRouter.use("/posts", postRouter);
 apiRouter.use("/media", mediaRouter);
 apiRouter.use("/messages", messagesRouter);
 apiRouter.use("/users", usersRouter);
+apiRouter.use("/matrimony", matrimonyRouter);
 apiRouter.use("/landing", landingRouter);

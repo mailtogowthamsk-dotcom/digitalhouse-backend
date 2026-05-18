@@ -87,10 +87,42 @@ const personalSectionSchema = z.object({
   maritalStatus: z.string().trim().max(40).nullable().optional()
 }).strict();
 
+/** R2 presigned URLs can exceed 500 chars; store full URL in JSON */
+const matrimonyMediaUrl = z.string().trim().max(2048).nullable().optional();
+
 const matrimonySectionSchema = z.object({
   matrimonyProfileActive: z.boolean().nullable().optional(),
-  lookingFor: z.enum(["SELF", "SON", "DAUGHTER"]).nullable().optional(),
+  lookingFor: z.enum(["SELF", "SON", "DAUGHTER", "BROTHER", "SISTER"]).nullable().optional(),
+  partnerGenderPreference: z.enum(["MALE", "FEMALE"]).nullable().optional(),
+  candidatePhotoUrl: matrimonyMediaUrl,
+  profilePhotoUrl: matrimonyMediaUrl,
+  useAccountProfilePhoto: z.boolean().nullable().optional(),
+  candidatePhotoStatus: z
+    .enum(["PENDING_REVIEW", "APPROVED", "REJECTED", "REUPLOAD_REQUESTED"])
+    .nullable()
+    .optional(),
+  candidatePhotos: z
+    .array(
+      z.object({
+        id: z.string(),
+        url: matrimonyMediaUrl,
+        status: z.enum(["PENDING_REVIEW", "APPROVED", "REJECTED", "REUPLOAD_REQUESTED"]),
+        isPrimary: z.boolean().optional(),
+        adminRemarks: z.string().nullable().optional()
+      })
+    )
+    .nullable()
+    .optional(),
+  height: z.string().trim().max(20).nullable().optional(),
+  complexion: z.string().trim().max(40).nullable().optional(),
+  motherTongue: z.string().trim().max(40).nullable().optional(),
+  aboutMe: z.string().trim().max(300).nullable().optional(),
+  gotra: z.string().trim().max(80).nullable().optional(),
+  kulamSnapshot: z.string().trim().max(80).nullable().optional(),
   education: z.string().trim().max(120).nullable().optional(),
+  occupation: z.string().trim().max(80).nullable().optional(),
+  employer: z.string().trim().max(120).nullable().optional(),
+  annualIncome: z.string().trim().max(40).nullable().optional(),
   maritalStatus: z.string().trim().max(40).nullable().optional(),
   rashi: z.string().trim().max(40).nullable().optional(),
   nakshatram: z.string().trim().max(40).nullable().optional(),
@@ -100,8 +132,14 @@ const matrimonySectionSchema = z.object({
   motherName: z.string().trim().max(120).nullable().optional(),
   fatherOccupation: z.string().trim().max(80).nullable().optional(),
   numberOfSiblings: z.number().int().min(0).nullable().optional(),
+  brothersCount: z.number().int().min(0).nullable().optional(),
+  sistersCount: z.number().int().min(0).nullable().optional(),
+  partnerAgeMin: z.number().int().min(18).max(80).nullable().optional(),
+  partnerAgeMax: z.number().int().min(18).max(80).nullable().optional(),
+  preferredDistrictIds: z.array(z.number().int().positive()).nullable().optional(),
+  preferredKulamIds: z.array(z.number().int().positive()).nullable().optional(),
   partnerPreferences: z.string().trim().max(2000).nullable().optional(),
-  horoscopeDocumentUrl: z.string().trim().max(500).nullable().optional()
+  horoscopeDocumentUrl: matrimonyMediaUrl
 }).strict();
 
 const businessSectionSchema = z.object({

@@ -3,6 +3,26 @@ import { sendApprovalEmail, sendRejectionEmail } from "./mail.service";
 import type { MatrimonySection, BusinessSection } from "../models/UserProfile.model";
 import { signAdminToken } from "../utils/jwt.util";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
+import { toSignedUrlIfR2 } from "../utils/r2Client";
+
+const MATRIMONY_MEDIA_URL_KEYS = ["candidatePhotoUrl", "profilePhotoUrl", "horoscopeDocumentUrl"] as const;
+
+/** R2 bucket is private; admin UI needs time-limited signed GET URLs to view uploads. */
+async function signMatrimonyMediaUrls(
+  data: Record<string, unknown> | null
+): Promise<Record<string, unknown> | null> {
+  if (!data) return null;
+  const out = { ...data };
+  await Promise.all(
+    MATRIMONY_MEDIA_URL_KEYS.map(async (key) => {
+      const v = out[key];
+      if (typeof v === "string" && v.trim()) {
+        out[key] = (await toSignedUrlIfR2(v)) ?? v;
+      }
+    })
+  );
+  return out;
+}
 
 const PENDING = "PENDING";
 
@@ -159,6 +179,8 @@ export type PendingProfileUpdateDto = {
   adminRemarks: string | null;
   /** Current approved data in user_profiles (for compare) */
   currentApproved: Record<string, unknown> | null;
+  /** False when user saved draft only (not pressed Submit in app) */
+  submittedForReview?: boolean;
 };
 
 /** List pending profile updates (Matrimony & Business) for admin review */
@@ -177,30 +199,46 @@ export async function listPendingProfileUpdates(): Promise<PendingProfileUpdateD
     BUSINESS: SECTION_ALLOWED_KEYS.business
   };
 
-  return list.map((row) => {
-    const user = (row as any).User as User;
-    const profile = profileByUser.get(row.userId);
-    const allowedKeys = allowedKeysBySection[row.section];
-    const currentApprovedRaw =
-      row.section === "MATRIMONY"
-        ? profile?.matrimony
-        : profile?.business;
-    const currentApproved = normalizeJsonColumn(currentApprovedRaw, allowedKeys) as Record<string, unknown> | null;
-    const data = normalizeJsonColumn(row.data, allowedKeys) ?? {};
-    return {
-      id: row.id,
-      userId: row.userId,
-      userEmail: user?.email ?? "",
-      userName: user?.fullName ?? "",
-      section: row.section,
-      data,
-      status: row.status,
-      submittedAt: row.submittedAt.toISOString(),
-      reviewedAt: row.reviewedAt ? row.reviewedAt.toISOString() : null,
-      adminRemarks: row.adminRemarks,
-      currentApproved
-    };
-  });
+  return Promise.all(
+    list.map(async (row) => {
+      const user = (row as any).User as User;
+      const profile = profileByUser.get(row.userId);
+      const allowedKeys = allowedKeysBySection[row.section];
+      const currentApprovedRaw =
+        row.section === "MATRIMONY"
+          ? profile?.matrimony
+          : profile?.business;
+      let currentApproved = normalizeJsonColumn(currentApprovedRaw, allowedKeys) as Record<
+        string,
+        unknown
+      > | null;
+      const data = normalizeJsonColumn(row.data, allowedKeys) ?? {};
+      const { _submittedForReview: submittedFlag, ...dataForAdmin } = data;
+      const submittedForReview =
+        row.section === "MATRIMONY" ? submittedFlag !== false : true;
+
+      let pendingData = dataForAdmin;
+      if (row.section === "MATRIMONY") {
+        pendingData = (await signMatrimonyMediaUrls(dataForAdmin)) ?? dataForAdmin;
+        currentApproved = await signMatrimonyMediaUrls(currentApproved);
+      }
+
+      return {
+        id: row.id,
+        userId: row.userId,
+        userEmail: user?.email ?? "",
+        userName: user?.fullName ?? "",
+        section: row.section,
+        data: pendingData,
+        status: row.status,
+        submittedAt: row.submittedAt.toISOString(),
+        reviewedAt: row.reviewedAt ? row.reviewedAt.toISOString() : null,
+        adminRemarks: row.adminRemarks,
+        currentApproved,
+        submittedForReview
+      };
+    })
+  );
 }
 
 /** Approve pending profile update: copy data to user_profiles (clean JSON only), mark update as APPROVED */
@@ -218,7 +256,8 @@ export async function approveProfileUpdate(
 
   const sectionKey = row.section === "MATRIMONY" ? "matrimony" : "business";
   const allowedKeys = SECTION_ALLOWED_KEYS[sectionKey];
-  const data = normalizeJsonColumn(row.data, allowedKeys) ?? {};
+  const raw = normalizeJsonColumn(row.data, allowedKeys) ?? {};
+  const { _submittedForReview: _skip, ...data } = raw;
   await profile.update({ [sectionKey]: data } as any);
   await row.update({
     status: "APPROVED",

@@ -82,13 +82,16 @@ export async function getPresignedGetUrl(key: string, expiresInSeconds = 3600): 
  */
 export function extractR2KeyFromUrl(u: string): string | null {
   const trimmed = u.replace(/^\//, "").trim();
-  if (trimmed.startsWith("digital-house/")) return decodeIfEncoded(trimmed);
+  if (trimmed.startsWith("digital-house/")) return normalizeR2ObjectKey(trimmed);
   try {
     const pathMatch = u.match(/^(https?:\/\/[^/]+)(\/.*)$/);
     if (!pathMatch) return null;
     const pathWithQuery = pathMatch[2];
     const path = pathWithQuery.split("?")[0].replace(/^\//, "");
-    if (path.startsWith("digital-house/")) return decodeIfEncoded(path);
+    if (path.includes("digital-house/")) {
+      const idx = path.indexOf("digital-house/");
+      return normalizeR2ObjectKey(path.slice(idx));
+    }
     return null;
   } catch {
     return null;
@@ -102,6 +105,31 @@ function decodeIfEncoded(path: string): string {
     /* ignore decode errors */
   }
   return path;
+}
+
+/**
+ * Path-style R2 URLs often look like /{bucket}/digital-house/... while PutObject Key is digital-house/...
+ * Collapse accidental duplicate bucket + prefix segments so signed GET uses the real object key.
+ */
+export function normalizeR2ObjectKey(keyOrPath: string): string {
+  let k = decodeIfEncoded(keyOrPath.replace(/^\//, "").trim());
+  if (!k) return k;
+
+  const bucket = bucketName?.trim();
+  if (bucket) {
+    const doublePrefix = `${bucket}/${bucket}/`;
+    if (k.startsWith(doublePrefix)) {
+      k = k.slice(bucket.length + 1);
+    } else if (k.startsWith(`${bucket}/`) && k.slice(bucket.length + 1).startsWith("digital-house/")) {
+      k = k.slice(bucket.length + 1);
+    }
+  }
+
+  while (k.startsWith("digital-house/digital-house/")) {
+    k = k.replace(/^digital-house\//, "");
+  }
+
+  return k;
 }
 
 /** Default expiry for signed GET URLs (1 hour) so app can display R2 images. */
@@ -213,6 +241,7 @@ export async function toSignedUrlIfR2(url: string | null | undefined): Promise<s
   }
   if (!key) key = extractR2KeyFromUrl(u);
   if (!key) return u;
+  key = normalizeR2ObjectKey(key);
   try {
     return await getPresignedGetUrl(key, SIGNED_GET_EXPIRY_SEC);
   } catch (err) {
