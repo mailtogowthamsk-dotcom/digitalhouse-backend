@@ -170,6 +170,10 @@ export const SECTION_ALLOWED_KEYS: Record<string, Set<string>> = {
   matrimony: new Set([
     "matrimonyProfileActive",
     "lookingFor",
+    "candidateName",
+    "candidateAge",
+    "candidateGender",
+    "candidateDistrict",
     "partnerGenderPreference",
     "candidatePhotoUrl",
     "profilePhotoUrl",

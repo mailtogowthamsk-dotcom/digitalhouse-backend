@@ -17,6 +17,8 @@ import { MediaFile } from "./MediaFile.model";
 import { MatrimonyRequestMeta } from "./MatrimonyRequestMeta.model";
 import { MatrimonyAdminNote } from "./MatrimonyAdminNote.model";
 import { MatrimonyReviewAudit } from "./MatrimonyReviewAudit.model";
+import { MatrimonyInterest } from "./MatrimonyInterest.model";
+import { MatrimonyMatch } from "./MatrimonyMatch.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
@@ -88,5 +90,7 @@ export {
   FeedEngagementEvent,
   MatrimonyRequestMeta,
   MatrimonyAdminNote,
-  MatrimonyReviewAudit
+  MatrimonyReviewAudit,
+  MatrimonyInterest,
+  MatrimonyMatch
 };

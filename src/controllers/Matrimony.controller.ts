@@ -9,6 +9,12 @@ import {
 import { validateMatrimonyDraftBody, validateMatrimonySubmitBody } from "../validations/matrimony.validation";
 import { MATRIMONY_INCOME_RANGES, MATRIMONY_HEIGHT_OPTIONS, MATRIMONY_COMPLEXION_OPTIONS, PARTNER_GENDER_OPTIONS } from "../constants/matrimony.constants";
 import { MATRIMONY_PROFILE_FOR } from "../constants/matrimony-photo.constants";
+import * as Discover from "../services/MatrimonyDiscover.service";
+import {
+  discoverQuerySchema,
+  sendInterestSchema,
+  respondInterestSchema
+} from "../validations/matrimony-discovery.validation";
 
 export async function getMe(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
@@ -62,4 +68,98 @@ export async function getFormOptions(_req: Request, res: Response) {
     partner_gender: PARTNER_GENDER_OPTIONS,
     profile_for: MATRIMONY_PROFILE_FOR
   });
+}
+
+export async function discover(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  try {
+    const q = discoverQuerySchema.parse(req.query);
+    const data = await Discover.discoverProfiles(userId, q);
+    return success(res, data);
+  } catch (e: any) {
+    if (e instanceof ZodError) return error(res, formatZodMessage(e), 400);
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function candidateDetail(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const candidateUserId = Number(req.params.userId);
+  try {
+    const data = await Discover.getCandidateDetail(userId, candidateUserId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function sendInterest(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  try {
+    const body = sendInterestSchema.parse(req.body);
+    const data = await Discover.sendInterest(userId, body.toUserId, body.introMessage);
+    return success(res, data);
+  } catch (e: any) {
+    if (e instanceof ZodError) return error(res, formatZodMessage(e), 400);
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function respondInterest(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const interestId = Number(req.params.id);
+  try {
+    const { action } = respondInterestSchema.parse(req.body);
+    const data = await Discover.respondToInterest(userId, interestId, action);
+    return success(res, data);
+  } catch (e: any) {
+    if (e instanceof ZodError) return error(res, formatZodMessage(e), 400);
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function listInterestsSent(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const items = await Discover.listInterests(userId, "sent");
+  return success(res, { items });
+}
+
+export async function listInterestsReceived(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const items = await Discover.listInterests(userId, "received");
+  return success(res, { items });
+}
+
+export async function listMatches(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const items = await Discover.listMatches(userId);
+  return success(res, { items });
+}
+
+export async function getHoroscope(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const otherUserId = Number(req.params.userId);
+  try {
+    const data = await Discover.getHoroscopeForMatch(userId, otherUserId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function revealContact(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const otherUserId = Number(req.params.userId);
+  try {
+    const data = await Discover.revealContactIfMatched(userId, otherUserId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
 }

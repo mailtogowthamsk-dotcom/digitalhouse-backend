@@ -93,6 +93,10 @@ const matrimonyMediaUrl = z.string().trim().max(2048).nullable().optional();
 const matrimonySectionSchema = z.object({
   matrimonyProfileActive: z.boolean().nullable().optional(),
   lookingFor: z.enum(["SELF", "SON", "DAUGHTER", "BROTHER", "SISTER"]).nullable().optional(),
+  candidateName: z.string().max(120).nullable().optional(),
+  candidateAge: z.number().int().min(18).max(80).nullable().optional(),
+  candidateGender: z.enum(["MALE", "FEMALE"]).nullable().optional(),
+  candidateDistrict: z.string().max(120).nullable().optional(),
   partnerGenderPreference: z.enum(["MALE", "FEMALE"]).nullable().optional(),
   candidatePhotoUrl: matrimonyMediaUrl,
   profilePhotoUrl: matrimonyMediaUrl,

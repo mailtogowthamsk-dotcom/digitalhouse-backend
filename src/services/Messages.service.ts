@@ -3,6 +3,10 @@ import { sequelize } from "../config/db";
 import { Message, User } from "../models";
 import { toSignedUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
+import {
+  assertMatrimonyChatAllowed,
+  bothUsersHaveActiveMatrimony
+} from "./MatrimonyDiscover.service";
 
 export type ThreadDto = {
   otherUser: { id: number; name: string; profileImage: string | null; online: boolean };
@@ -143,6 +147,10 @@ export async function sendMessage(
   const recipient = await User.findByPk(recipientId, { attributes: ["id", "status"] });
   if (!recipient || recipient.status !== "APPROVED") throw new Error("Recipient not found");
   if (recipientId === senderId) throw new Error("Invalid recipient");
+
+  if (await bothUsersHaveActiveMatrimony(senderId, recipientId)) {
+    await assertMatrimonyChatAllowed(senderId, recipientId);
+  }
 
   const msg = await Message.create({
     senderId,

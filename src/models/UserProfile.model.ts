@@ -27,6 +27,11 @@ export type PersonalSection = {
 export type MatrimonySection = {
   matrimonyProfileActive?: boolean | null;
   lookingFor?: "SELF" | "SON" | "DAUGHTER" | "BROTHER" | "SISTER" | null;
+  /** Bride/groom display name (required for family-managed profiles in discovery) */
+  candidateName?: string | null;
+  candidateAge?: number | null;
+  candidateGender?: "MALE" | "FEMALE" | null;
+  candidateDistrict?: string | null;
   partnerGenderPreference?: "MALE" | "FEMALE" | null;
   /** Bride/groom matrimony photo — NOT the social account profile photo */
   candidatePhotoUrl?: string | null;
