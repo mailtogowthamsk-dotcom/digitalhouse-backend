@@ -12,7 +12,14 @@
     "optimize-media": "ts-node --transpile-only scripts/optimize-existing-media.ts",
     "optimize-media:dry": "ts-node --transpile-only scripts/optimize-existing-media.ts --dry-run",
     "db:fix-indexes": "node scripts/fix-duplicate-indexes.js",
-    "db:migrate-media": "node scripts/migrate-media-files-columns.js"
+    "db:migrate-media": "node scripts/migrate-media-files-columns.js",
+    "pm2:start": "pm2 start ecosystem.config.cjs",
+    "pm2:reload": "pm2 reload ecosystem.config.cjs --update-env",
+    "pm2:stop": "pm2 stop digitalhouse-api",
+    "pm2:logs": "pm2 logs digitalhouse-api --lines 100",
+    "pm2:deploy": "bash deploy/pm2-deploy.sh",
+    "install:deps": "bash deploy/npm-install-deps.sh",
+    "verify:deploy": "node -e \"require('fs').accessSync('dist/server.js'); require('express'); require('cors'); console.log('dist/server.js OK, dependencies installed');\""
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.980.0",

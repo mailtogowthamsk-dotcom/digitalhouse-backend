@@ -1,6 +1,9 @@
 import cors from "cors";
-import express from "express";
+import express, { type Express } from "express";
 import "./config/env";
+import { getApiMountPaths } from "./config/apiPath";
+import { corsOptions } from "./config/cors";
+import { corsPreflightMiddleware } from "./middlewares/corsPreflight.middleware";
 import { apiRouter } from "./routes";
 import { errorHandler } from "./middlewares/error.middleware";
 import { dbReady, dbFailed } from "./state";
@@ -10,7 +13,10 @@ export const app = express();
 // Required behind Railway (or any reverse proxy): express-rate-limit needs req.ip from X-Forwarded-For
 app.set("trust proxy", 1);
 
-app.use(cors({ origin: true, credentials: true }));
+// Preflight first (before JSON parser and DB gate)
+app.use(corsPreflightMiddleware);
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 app.use(express.json());
 
 // Root: some platforms hit / for health – respond quickly so Railway sees the app as up
@@ -23,31 +29,44 @@ app.get(["/health", "/health/"], (_req, res) => {
   res.status(200).json({ ok: true });
 });
 
-// Health check: responds immediately so Railway doesn't show "Application Failed to respond"
-app.get("/api/health", (_req, res) => {
-  res.status(200).json({ ok: true, ready: dbReady, dbFailed });
-});
+const shouldLogRequests =
+  process.env.LOG_REQUESTS === "true" || process.env.NODE_ENV === "development";
 
-// Return 503 until DB is ready (cold start) or if DB failed; mobile can retry
-app.use("/api", (req, res, next) => {
-  if (req.path === "/health" || req.path === "/landing") return next();
-  if (!dbReady) {
-    return res.status(503).json({
-      ok: false,
-      message: dbFailed
-        ? "Database unavailable. Please check server configuration."
-        : "Server is starting up. Please try again in a few seconds."
-    });
-  }
-  next();
-});
+function registerApiMounts(application: Express, mount: string) {
+  const healthPath = `${mount}/health`;
 
-// Log API requests only when LOG_REQUESTS=true or NODE_ENV=development. Reduces memory churn and log volume in production.
-const shouldLogRequests = process.env.LOG_REQUESTS === "true" || process.env.NODE_ENV === "development";
-app.use("/api", (req, _res, next) => {
-  if (shouldLogRequests) console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  next();
-}, apiRouter);
+  application.get(healthPath, (_req, res) => {
+    res.status(200).json({ ok: true, ready: dbReady, dbFailed });
+  });
+
+  application.use(mount, (req, res, next) => {
+    if (req.method === "OPTIONS") return next();
+    if (req.path === "/health" || req.path === "/landing") return next();
+    if (!dbReady) {
+      return res.status(503).json({
+        ok: false,
+        message: dbFailed
+          ? "Database unavailable. Please check server configuration."
+          : "Server is starting up. Please try again in a few seconds."
+      });
+    }
+    next();
+  });
+
+  application.use(
+    mount,
+    (req, _res, next) => {
+      if (shouldLogRequests) {
+        console.log(`[${new Date().toISOString()}] ${req.method} ${mount}${req.path}`);
+      }
+      next();
+    },
+    apiRouter
+  );
+}
+
+for (const mount of getApiMountPaths()) {
+  registerApiMounts(app, mount);
+}
 
 app.use(errorHandler);
-

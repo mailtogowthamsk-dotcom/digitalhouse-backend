@@ -2,6 +2,7 @@ import "./config/env";
 import os from "os";
 import http from "http";
 import { app } from "./app";
+import { getApiMountPaths } from "./config/apiPath";
 import { sequelize } from "./config/db";
 import { seedOptionsIfEmpty } from "./seed/options.seed";
 import { setDbReady, setDbFailed } from "./state";
@@ -28,6 +29,10 @@ initSocket(httpServer);
 
 httpServer.listen(PORT, "0.0.0.0", () => {
   console.log(`Digital House API listening on http://0.0.0.0:${PORT}`);
+  console.log("Health endpoints:", getApiMountPaths().map((m) => `http://127.0.0.1:${PORT}${m}/health`).join(", "));
+  if (process.env.API_BASE_PATH) {
+    console.log(`API_BASE_PATH=${process.env.API_BASE_PATH}`);
+  }
   const localIps = getLocalIps();
   if (localIps.length > 0) {
     console.log("For mobile app (same WiFi), set in mobile/.env:");
