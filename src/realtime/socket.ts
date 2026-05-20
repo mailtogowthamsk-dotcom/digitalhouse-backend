@@ -107,6 +107,11 @@ export function initSocket(httpServer: HttpServer) {
           io.to(`user:${recipientId}`).emit("message:new", dto);
           io.to(`user:${userId}`).emit("message:sent", dto);
 
+          if (!isOnline(recipientId)) {
+            const { notifyNewMessage } = await import("../services/Notification.service");
+            void notifyNewMessage(recipientId, userId, body).catch(() => {});
+          }
+
           cb?.({ ok: true, messageId: msg.id });
         } catch {
           cb?.({ ok: false, error: "Failed to send" });

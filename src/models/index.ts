@@ -19,6 +19,13 @@ import { MatrimonyAdminNote } from "./MatrimonyAdminNote.model";
 import { MatrimonyReviewAudit } from "./MatrimonyReviewAudit.model";
 import { MatrimonyInterest } from "./MatrimonyInterest.model";
 import { MatrimonyMatch } from "./MatrimonyMatch.model";
+import { MatrimonySavedProfile } from "./MatrimonySavedProfile.model";
+import { MatrimonyBlock } from "./MatrimonyBlock.model";
+import { MatrimonyReport } from "./MatrimonyReport.model";
+import { MatrimonySubscription } from "./MatrimonySubscription.model";
+import { MatrimonyProfileOpen } from "./MatrimonyProfileOpen.model";
+import { MatrimonyContactReveal } from "./MatrimonyContactReveal.model";
+import { MatrimonyProfileView } from "./MatrimonyProfileView.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
@@ -92,5 +99,12 @@ export {
   MatrimonyAdminNote,
   MatrimonyReviewAudit,
   MatrimonyInterest,
-  MatrimonyMatch
+  MatrimonyMatch,
+  MatrimonySavedProfile,
+  MatrimonyBlock,
+  MatrimonyReport,
+  MatrimonySubscription,
+  MatrimonyProfileOpen,
+  MatrimonyContactReveal,
+  MatrimonyProfileView
 };

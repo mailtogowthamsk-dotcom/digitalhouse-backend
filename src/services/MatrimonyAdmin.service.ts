@@ -6,6 +6,9 @@ import {
   MatrimonyRequestMeta,
   MatrimonyAdminNote,
   MatrimonyReviewAudit,
+  MatrimonyInterest,
+  MatrimonyMatch,
+  MatrimonyReport,
   Kulam,
   Location
 } from "../models";
@@ -21,7 +24,11 @@ import {
   type MatrimonyVerificationKey
 } from "../constants/matrimony-admin.constants";
 import { computeFieldChanges } from "../utils/matrimonyChanges.util";
-import { resolveCandidatePhotoUrl } from "../constants/matrimony-photo.constants";
+import {
+  resolveCandidatePhotoUrl,
+  syncMatrimonyPhotoFields,
+  type MatrimonyCandidatePhotoStatus
+} from "../constants/matrimony-photo.constants";
 
 const SUBMITTED_FLAG = "_submittedForReview";
 const CHANGE_REQUEST_KEY = "_changeRequest";
@@ -241,11 +248,15 @@ export async function getMatrimonyAdminStats(): Promise<{
   rejectedProfiles: number;
   underReview: number;
   newToday: number;
+  totalInterests: number;
+  mutualMatches: number;
+  pendingReports: number;
 }> {
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
 
-  const [pendingRequests, approvedProfiles, rejectedProfiles, underReview, newToday] = await Promise.all([
+  const [pendingRequests, approvedProfiles, rejectedProfiles, underReview, newToday, totalInterests, mutualMatches, pendingReports] =
+    await Promise.all([
     PendingProfileUpdate.count({ where: { section: "MATRIMONY", status: "PENDING" } }),
     PendingProfileUpdate.count({ where: { section: "MATRIMONY", status: "APPROVED" } }),
     PendingProfileUpdate.count({ where: { section: "MATRIMONY", status: "REJECTED" } }),
@@ -258,10 +269,22 @@ export async function getMatrimonyAdminStats(): Promise<{
         section: "MATRIMONY",
         submittedAt: { [Op.gte]: startOfDay }
       }
-    })
+    }),
+    MatrimonyInterest.count().catch(() => 0),
+    MatrimonyMatch.count().catch(() => 0),
+    MatrimonyReport.count({ where: { status: "PENDING" } }).catch(() => 0)
   ]);
 
-  return { pendingRequests, approvedProfiles, rejectedProfiles, underReview, newToday };
+  return {
+    pendingRequests,
+    approvedProfiles,
+    rejectedProfiles,
+    underReview,
+    newToday,
+    totalInterests,
+    mutualMatches,
+    pendingReports
+  };
 }
 
 export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
@@ -600,8 +623,12 @@ export async function addNote(
 export async function approveMatrimonyRequest(updateId: number, adminEmail: string, remarks?: string) {
   const row = await PendingProfileUpdate.findByPk(updateId);
   if (!row || row.section !== "MATRIMONY") throw Object.assign(new Error("Request not found"), { status: 404 });
-  await approveProfileUpdate(updateId, adminEmail, remarks ?? null);
   const data = normalizeJsonColumn(row.data, SECTION_ALLOWED_KEYS.matrimony) ?? {};
+  if (resolveCandidatePhotoUrl(data)) {
+    data.candidatePhotoStatus = "APPROVED";
+    await row.update({ data: syncMatrimonyPhotoFields(data), updatedAt: new Date() } as any);
+  }
+  await approveProfileUpdate(updateId, adminEmail, remarks ?? null);
   const meta = await ensureMeta(row.id, row.userId, data, "APPROVED");
   if (meta) {
     await meta.update({
@@ -612,6 +639,45 @@ export async function approveMatrimonyRequest(updateId: number, adminEmail: stri
     } as any);
   }
   await writeAudit(row.userId, row.id, "APPROVED", adminEmail, { remarks }).catch(() => {});
+}
+
+/** Approve / reject / request reupload for bride/groom photo only (pending request). */
+export async function updateCandidatePhotoStatus(
+  updateId: number,
+  adminEmail: string,
+  status: MatrimonyCandidatePhotoStatus,
+  remarks?: string
+) {
+  const row = await PendingProfileUpdate.findByPk(updateId);
+  if (!row || row.section !== "MATRIMONY") throw Object.assign(new Error("Request not found"), { status: 404 });
+  if (row.status !== "PENDING") throw Object.assign(new Error("Update is not pending"), { status: 400 });
+
+  const data = normalizeJsonColumn(row.data, SECTION_ALLOWED_KEYS.matrimony) ?? {};
+  if (!resolveCandidatePhotoUrl(data)) {
+    throw Object.assign(new Error("No candidate photo on this request"), { status: 400 });
+  }
+
+  data.candidatePhotoStatus = status;
+  if (remarks?.trim()) data.candidatePhotoAdminRemarks = remarks.trim();
+  const synced = syncMatrimonyPhotoFields(data);
+  await row.update({ data: synced, updatedAt: new Date() } as any);
+
+  if (status === "APPROVED") {
+    let profile = await UserProfile.findOne({ where: { userId: row.userId } });
+    if (!profile) profile = await UserProfile.create({ userId: row.userId } as any);
+    const approved = normalizeJsonColumn(profile.matrimony, SECTION_ALLOWED_KEYS.matrimony) ?? {};
+    const merged = syncMatrimonyPhotoFields({
+      ...approved,
+      ...synced,
+      candidatePhotoStatus: "APPROVED"
+    });
+    await profile.update({ matrimony: merged } as any);
+  }
+
+  await writeAudit(row.userId, row.id, "PHOTO_STATUS_UPDATED", adminEmail, { status, remarks }).catch(
+    () => {}
+  );
+  return { candidatePhotoStatus: status };
 }
 
 export async function rejectMatrimonyRequest(

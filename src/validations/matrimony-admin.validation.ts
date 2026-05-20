@@ -72,6 +72,11 @@ export const verificationSchema = z.object({
   checked: z.coerce.boolean()
 });
 
+export const candidatePhotoStatusSchema = z.object({
+  status: z.enum(["APPROVED", "REJECTED", "REUPLOAD_REQUESTED"]),
+  remarks: z.string().max(500).trim().optional()
+});
+
 export const bulkMatrimonySchema = z.object({
   updateIds: z.array(z.number().int().positive()).min(1).max(50),
   action: z.enum(["approve", "reject"]),

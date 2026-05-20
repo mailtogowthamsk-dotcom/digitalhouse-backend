@@ -3,10 +3,12 @@ import { sequelize } from "../config/db";
 import { Message, User } from "../models";
 import { toSignedUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
+import * as NotificationService from "./Notification.service";
 import {
   assertMatrimonyChatAllowed,
   bothUsersHaveActiveMatrimony
 } from "./MatrimonyDiscover.service";
+import { getBlockedUserIds } from "./MatrimonySafety.service";
 
 export type ThreadDto = {
   otherUser: { id: number; name: string; profileImage: string | null; online: boolean };
@@ -65,8 +67,15 @@ export async function listThreads(userId: number): Promise<ThreadDto[]> {
 
   if (rows.length === 0) return [];
 
-  const otherUserIds = rows.map((r) => Number((r as any).otherUserId));
-  const lastMessageIds = rows.map((r) => Number((r as any).lastMessageId));
+  const blockedIds = await getBlockedUserIds(userId);
+
+  const otherUserIds = rows
+    .map((r) => Number((r as any).otherUserId))
+    .filter((id) => !blockedIds.has(id));
+  if (otherUserIds.length === 0) return [];
+
+  const filteredRows = rows.filter((r) => !blockedIds.has(Number((r as any).otherUserId)));
+  const lastMessageIds = filteredRows.map((r) => Number((r as any).lastMessageId));
 
   const [users, lastMessages] = await Promise.all([
     User.findAll({ where: { id: { [Op.in]: otherUserIds } }, attributes: ["id", "fullName", "profilePhoto"] }),
@@ -77,7 +86,7 @@ export async function listThreads(userId: number): Promise<ThreadDto[]> {
   const lastById = new Map<number, Message>(lastMessages.map((m) => [m.id, m]));
 
   const threads = await Promise.all(
-    rows.map(async (r) => {
+    filteredRows.map(async (r) => {
       const otherUserId = Number((r as any).otherUserId);
       const unreadCount = Number((r as any).unreadCount ?? 0);
       const u = usersById.get(otherUserId);
@@ -148,18 +157,30 @@ export async function sendMessage(
   if (!recipient || recipient.status !== "APPROVED") throw new Error("Recipient not found");
   if (recipientId === senderId) throw new Error("Invalid recipient");
 
+  const blocked = await getBlockedUserIds(senderId);
+  if (blocked.has(recipientId)) {
+    const err = new Error("Cannot message this user.");
+    (err as any).status = 403;
+    throw err;
+  }
+
   if (await bothUsersHaveActiveMatrimony(senderId, recipientId)) {
     await assertMatrimonyChatAllowed(senderId, recipientId);
   }
 
+  const trimmed = body.trim();
   const msg = await Message.create({
     senderId,
     recipientId,
-    body: body.trim(),
+    body: trimmed,
     clientId: (clientId ?? "").trim() || null,
     deliveredAt: isOnline(recipientId) ? new Date() : null,
     readAt: null
   } as any);
+
+  if (!isOnline(recipientId)) {
+    void NotificationService.notifyNewMessage(recipientId, senderId, trimmed).catch(() => {});
+  }
 
   return toMessageDto(msg);
 }

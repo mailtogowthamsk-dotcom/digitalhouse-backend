@@ -61,3 +61,5 @@ Copy `deploy/htaccess-cors.conf` into `public_html/digitalhouse/backend/.htacces
 | JSON `ready:false` / 503 | Fix MySQL credentials in server `.env` |
 | CORS / redirect on OPTIONS | Use **www** URL; upload `htaccess-cors.conf` |
 | Works on `127.0.0.1:4000` but not HTTPS | Apache `ProxyPass` or cPanel app URL mismatch |
+| work on  "127.0.0.1:4002' but not|
+

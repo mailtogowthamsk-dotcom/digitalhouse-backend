@@ -34,6 +34,10 @@ adminRouter.post("/matrimony/bulk", asyncHandler(MatrimonyAdminController.bulkAc
 adminRouter.get("/matrimony/requests/:id", asyncHandler(MatrimonyAdminController.getRequestDetail));
 adminRouter.post("/matrimony/requests/:id/assign", asyncHandler(MatrimonyAdminController.assignReviewer));
 adminRouter.post("/matrimony/requests/:id/approve", asyncHandler(MatrimonyAdminController.approveRequest));
+adminRouter.post(
+  "/matrimony/requests/:id/candidate-photo",
+  asyncHandler(MatrimonyAdminController.updateCandidatePhoto)
+);
 adminRouter.post("/matrimony/requests/:id/reject", asyncHandler(MatrimonyAdminController.rejectRequest));
 adminRouter.post(
   "/matrimony/requests/:id/request-changes",
@@ -45,3 +49,5 @@ adminRouter.post(
   asyncHandler(MatrimonyAdminController.updateVerification)
 );
 adminRouter.post("/matrimony/requests/:id/notes", asyncHandler(MatrimonyAdminController.addNote));
+adminRouter.get("/matrimony/reports", asyncHandler(MatrimonyAdminController.listReports));
+adminRouter.post("/matrimony/reports/:id/resolve", asyncHandler(MatrimonyAdminController.resolveReport));

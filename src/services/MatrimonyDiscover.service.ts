@@ -3,12 +3,15 @@ import {
   User,
   UserProfile,
   MatrimonyInterest,
-  MatrimonyMatch
+  MatrimonyMatch,
+  MatrimonyProfileOpen
 } from "../models";
 import type { MatrimonySection } from "../models/UserProfile.model";
 import { getMatrimonyHub } from "./Matrimony.service";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
 import { resolveCandidatePhotoUrl } from "../constants/matrimony-photo.constants";
+import * as NotificationService from "./Notification.service";
+import * as MatrimonySafety from "./MatrimonySafety.service";
 import {
   calcAgeFromDob,
   kulamCompatibilityLabel,
@@ -18,6 +21,9 @@ import {
 } from "../utils/matrimonyCandidate.util";
 import { toSignedUrlIfR2 } from "../utils/r2Client";
 import { Location } from "../models";
+import { computeMatrimonyMatchScore, starLabel } from "../utils/matrimonyMatchScore.util";
+import * as Monetization from "./MatrimonyMonetization.service";
+import type { MatrimonyStarLevel } from "../constants/matrimony-monetization.constants";
 
 export type DiscoverCardDto = {
   userId: number;
@@ -33,6 +39,13 @@ export type DiscoverCardDto = {
   verified: boolean;
   interestSent: boolean;
   interestReceived: boolean;
+  starLevel: MatrimonyStarLevel;
+  starLabel: string;
+  matchTags: string[];
+  profileOpened: boolean;
+  canOpen: boolean;
+  openRequiresPlan: "GOLD" | "PLATINUM" | null;
+  photoBlurred: boolean;
 };
 
 export type DiscoverDetailDto = MatrimonyCandidatePublic & {
@@ -50,6 +63,13 @@ export type DiscoverDetailDto = MatrimonyCandidatePublic & {
   chatEnabled: boolean;
   contactVisible: boolean;
   horoscopeVisible: boolean;
+  saved: boolean;
+  blocked: boolean;
+  starLevel?: MatrimonyStarLevel;
+  starLabel?: string;
+  matchTags?: string[];
+  profileOpened?: boolean;
+  contactPaymentStatus?: "NONE" | "PENDING" | "PAID";
 };
 
 function assertCanBrowse(hub: Awaited<ReturnType<typeof getMatrimonyHub>>): void {
@@ -159,12 +179,12 @@ async function tryCreateMutualMatch(userA: number, userB: number): Promise<Matri
         status: "ACTIVE",
         chatEnabled: true,
         contactRevealed: false,
-        horoscopeShared: true,
+        horoscopeShared: false,
         matchedAt: new Date()
       } as any
     });
     if (match.status !== "ACTIVE") {
-      await match.update({ status: "ACTIVE", matchedAt: new Date(), horoscopeShared: true } as any);
+      await match.update({ status: "ACTIVE", matchedAt: new Date() } as any);
     }
     return match;
   } catch (err) {
@@ -175,7 +195,14 @@ async function tryCreateMutualMatch(userA: number, userB: number): Promise<Matri
 
 export async function discoverProfiles(
   viewerId: number,
-  opts: { page?: number; limit?: number; district?: string }
+  opts: {
+    page?: number;
+    limit?: number;
+    district?: string;
+    ageMin?: number;
+    ageMax?: number;
+    horoscopeOnly?: boolean;
+  }
 ): Promise<{ items: DiscoverCardDto[]; total: number; page: number; limit: number }> {
   const hub = await getMatrimonyHub(viewerId);
   assertCanBrowse(hub);
@@ -243,9 +270,32 @@ export async function discoverProfiles(
   }
 
   const cards: DiscoverCardDto[] = [];
+  const blockedIds = await MatrimonySafety.getBlockedUserIds(viewerId);
+  const viewerPlan = await Monetization.getActivePlan(viewerId);
+  const billingPeriod = Monetization.currentBillingPeriod();
+  const openRows = await Monetization.ensureMonetizationTables()
+    ? await MatrimonyProfileOpen.findAll({
+        where: { userId: viewerId, billingPeriod },
+        attributes: ["candidateUserId"]
+      }).catch(() => [])
+    : [];
+  const openedSet = new Set(openRows.map((r) => r.candidateUserId));
+
+  const matchRows = await MatrimonyMatch.findAll({
+    where: {
+      status: "ACTIVE",
+      [Op.or]: [{ userLowId: viewerId }, { userHighId: viewerId }]
+    },
+    attributes: ["userLowId", "userHighId"]
+  });
+  const mutualSet = new Set<number>();
+  for (const m of matchRows) {
+    mutualSet.add(m.userLowId === viewerId ? m.userHighId : m.userLowId);
+  }
 
   for (const row of rows) {
     const user = (row as any).User as User;
+    if (blockedIds.has(user.id)) continue;
     const m = normalizeJsonColumn(row.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection | null;
     if (!isDiscoverableMatrimony(m)) continue;
 
@@ -261,15 +311,52 @@ export async function discoverProfiles(
     if (!passesReverseAgePreference(m!, viewerAge)) continue;
     if (!passesDistrictPreference(viewerM, candidate.district, locationMap)) continue;
 
-    if (opts.district && candidate.district) {
-      if (!candidate.district.toLowerCase().includes(opts.district.toLowerCase())) continue;
+    if (opts.district?.trim()) {
+      const needle = opts.district.trim().toLowerCase();
+      const hay = (candidate.district ?? "").toLowerCase();
+      if (!hay.includes(needle)) continue;
     }
+
+    if (opts.ageMin != null && candidate.age != null && candidate.age < opts.ageMin) continue;
+    if (opts.ageMax != null && candidate.age != null && candidate.age > opts.ageMax) continue;
+    if (opts.horoscopeOnly && !candidate.horoscopeAvailable) continue;
 
     const photoRaw = resolveCandidatePhotoUrl(m as Record<string, unknown>);
     const photoUrl = photoRaw ? (await toSignedUrlIfR2(photoRaw)) ?? photoRaw : null;
 
     const compat = kulamCompatibilityLabel(viewerK, candidateKulam);
     const int = interestByOther.get(user.id);
+    const kulamLabel =
+      compat === "Compatible"
+        ? "Compatible kulam"
+        : compat === "Different kulam"
+          ? candidateKulam
+          : candidateKulam;
+
+    const matchScore = computeMatrimonyMatchScore({
+      viewerDistrict: viewerCandidate.district,
+      viewerAge,
+      viewerM,
+      candidateM: m!,
+      candidate: {
+        age: candidate.age,
+        district: candidate.district,
+        horoscopeAvailable: candidate.horoscopeAvailable,
+        verified: candidate.verified,
+        kulamLabel,
+        education: candidate.education,
+        occupation: candidate.occupation
+      }
+    });
+
+    const mutualMatch = mutualSet.has(user.id);
+    const profileOpened = mutualMatch || openedSet.has(user.id);
+    const gate = Monetization.resolveOpenGate(
+      viewerPlan,
+      matchScore.starLevel,
+      profileOpened,
+      mutualMatch
+    );
 
     cards.push({
       userId: user.id,
@@ -278,36 +365,101 @@ export async function discoverProfiles(
       district: candidate.district,
       occupation: candidate.occupation,
       education: candidate.education,
-      kulamLabel: compat === "Compatible" ? "Compatible kulam" : compat === "Different kulam" ? candidateKulam : candidateKulam,
+      kulamLabel,
       photoUrl,
       familyManaged: candidate.familyManaged,
       horoscopeAvailable: candidate.horoscopeAvailable,
       verified: candidate.verified,
       interestSent: !!int?.sent,
-      interestReceived: !!int?.received
+      interestReceived: !!int?.received,
+      starLevel: matchScore.starLevel,
+      starLabel: starLabel(matchScore.starLevel),
+      matchTags: matchScore.matchTags,
+      profileOpened,
+      canOpen: gate.canOpen && !profileOpened,
+      openRequiresPlan: gate.openRequiresPlan,
+      photoBlurred: !profileOpened
     });
   }
 
-  const viewerDistrict = viewerCandidate.district;
-  const scoreCard = (c: DiscoverCardDto) => {
-    let s = c.verified ? 4 : 0;
-    if (c.horoscopeAvailable) s += 1;
-    if (
-      viewerDistrict &&
-      c.district &&
-      c.district.toLowerCase() === viewerDistrict.toLowerCase()
-    ) {
-      s += 2;
-    }
-    return s;
-  };
-  cards.sort((a, b) => scoreCard(b) - scoreCard(a));
+  cards.sort((a, b) => b.starLevel - a.starLevel || (b.verified ? 1 : 0) - (a.verified ? 1 : 0));
 
   const total = cards.length;
   const offset = (page - 1) * limit;
   const pageItems = cards.slice(offset, offset + limit);
 
   return { items: pageItems, total, page, limit };
+}
+
+async function candidateHasFullAccess(
+  viewerId: number,
+  candidateUserId: number
+): Promise<boolean> {
+  const match = await getActiveMatch(viewerId, candidateUserId);
+  if (match) return true;
+  if (!(await Monetization.ensureMonetizationTables())) return true;
+  return Monetization.hasOpenedProfile(viewerId, candidateUserId);
+}
+
+export async function openCandidateProfile(
+  viewerId: number,
+  candidateUserId: number
+): Promise<DiscoverDetailDto> {
+  const hub = await getMatrimonyHub(viewerId);
+  assertCanBrowse(hub);
+  if (candidateUserId === viewerId) {
+    throw Object.assign(new Error("Cannot view your own matrimony card"), { status: 400 });
+  }
+  await MatrimonySafety.assertNotBlocked(viewerId, candidateUserId);
+
+  const [viewer, candidateUser, candidateProfile, viewerProfile] = await Promise.all([
+    User.findByPk(viewerId),
+    User.findOne({ where: { id: candidateUserId, status: "APPROVED" } }),
+    UserProfile.findOne({ where: { userId: candidateUserId } }),
+    UserProfile.findOne({ where: { userId: viewerId } })
+  ]);
+  if (!candidateUser) throw Object.assign(new Error("Profile not found"), { status: 404 });
+
+  const m = normalizeJsonColumn(
+    candidateProfile?.matrimony,
+    SECTION_ALLOWED_KEYS.matrimony
+  ) as MatrimonySection | null;
+  if (!isDiscoverableMatrimony(m)) {
+    throw Object.assign(new Error("Matrimony profile not available"), { status: 404 });
+  }
+
+  const viewerM = normalizeJsonColumn(
+    viewerProfile?.matrimony,
+    SECTION_ALLOWED_KEYS.matrimony
+  ) as MatrimonySection;
+  const viewerCandidate = resolveMatrimonyCandidate(viewer!, viewerM);
+  const candidate = resolveMatrimonyCandidate(candidateUser, m!);
+  const viewerAge = calcAgeFromDob(viewer?.dob ?? null);
+  const kulamLabel = kulamCompatibilityLabel(viewerKulam(viewerProfile, viewer!), candidate.kulam);
+
+  const matchScore = computeMatrimonyMatchScore({
+    viewerDistrict: viewerCandidate.district,
+    viewerAge,
+    viewerM,
+    candidateM: m!,
+    candidate: {
+      age: candidate.age,
+      district: candidate.district,
+      horoscopeAvailable: candidate.horoscopeAvailable,
+      verified: candidate.verified,
+      kulamLabel,
+      education: candidate.education,
+      occupation: candidate.occupation
+    }
+  });
+
+  const activeMatch = await getActiveMatch(viewerId, candidateUserId);
+  if (!activeMatch) {
+    await Monetization.assertCanOpenProfile(viewerId, candidateUserId, matchScore.starLevel);
+    await Monetization.recordProfileOpen(viewerId, candidateUserId);
+  }
+  await Monetization.recordProfileView(viewerId, candidateUserId);
+  return getCandidateDetail(viewerId, candidateUserId);
 }
 
 export async function getCandidateDetail(
@@ -320,6 +472,8 @@ export async function getCandidateDetail(
   if (candidateUserId === viewerId) {
     throw Object.assign(new Error("Cannot view your own matrimony card"), { status: 400 });
   }
+
+  await MatrimonySafety.assertNotBlocked(viewerId, candidateUserId);
 
   const [viewer, candidateUser, candidateProfile, viewerProfile] = await Promise.all([
     User.findByPk(viewerId),
@@ -381,6 +535,52 @@ export async function getCandidateDetail(
 
   const mutualMatch = !!match;
   const horoscopeVisible = mutualMatch && !!match?.horoscopeShared;
+  const safetyFlags = await MatrimonySafety.getCandidateSafetyFlags(viewerId, candidateUserId);
+  const viewerCandidate = resolveMatrimonyCandidate(viewer!, viewerM);
+  const viewerAge = calcAgeFromDob(viewer?.dob ?? null);
+  const kulamLabel = kulamCompatibilityLabel(viewerK, candidate.kulam);
+  const matchScore = computeMatrimonyMatchScore({
+    viewerDistrict: viewerCandidate.district,
+    viewerAge,
+    viewerM,
+    candidateM: m!,
+    candidate: {
+      age: candidate.age,
+      district: candidate.district,
+      horoscopeAvailable: candidate.horoscopeAvailable,
+      verified: candidate.verified,
+      kulamLabel,
+      education: candidate.education,
+      occupation: candidate.occupation
+    }
+  });
+
+  const fullAccess = await candidateHasFullAccess(viewerId, candidateUserId);
+  if (!fullAccess) {
+    const plan = await Monetization.getActivePlan(viewerId);
+    const gate = Monetization.resolveOpenGate(plan, matchScore.starLevel, false, false);
+    throw Object.assign(new Error(gate.gateReason ?? "Profile locked"), {
+      status: 403,
+      code: "PROFILE_LOCKED",
+      teaser: {
+        userId: candidateUserId,
+        name: candidate.name,
+        age: candidate.age,
+        district: candidate.district,
+        occupation: candidate.occupation,
+        starLevel: matchScore.starLevel,
+        starLabel: starLabel(matchScore.starLevel),
+        matchTags: matchScore.matchTags,
+        openRequiresPlan: gate.openRequiresPlan,
+        canOpen: gate.canOpen
+      }
+    });
+  }
+
+  await Monetization.recordProfileView(viewerId, candidateUserId);
+  const contactPay = await Monetization.getContactRevealStatus(viewerId, candidateUserId);
+  const contactVisible =
+    mutualMatch && (match?.contactRevealed || contactPay.status === "PAID");
 
   return {
     ...candidate,
@@ -389,7 +589,7 @@ export async function getCandidateDetail(
     nakshatram: m!.nakshatram ?? null,
     maritalStatus: m!.maritalStatus ?? null,
     dosham: m!.dosham ?? null,
-    kulamLabel: kulamCompatibilityLabel(viewerK, candidate.kulam),
+    kulamLabel,
     interestStatus,
     canSendInterest:
       !mutualMatch &&
@@ -398,8 +598,15 @@ export async function getCandidateDetail(
     pendingInterestId: recvInterest?.status === "PENDING" ? recvInterest.id : null,
     mutualMatch,
     chatEnabled: mutualMatch && (match?.chatEnabled ?? false),
-    contactVisible: mutualMatch && (match?.contactRevealed ?? false),
-    horoscopeVisible
+    contactVisible,
+    horoscopeVisible,
+    saved: safetyFlags.saved,
+    blocked: safetyFlags.blocked,
+    starLevel: matchScore.starLevel,
+    starLabel: starLabel(matchScore.starLevel),
+    matchTags: matchScore.matchTags,
+    profileOpened: true,
+    contactPaymentStatus: contactPay.status
   };
 }
 
@@ -407,9 +614,22 @@ export async function sendInterest(
   fromUserId: number,
   toUserId: number,
   introMessage?: string
-): Promise<{ interest: MatrimonyInterest; mutualMatch: boolean }> {
+): Promise<{
+  interest: {
+    id: number;
+    fromUserId: number;
+    toUserId: number;
+    status: string;
+    introMessage: string | null;
+    createdAt: string;
+    respondedAt: string | null;
+  };
+  mutualMatch: boolean;
+}> {
   const hub = await getMatrimonyHub(fromUserId);
   assertCanBrowse(hub);
+
+  await MatrimonySafety.assertNotBlocked(fromUserId, toUserId);
 
   if (fromUserId === toUserId) {
     throw Object.assign(new Error("Invalid recipient"), { status: 400 });
@@ -443,7 +663,23 @@ export async function sendInterest(
   }
 
   const match = await tryCreateMutualMatch(fromUserId, toUserId);
-  return { interest, mutualMatch: !!match };
+  void NotificationService.notifyMatrimonyInterestReceived(toUserId, fromUserId).catch(() => {});
+  if (match) {
+    void NotificationService.notifyMatrimonyMatch(fromUserId, toUserId).catch(() => {});
+    void NotificationService.notifyMatrimonyMatch(toUserId, fromUserId).catch(() => {});
+  }
+  return {
+    interest: {
+      id: interest.id,
+      fromUserId: interest.fromUserId,
+      toUserId: interest.toUserId,
+      status: interest.status,
+      introMessage: interest.introMessage,
+      createdAt: (interest.createdAt ?? new Date()).toISOString(),
+      respondedAt: interest.respondedAt ? interest.respondedAt.toISOString() : null
+    },
+    mutualMatch: !!match
+  };
 }
 
 export async function respondToInterest(
@@ -471,6 +707,21 @@ export async function respondToInterest(
     action === "ACCEPT"
       ? await tryCreateMutualMatch(interest.fromUserId, interest.toUserId)
       : null;
+
+  if (action === "ACCEPT") {
+    void NotificationService.notifyMatrimonyInterestAccepted(
+      interest.fromUserId,
+      interest.toUserId
+    ).catch(() => {});
+    if (match) {
+      void NotificationService.notifyMatrimonyMatch(interest.fromUserId, interest.toUserId).catch(
+        () => {}
+      );
+      void NotificationService.notifyMatrimonyMatch(interest.toUserId, interest.fromUserId).catch(
+        () => {}
+      );
+    }
+  }
 
   return { interest, mutualMatch: !!match, match };
 }
@@ -575,6 +826,47 @@ export async function listMatches(userId: number): Promise<unknown[]> {
   );
 }
 
+export async function requestHoroscopeShare(
+  viewerId: number,
+  otherUserId: number
+): Promise<{ requested: boolean }> {
+  const match = await getActiveMatch(viewerId, otherUserId);
+  if (!match) {
+    const err = new Error("Match required to request horoscope");
+    (err as any).status = 403;
+    throw err;
+  }
+  if (match.horoscopeShared) {
+    return { requested: false };
+  }
+  void NotificationService.notifyHoroscopeRequest(otherUserId, viewerId).catch(() => {});
+  return { requested: true };
+}
+
+export async function shareHoroscopeWithMatch(
+  viewerId: number,
+  otherUserId: number
+): Promise<{ shared: boolean }> {
+  const match = await getActiveMatch(viewerId, otherUserId);
+  if (!match) {
+    const err = new Error("Match required to share horoscope");
+    (err as any).status = 403;
+    throw err;
+  }
+  const profile = await UserProfile.findOne({ where: { userId: viewerId } });
+  const m = normalizeJsonColumn(profile?.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection;
+  if (!m?.horoscopeDocumentUrl?.trim()) {
+    const err = new Error("Upload horoscope on your matrimony profile first");
+    (err as any).status = 400;
+    throw err;
+  }
+  if (!match.horoscopeShared) {
+    await match.update({ horoscopeShared: true } as any);
+    void NotificationService.notifyHoroscopeShared(otherUserId, viewerId).catch(() => {});
+  }
+  return { shared: true };
+}
+
 export async function getHoroscopeForMatch(
   viewerId: number,
   otherUserId: number
@@ -610,6 +902,7 @@ export async function assertMatrimonyChatAllowed(
   senderId: number,
   recipientId: number
 ): Promise<void> {
+  await MatrimonySafety.assertNotBlocked(senderId, recipientId);
   const match = await getActiveMatch(senderId, recipientId);
   if (!match || !match.chatEnabled) {
     const err = new Error(
@@ -619,6 +912,17 @@ export async function assertMatrimonyChatAllowed(
     (err as any).code = "MATRIMONY_CHAT_LOCKED";
     throw err;
   }
+}
+
+export async function getActiveMatchForContact(
+  userId: number,
+  otherUserId: number
+): Promise<MatrimonyMatch> {
+  const match = await getActiveMatch(userId, otherUserId);
+  if (!match) {
+    throw Object.assign(new Error("Contact available only after mutual match"), { status: 403 });
+  }
+  return match;
 }
 
 export async function revealContactIfMatched(
@@ -631,6 +935,11 @@ export async function revealContactIfMatched(
     (err as any).status = 403;
     throw err;
   }
+
+  if (await Monetization.ensureMonetizationTables()) {
+    await Monetization.assertContactRevealPaid(viewerId, otherUserId);
+  }
+
   if (!match.contactRevealed) {
     await match.update({ contactRevealed: true } as any);
   }

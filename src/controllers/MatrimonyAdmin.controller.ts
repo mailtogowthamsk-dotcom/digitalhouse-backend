@@ -10,10 +10,17 @@ import {
   suspendMatrimonySchema,
   addNoteSchema,
   verificationSchema,
+  candidatePhotoStatusSchema,
   bulkMatrimonySchema
 } from "../validations/matrimony-admin.validation";
 import { MATRIMONY_CHANGE_REQUEST_TEMPLATES } from "../constants/matrimony-admin.constants";
 import { MATRIMONY_CHANGE_SECTIONS } from "../constants/matrimony-changes.constants";
+import * as MatrimonySafety from "../services/MatrimonySafety.service";
+import {
+  listReportsQuerySchema,
+  resolveReportSchema
+} from "../validations/matrimony-safety.validation";
+import { MATRIMONY_REPORT_REASONS } from "../constants/matrimony-safety.constants";
 
 function adminEmail(req: Request): string {
   return (req as any).adminEmail ?? "admin";
@@ -63,6 +70,24 @@ export async function approveRequest(req: Request, res: Response) {
   } catch (e: any) {
     if (e.message === "Pending update not found") return error(res, "Request not found", 404);
     if (e.message === "Update is not pending") return error(res, "Request is not pending", 400);
+    throw e;
+  }
+}
+
+export async function updateCandidatePhoto(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  const body = candidatePhotoStatusSchema.parse(req.body);
+  try {
+    const data = await matrimonyAdmin.updateCandidatePhotoStatus(
+      id,
+      adminEmail(req),
+      body.status,
+      body.remarks
+    );
+    return success(res, { message: "Candidate photo status updated.", ...data });
+  } catch (e: any) {
+    if (e.status === 404) return error(res, "Request not found", 404);
+    if (e.status === 400) return error(res, e.message, 400);
     throw e;
   }
 }
@@ -163,6 +188,30 @@ export async function getConfig(_req: Request, res: Response) {
       key,
       label: v.label,
       fields: v.fields
-    }))
+    })),
+    reportReasons: MATRIMONY_REPORT_REASONS
   });
+}
+
+export async function listReports(req: Request, res: Response) {
+  const query = listReportsQuerySchema.parse(req.query);
+  try {
+    const data = await MatrimonySafety.listReportsForAdmin(query);
+    return success(res, data);
+  } catch (e: any) {
+    if (e.status === 503) return error(res, e.message, 503);
+    throw e;
+  }
+}
+
+export async function resolveReport(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  const body = resolveReportSchema.parse(req.body);
+  try {
+    await MatrimonySafety.resolveReport(id, adminEmail(req), body.status, body.adminRemarks);
+    return success(res, { message: "Report updated." });
+  } catch (e: any) {
+    if (e.status === 404) return error(res, "Report not found", 404);
+    throw e;
+  }
 }

@@ -10,6 +10,7 @@ import { landingRouter } from "./landing.routes";
 import { messagesRouter } from "./messages.routes";
 import { usersRouter } from "./users.routes";
 import { matrimonyRouter } from "./matrimony.routes";
+import { notificationsRouter } from "./notifications.routes";
 
 export const apiRouter = Router();
 
@@ -23,4 +24,5 @@ apiRouter.use("/media", mediaRouter);
 apiRouter.use("/messages", messagesRouter);
 apiRouter.use("/users", usersRouter);
 apiRouter.use("/matrimony", matrimonyRouter);
+apiRouter.use("/notifications", notificationsRouter);
 apiRouter.use("/landing", landingRouter);

@@ -10,16 +10,26 @@ import { validateMatrimonyDraftBody, validateMatrimonySubmitBody } from "../vali
 import { MATRIMONY_INCOME_RANGES, MATRIMONY_HEIGHT_OPTIONS, MATRIMONY_COMPLEXION_OPTIONS, PARTNER_GENDER_OPTIONS } from "../constants/matrimony.constants";
 import { MATRIMONY_PROFILE_FOR } from "../constants/matrimony-photo.constants";
 import * as Discover from "../services/MatrimonyDiscover.service";
+import * as MatrimonySafety from "../services/MatrimonySafety.service";
+import { reportProfileSchema } from "../validations/matrimony-safety.validation";
+import { MATRIMONY_REPORT_REASONS } from "../constants/matrimony-safety.constants";
 import {
   discoverQuerySchema,
   sendInterestSchema,
   respondInterestSchema
 } from "../validations/matrimony-discovery.validation";
+import * as Monetization from "../services/MatrimonyMonetization.service";
+import { subscribePlanSchema } from "../validations/matrimony-monetization.validation";
 
 export async function getMe(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   const hub = await getMatrimonyHub(userId);
-  return success(res, hub);
+  const subscription = await Monetization.getSubscriptionSummary(userId);
+  return success(res, {
+    ...hub,
+    subscription,
+    plans: Monetization.getPlanCatalog()
+  });
 }
 
 export async function saveDraft(req: Request, res: Response) {
@@ -66,7 +76,8 @@ export async function getFormOptions(_req: Request, res: Response) {
     heights: MATRIMONY_HEIGHT_OPTIONS,
     complexions: MATRIMONY_COMPLEXION_OPTIONS,
     partner_gender: PARTNER_GENDER_OPTIONS,
-    profile_for: MATRIMONY_PROFILE_FOR
+    profile_for: MATRIMONY_PROFILE_FOR,
+    report_reasons: MATRIMONY_REPORT_REASONS
   });
 }
 
@@ -90,7 +101,108 @@ export async function candidateDetail(req: Request, res: Response) {
     const data = await Discover.getCandidateDetail(userId, candidateUserId);
     return success(res, data);
   } catch (e: any) {
+    if (e.code === "PROFILE_LOCKED") {
+      return res.status(403).json({
+        ok: false,
+        message: e.message,
+        code: e.code,
+        teaser: e.teaser
+      });
+    }
     if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function openCandidateProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const candidateUserId = Number(req.params.userId);
+  try {
+    const data = await Discover.openCandidateProfile(userId, candidateUserId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e instanceof ZodError) return error(res, formatZodMessage(e), 400);
+    if (e.status) {
+      return res.status(e.status).json({
+        ok: false,
+        message: e.message,
+        code: e.code,
+        openRequiresPlan: e.openRequiresPlan
+      });
+    }
+    throw e;
+  }
+}
+
+export async function getSubscription(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const subscription = await Monetization.getSubscriptionSummary(userId);
+  return success(res, { subscription, plans: Monetization.getPlanCatalog() });
+}
+
+export async function subscribePlan(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  try {
+    const body = subscribePlanSchema.parse(req.body);
+    const subscription = await Monetization.subscribePlan(
+      userId,
+      body.plan,
+      body.durationMonths
+    );
+    return success(res, {
+      subscription,
+      message: `${body.plan} plan activated (dev billing — connect Razorpay for production).`
+    });
+  } catch (e: any) {
+    if (e instanceof ZodError) return error(res, formatZodMessage(e), 400);
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function startContactPayment(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const otherUserId = Number(req.params.userId);
+  try {
+    const match = await Discover.getActiveMatchForContact(userId, otherUserId);
+    const payment = await Monetization.createContactRevealPayment(
+      userId,
+      otherUserId,
+      match?.id ?? null
+    );
+    return success(res, { payment });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function confirmContactPayment(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const otherUserId = Number(req.params.userId);
+  try {
+    await Monetization.confirmContactRevealPayment(userId, otherUserId);
+    const data = await Discover.revealContactIfMatched(userId, otherUserId);
+    return success(res, { ...data, message: "Contact revealed." });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function listProfileViews(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  try {
+    const items = await Monetization.listWhoViewedMe(userId);
+    return success(res, { items });
+  } catch (e: any) {
+    if (e.status) {
+      return res.status(e.status).json({
+        ok: false,
+        message: e.message,
+        code: e.code ?? "FORBIDDEN"
+      });
+    }
     throw e;
   }
 }
@@ -99,7 +211,11 @@ export async function sendInterest(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   try {
     const body = sendInterestSchema.parse(req.body);
-    const data = await Discover.sendInterest(userId, body.toUserId, body.introMessage);
+    const data = await Discover.sendInterest(
+      userId,
+      body.toUserId,
+      body.introMessage ?? undefined
+    );
     return success(res, data);
   } catch (e: any) {
     if (e instanceof ZodError) return error(res, formatZodMessage(e), 400);
@@ -140,6 +256,30 @@ export async function listMatches(req: Request, res: Response) {
   return success(res, { items });
 }
 
+export async function requestHoroscope(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const otherUserId = Number(req.params.userId);
+  try {
+    const data = await Discover.requestHoroscopeShare(userId, otherUserId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function shareHoroscope(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const otherUserId = Number(req.params.userId);
+  try {
+    const data = await Discover.shareHoroscopeWithMatch(userId, otherUserId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
 export async function getHoroscope(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   const otherUserId = Number(req.params.userId);
@@ -159,6 +299,69 @@ export async function revealContact(req: Request, res: Response) {
     const data = await Discover.revealContactIfMatched(userId, otherUserId);
     return success(res, data);
   } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function listSaved(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const items = await MatrimonySafety.listSavedProfiles(userId);
+  return success(res, { items });
+}
+
+export async function saveProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const candidateUserId = Number(req.params.userId);
+  try {
+    const data = await MatrimonySafety.saveProfile(userId, candidateUserId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function unsaveProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const candidateUserId = Number(req.params.userId);
+  await MatrimonySafety.unsaveProfile(userId, candidateUserId);
+  return success(res, { ok: true });
+}
+
+export async function blockProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const candidateUserId = Number(req.params.userId);
+  try {
+    const data = await MatrimonySafety.blockUser(userId, candidateUserId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function unblockProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const candidateUserId = Number(req.params.userId);
+  await MatrimonySafety.unblockUser(userId, candidateUserId);
+  return success(res, { ok: true });
+}
+
+export async function reportProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const reportedUserId = Number(req.params.userId);
+  try {
+    const body = reportProfileSchema.parse(req.body);
+    const data = await MatrimonySafety.reportProfile(
+      userId,
+      reportedUserId,
+      body.reasonCode,
+      body.details
+    );
+    return success(res, data, 201);
+  } catch (e: any) {
+    if (e instanceof ZodError) return error(res, formatZodMessage(e), 400);
     if (e.status) return error(res, e.message, e.status);
     throw e;
   }
