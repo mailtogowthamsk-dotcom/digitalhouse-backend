@@ -12,14 +12,18 @@ const PORT = Number(process.env.PORT) || 4000;
 
 /** Get LAN IPv4 addresses (e.g. 192.168.x.x) for logging mobile API URL */
 function getLocalIps(): string[] {
-  const ips: string[] = [];
-  const ifaces = os.networkInterfaces();
-  for (const name of Object.keys(ifaces)) {
-    for (const iface of ifaces[name] || []) {
-      if (iface.family === "IPv4" && !iface.internal) ips.push(iface.address);
+  try {
+    const ips: string[] = [];
+    const ifaces = os.networkInterfaces();
+    for (const name of Object.keys(ifaces)) {
+      for (const iface of ifaces[name] || []) {
+        if (iface.family === "IPv4" && !iface.internal) ips.push(iface.address);
+      }
     }
+    return ips;
+  } catch {
+    return [];
   }
-  return ips;
 }
 
 // Listen immediately so Railway gets a response (avoids "Application Failed to respond").

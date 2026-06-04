@@ -15,12 +15,12 @@ const ADMIN_ID = process.env.ADMIN_API_KEY || "admin";
 
 /** POST /api/admin/login – email + password; returns JWT. No auth middleware. */
 export async function login(req: Request, res: Response) {
-  const body = adminLoginSchema.parse(req.body);
   try {
+    const body = adminLoginSchema.parse(req.body);
     const result = await adminService.adminLogin(body.email, body.password);
     return success(res, result);
   } catch (e: any) {
-    if (e.status === 401) return error(res, "Invalid credentials", 401);
+    if (e?.status === 401) return error(res, "Invalid credentials", 401);
     throw e;
   }
 }
