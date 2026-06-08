@@ -1,3 +1,4 @@
+import { Op, type WhereOptions } from "sequelize";
 import { User, UserProfile, PendingProfileUpdate, AdminVerification, PostReport } from "../models";
 import { sendApprovalEmail, sendRejectionEmail } from "./mail.service";
 import type { MatrimonySection, BusinessSection } from "../models/UserProfile.model";
@@ -64,9 +65,24 @@ export async function listPendingUsers(): Promise<User[]> {
 }
 
 /** List all users (paginated) for User Management */
-export async function listUsers(page: number = 1, limit: number = 20, status?: string) {
+export async function listUsers(
+  page: number = 1,
+  limit: number = 20,
+  status?: string,
+  q?: string
+) {
   const offset = (page - 1) * limit;
-  const where = status ? { status: status as any } : {};
+  const where: WhereOptions = status ? { status: status as any } : {};
+  const term = q?.trim();
+  if (term && term.length >= 2) {
+    Object.assign(where, {
+      [Op.or]: [
+        { fullName: { [Op.like]: `%${term}%` } },
+        { email: { [Op.like]: `%${term}%` } },
+        { mobile: { [Op.like]: `%${term}%` } }
+      ]
+    });
+  }
   const { count, rows } = await User.findAndCountAll({
     where,
     order: [["createdAt", "DESC"]],

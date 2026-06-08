@@ -157,6 +157,57 @@ export function computeMatrimonyCompletion(
   return { percentage: Math.min(100, percentage), missing };
 }
 
+/** Browse unlocks only after admin-approved profile is 100% complete and photo is usable. */
+export function resolveMatrimonyCanBrowse(input: {
+  hasApproved: boolean;
+  status: MatrimonyHubStatus;
+  completionPercentage: number;
+  approved: MatrimonySection | Record<string, unknown> | null;
+}): boolean {
+  const { hasApproved, status, completionPercentage, approved } = input;
+  if (!hasApproved || status !== "APPROVED") return false;
+  if (completionPercentage < 100) return false;
+  const section = (approved ?? {}) as MatrimonySection;
+  if (section.matrimonySuspended === true) return false;
+  const photo = resolveCandidatePhotoUrl(section as Record<string, unknown>);
+  if (!photo) return false;
+  const photoStatus = section.candidatePhotoStatus;
+  if (photoStatus === "REJECTED" || photoStatus === "REUPLOAD_REQUESTED") return false;
+  return true;
+}
+
+export async function assertMatrimonyBrowseAllowed(userId: number): Promise<void> {
+  const hub = await getMatrimonyHub(userId);
+  if (!hub.can_browse) {
+    const err = new Error(matrimonyBrowseBlockedMessage(hub));
+    (err as any).status = 403;
+    (err as any).code = "MATRIMONY_BROWSE_LOCKED";
+    throw err;
+  }
+}
+
+export function matrimonyBrowseBlockedMessage(
+  hub: Pick<MatrimonyHubResponse, "status" | "completion_percentage" | "can_browse">
+): string {
+  if (hub.can_browse) return "";
+  if (hub.status === "PENDING" || hub.status === "RESUBMITTED") {
+    return "Your matrimony profile is under admin review. Browsing unlocks after approval.";
+  }
+  if (hub.status === "CHANGES_REQUESTED") {
+    return "Admin requested changes. Complete the requested updates and resubmit before browsing.";
+  }
+  if (hub.status === "REJECTED") {
+    return "Your matrimony application was rejected. Update your profile and submit again.";
+  }
+  if (hub.status === "APPROVED" && hub.completion_percentage < 100) {
+    return `Complete your matrimony profile (${hub.completion_percentage}% done) before browsing.`;
+  }
+  if (hub.completion_percentage < 100) {
+    return `Complete your matrimony profile (${hub.completion_percentage}% done) and submit for admin approval.`;
+  }
+  return "Complete matrimony setup and get admin approval before browsing profiles.";
+}
+
 async function getUserContext(userId: number) {
   const user = await User.findByPk(userId);
   if (!user) throw new Error("User not found");
@@ -346,7 +397,12 @@ export async function getMatrimonyHub(userId: number): Promise<MatrimonyHubRespo
   else if (draft && Object.keys(draft).length > 0) status = "DRAFT";
   else if (percentage > 0) status = "DRAFT";
 
-  const can_browse = hasApproved && status === "APPROVED";
+  const can_browse = resolveMatrimonyCanBrowse({
+    hasApproved,
+    status,
+    completionPercentage: percentage,
+    approved: hasApproved ? approved : null
+  });
   const can_submit =
     status === "CHANGES_REQUESTED" ||
     status === "DRAFT" ||
@@ -596,6 +652,25 @@ export async function submitMatrimonyProfile(
     await row.update({ adminRemarks: null } as any);
   }
 
+  const Notifications = await import("./Notification.service");
+  void Notifications.notifyMatrimonyApplicationSubmitted(userId).catch(() => {});
+
+  return getMatrimonyHub(userId);
+}
+
+/** User-initiated pause: profile hidden from discovery; can reactivate via setup. */
+export async function withdrawMatrimonyProfile(userId: number): Promise<MatrimonyHubResponse> {
+  const profile = await UserProfile.findOne({ where: { userId } });
+  if (!profile) throw Object.assign(new Error("Profile not found"), { status: 404 });
+  const m = normalizeJsonColumn(profile.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection | null;
+  if (!m?.matrimonyProfileActive) {
+    throw Object.assign(new Error("No active matrimony profile to withdraw"), { status: 400 });
+  }
+  const next = { ...m, matrimonyProfileActive: false, withdrawnAt: new Date().toISOString() };
+  await profile.update({ matrimony: next as any, updatedAt: new Date() } as any);
+  await writeAudit(userId, null, "PROFILE_WITHDRAWN", "user", { withdrawnAt: new Date().toISOString() }).catch(
+    () => {}
+  );
   return getMatrimonyHub(userId);
 }
 

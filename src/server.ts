@@ -7,6 +7,7 @@ import { sequelize } from "./config/db";
 import { seedOptionsIfEmpty } from "./seed/options.seed";
 import { setDbReady, setDbFailed } from "./state";
 import { initSocket } from "./realtime/socket";
+import { startMatrimonySubscriptionJobs } from "./services/MatrimonySubscriptionLifecycle.service";
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -57,6 +58,7 @@ async function initDb() {
     await seedOptionsIfEmpty();
     setDbReady(true);
     console.log("Database ready.");
+    startMatrimonySubscriptionJobs();
     if (!process.env.ADMIN_API_KEY) {
       console.warn("Warning: ADMIN_API_KEY is not set in .env — admin APIs will return 500.");
     }

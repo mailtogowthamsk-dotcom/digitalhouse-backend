@@ -7,6 +7,8 @@ import { Location } from "./Location.model";
 import { Kulam } from "./Kulam.model";
 import { Post } from "./Post.model";
 import { Notification } from "./Notification.model";
+import { NotificationPreference } from "./NotificationPreference.model";
+import { PushDeviceToken } from "./PushDeviceToken.model";
 import { Message } from "./Message.model";
 import { PostLike } from "./PostLike.model";
 import { Comment } from "./Comment.model";
@@ -26,6 +28,8 @@ import { MatrimonySubscription } from "./MatrimonySubscription.model";
 import { MatrimonyProfileOpen } from "./MatrimonyProfileOpen.model";
 import { MatrimonyContactReveal } from "./MatrimonyContactReveal.model";
 import { MatrimonyProfileView } from "./MatrimonyProfileView.model";
+import { MatrimonyPaymentOrder } from "./MatrimonyPaymentOrder.model";
+import { RazorpayWebhookEvent } from "./RazorpayWebhookEvent.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
@@ -45,6 +49,10 @@ User.hasMany(Post, { foreignKey: "userId" });
 Post.belongsTo(User, { foreignKey: "userId" });
 User.hasMany(Notification, { foreignKey: "userId" });
 Notification.belongsTo(User, { foreignKey: "userId" });
+User.hasOne(NotificationPreference, { foreignKey: "userId" });
+NotificationPreference.belongsTo(User, { foreignKey: "userId" });
+User.hasMany(PushDeviceToken, { foreignKey: "userId" });
+PushDeviceToken.belongsTo(User, { foreignKey: "userId" });
 User.hasMany(Message, { foreignKey: "senderId" });
 Message.belongsTo(User, { foreignKey: "senderId" });
 User.hasMany(Message, { foreignKey: "recipientId" });
@@ -88,6 +96,8 @@ export {
   Kulam,
   Post,
   Notification,
+  NotificationPreference,
+  PushDeviceToken,
   Message,
   PostLike,
   Comment,
@@ -106,5 +116,7 @@ export {
   MatrimonySubscription,
   MatrimonyProfileOpen,
   MatrimonyContactReveal,
-  MatrimonyProfileView
+  MatrimonyProfileView,
+  MatrimonyPaymentOrder,
+  RazorpayWebhookEvent
 };

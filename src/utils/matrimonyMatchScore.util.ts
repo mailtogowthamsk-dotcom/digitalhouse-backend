@@ -113,7 +113,11 @@ export function computeMatrimonyMatchScore(input: MatchScoreInput): MatchScoreRe
     tags.unshift("Strong match");
   }
 
-  return { starLevel, matchTags: tags.slice(0, 6), score };
+  const uniqueTags: string[] = [];
+  for (const t of tags) {
+    if (!uniqueTags.includes(t)) uniqueTags.push(t);
+  }
+  return { starLevel, matchTags: uniqueTags.slice(0, 6), score };
 }
 
 export function starLabel(level: MatrimonyStarLevel): string {

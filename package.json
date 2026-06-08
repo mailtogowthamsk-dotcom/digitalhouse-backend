@@ -22,6 +22,9 @@
     "verify:deploy": "node -e \"require('fs').accessSync('dist/server.js'); require('express'); require('cors'); console.log('dist/server.js OK, dependencies installed');\"",
     "db:verify-matrimony": "node scripts/verify-matrimony-schema.js",
     "db:run-matrimony-sql": "node scripts/run-matrimony-sql.js",
+    "db:run-notifications-sql": "node scripts/run-notifications-migration.js",
+    "db:run-matrimony-razorpay-sql": "node scripts/run-matrimony-razorpay-migration.js",
+    "db:run-matrimony-subscription-p1-sql": "node scripts/run-matrimony-subscription-p1-migration.js",
     "db:apply-changes-requested": "node scripts/apply-matrimony-changes-requested.js",
     "verify:health": "node scripts/verify-production-health.js"
   },
@@ -35,6 +38,7 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.11.3",
     "nodemailer": "^8.0.7",
+    "razorpay": "^2.9.6",
     "sequelize": "^6.37.3",
     "sharp": "^0.34.5",
     "socket.io": "^4.8.1",

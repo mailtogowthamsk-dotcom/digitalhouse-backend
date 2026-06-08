@@ -4,9 +4,11 @@ import "./config/env";
 import { getApiMountPaths } from "./config/apiPath";
 import { corsOptions } from "./config/cors";
 import { corsPreflightMiddleware } from "./middlewares/corsPreflight.middleware";
+import { asyncHandler } from "./middlewares/asyncHandler";
 import { apiRouter } from "./routes";
 import { errorHandler } from "./middlewares/error.middleware";
 import { dbReady, dbFailed } from "./state";
+import { razorpayWebhook } from "./controllers/MatrimonyPayment.controller";
 
 export const app = express();
 
@@ -17,6 +19,16 @@ app.set("trust proxy", 1);
 app.use(corsPreflightMiddleware);
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
+
+// Razorpay webhook needs raw body for signature verification (before express.json)
+for (const mount of getApiMountPaths()) {
+  app.post(
+    `${mount}/matrimony/payments/webhook`,
+    express.raw({ type: "application/json" }),
+    asyncHandler(razorpayWebhook)
+  );
+}
+
 app.use(express.json());
 
 // Root: some platforms hit / for health – respond quickly so Railway sees the app as up

@@ -69,10 +69,8 @@ export async function getCandidateSafetyFlags(
 }
 
 export async function saveProfile(viewerId: number, candidateUserId: number): Promise<{ saved: true }> {
-  if (viewerId === candidateUserId) {
-    throw Object.assign(new Error("Invalid profile"), { status: 400 });
-  }
-  await assertNotBlocked(viewerId, candidateUserId);
+  const Discover = await import("./MatrimonyDiscover.service");
+  await Discover.assertEligibleMatrimonyCandidate(viewerId, candidateUserId);
   await MatrimonySavedProfile.findOrCreate({
     where: { userId: viewerId, savedUserId: candidateUserId },
     defaults: { userId: viewerId, savedUserId: candidateUserId, createdAt: new Date() } as any

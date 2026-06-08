@@ -286,12 +286,8 @@ export async function likePost(userId: number, postId: number): Promise<{ liked:
   logFeedEvent(userId, "like", postId);
 
   if (post.userId !== userId) {
-    const liker = await User.findByPk(userId, { attributes: ["fullName"] });
-    await Notification.create({
-      userId: post.userId,
-      title: "New like",
-      body: `${liker?.fullName ?? "Someone"} liked your post "${post.title.slice(0, 50)}${post.title.length > 50 ? "…" : ""}"`
-    } as any);
+    const { notifyPostLike } = await import("./Notification.service");
+    void notifyPostLike(post.userId, userId, postId, post.title).catch(() => {});
   }
   return { liked: true, like_count: count };
 }
@@ -327,11 +323,15 @@ export async function addComment(
   } as any);
   const author = await User.findByPk(userId, { attributes: ["id", "fullName", "profilePhoto", "status"] });
   if (post.userId !== userId && author) {
-    await Notification.create({
-      userId: post.userId,
-      title: "New comment",
-      body: `${author.fullName} commented on your post "${post.title.slice(0, 50)}${post.title.length > 50 ? "…" : ""}"`
-    } as any);
+    const { notifyPostComment } = await import("./Notification.service");
+    void notifyPostComment(post.userId, userId, postId, post.title, body.trim()).catch(() => {});
+  }
+  if (parentId) {
+    const parent = await Comment.findByPk(parentId, { attributes: ["userId"] });
+    if (parent && parent.userId !== userId) {
+      const { notifyCommentReply } = await import("./Notification.service");
+      void notifyCommentReply(parent.userId, userId, postId, parentId, body.trim()).catch(() => {});
+    }
   }
   const commentCount = await Comment.count({ where: { postId } });
   const community = await viewerCommunity(userId);

@@ -111,6 +111,8 @@ export type MatrimonyRequestListQuery = {
   verificationStatus?: "complete" | "incomplete" | "any";
   search?: string;
   includeDrafts?: boolean;
+  /** When true, show SUBMITTED, UNDER_REVIEW, and RESUBMITTED only */
+  pendingReviewOnly?: boolean;
 };
 
 function calcAge(dob: Date | string | null): number | null {
@@ -320,7 +322,10 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     const meta = metaByPending.get(row.id) ?? null;
     const workflowStatus = deriveWorkflow(row.status, rawData, meta);
     if (!query.includeDrafts && workflowStatus === "DRAFT") continue;
-    if (query.workflowStatus && workflowStatus !== query.workflowStatus) continue;
+    if (query.pendingReviewOnly) {
+      const pending = new Set(["SUBMITTED", "UNDER_REVIEW", "RESUBMITTED"]);
+      if (!pending.has(workflowStatus)) continue;
+    } else if (query.workflowStatus && workflowStatus !== query.workflowStatus) continue;
     if (
       query.gender &&
       !(user?.gender ?? "").toLowerCase().includes(query.gender.toLowerCase())
@@ -624,6 +629,22 @@ export async function approveMatrimonyRequest(updateId: number, adminEmail: stri
   const row = await PendingProfileUpdate.findByPk(updateId);
   if (!row || row.section !== "MATRIMONY") throw Object.assign(new Error("Request not found"), { status: 404 });
   const data = normalizeJsonColumn(row.data, SECTION_ALLOWED_KEYS.matrimony) ?? {};
+  const accountRow = await User.findByPk(row.userId, { attributes: ["profilePhoto"] });
+  const { missing, percentage } = computeMatrimonyCompletion(
+    null,
+    data,
+    accountRow?.profilePhoto ?? null
+  );
+  if (missing.length > 0) {
+    throw Object.assign(
+      new Error(
+        `Cannot approve: profile is ${percentage}% complete. Missing: ${missing.slice(0, 8).join(", ")}${
+          missing.length > 8 ? "…" : ""
+        }`
+      ),
+      { status: 400 }
+    );
+  }
   if (resolveCandidatePhotoUrl(data)) {
     data.candidatePhotoStatus = "APPROVED";
     await row.update({ data: syncMatrimonyPhotoFields(data), updatedAt: new Date() } as any);
@@ -639,6 +660,8 @@ export async function approveMatrimonyRequest(updateId: number, adminEmail: stri
     } as any);
   }
   await writeAudit(row.userId, row.id, "APPROVED", adminEmail, { remarks }).catch(() => {});
+  const { notifyMatrimonyProfileApproved } = await import("./Notification.service");
+  void notifyMatrimonyProfileApproved(row.userId).catch(() => {});
 }
 
 /** Approve / reject / request reupload for bride/groom photo only (pending request). */
@@ -704,6 +727,8 @@ export async function rejectMatrimonyRequest(
     } as any);
   }
   await writeAudit(row.userId, row.id, "REJECTED", adminEmail, { reasonCode, comment }).catch(() => {});
+  const { notifyMatrimonyProfileRejected } = await import("./Notification.service");
+  void notifyMatrimonyProfileRejected(row.userId, remarks).catch(() => {});
 }
 
 export async function requestMatrimonyChanges(
@@ -761,6 +786,8 @@ export async function requestMatrimonyChanges(
     comment,
     sections
   }).catch(() => {});
+  const { notifyMatrimonyChangesRequested } = await import("./Notification.service");
+  void notifyMatrimonyChangesRequested(row.userId, comment).catch(() => {});
 }
 
 function stripInternalKeysForSnapshot(data: Record<string, unknown>): Record<string, unknown> {

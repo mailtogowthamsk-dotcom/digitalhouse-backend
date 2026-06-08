@@ -98,7 +98,9 @@ export async function getSummary(userId: number): Promise<HomeSummaryDto> {
   const [user, quickActionCounts, unreadNotificationsCount, unreadMessagesCount] = await Promise.all([
     User.findByPk(userId).then(u => (u ? toHomeUserBasic(u) : null)),
     getQuickActionCounts(),
-    Notification.count({ where: { userId, readAt: null } }),
+    import("./NotificationPlatform.service").then((m) =>
+      m.getUnreadCounts(userId).then((c) => c.total)
+    ),
     Message.count({ where: { recipientId: userId, readAt: null } })
   ]);
 

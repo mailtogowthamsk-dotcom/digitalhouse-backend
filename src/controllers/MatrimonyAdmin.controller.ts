@@ -21,6 +21,8 @@ import {
   resolveReportSchema
 } from "../validations/matrimony-safety.validation";
 import { MATRIMONY_REPORT_REASONS } from "../constants/matrimony-safety.constants";
+import * as PlatformSettings from "../services/MatrimonyPlatformSettings.service";
+import { z } from "zod";
 
 function adminEmail(req: Request): string {
   return (req as any).adminEmail ?? "admin";
@@ -189,8 +191,24 @@ export async function getConfig(_req: Request, res: Response) {
       label: v.label,
       fields: v.fields
     })),
-    reportReasons: MATRIMONY_REPORT_REASONS
+    reportReasons: MATRIMONY_REPORT_REASONS,
+    platformSettings: PlatformSettings.settingsForAdmin(),
+    planCatalog: PlatformSettings.getDynamicPlanCatalog()
   });
+}
+
+const platformSettingsSchema = z.object({
+  goldPriceInr: z.number().int().positive().optional(),
+  platinumPriceInr: z.number().int().positive().optional(),
+  contactRevealPaise: z.number().int().positive().optional(),
+  monthlyOpenQuota: z.number().int().positive().optional(),
+  durationMonths: z.number().int().positive().optional()
+});
+
+export async function updatePlatformSettings(req: Request, res: Response) {
+  const body = platformSettingsSchema.parse(req.body);
+  const saved = PlatformSettings.saveMatrimonyPlatformSettings(body, adminEmail(req));
+  return success(res, { platformSettings: saved, message: "Platform settings updated." });
 }
 
 export async function listReports(req: Request, res: Response) {

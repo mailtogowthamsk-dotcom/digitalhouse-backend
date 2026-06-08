@@ -37,6 +37,10 @@ export const matrimonyListQuerySchema = z.object({
   includeDrafts: z
     .union([z.literal("true"), z.literal("false"), z.boolean()])
     .optional()
+    .transform((v) => v === true || v === "true"),
+  pendingReviewOnly: z
+    .union([z.literal("true"), z.literal("false"), z.boolean()])
+    .optional()
     .transform((v) => v === true || v === "true")
 });
 

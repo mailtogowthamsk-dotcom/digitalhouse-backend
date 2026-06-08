@@ -1,4 +1,4 @@
-import { Op } from "sequelize";
+import { Op, type Transaction } from "sequelize";
 import {
   MatrimonySubscription,
   MatrimonyProfileOpen,
@@ -15,6 +15,8 @@ import {
   STAR_TWO
 } from "../constants/matrimony-monetization.constants";
 import { starLabel } from "../utils/matrimonyMatchScore.util";
+import { subscriptionCreatePayload, withSubscriptionAttributes } from "../utils/matrimonySubscriptionSchema.util";
+import * as PlatformSettings from "./MatrimonyPlatformSettings.service";
 
 let tablesReady: boolean | null = null;
 
@@ -44,15 +46,17 @@ export function billingPeriodResetsAt(period: string): string {
 export async function getActivePlan(userId: number): Promise<MatrimonyPlanCode> {
   if (!(await ensureMonetizationTables())) return "FREE";
   const now = new Date();
-  const row = await MatrimonySubscription.findOne({
-    where: {
-      userId,
-      status: "ACTIVE",
-      plan: { [Op.in]: ["GOLD", "PLATINUM"] },
-      endsAt: { [Op.gt]: now }
-    },
-    order: [["endsAt", "DESC"]]
-  });
+  const row = await MatrimonySubscription.findOne(
+    await withSubscriptionAttributes({
+      where: {
+        userId,
+        status: "ACTIVE",
+        plan: { [Op.in]: ["GOLD", "PLATINUM"] },
+        endsAt: { [Op.gt]: now }
+      },
+      order: [["endsAt", "DESC"]]
+    })
+  );
   return row?.plan ?? "FREE";
 }
 
@@ -71,6 +75,17 @@ export type SubscriptionSummary = {
     canOpenTwoStar: boolean;
     whoViewedMe: boolean;
   };
+};
+
+export type MySubscriptionDetail = SubscriptionSummary & {
+  subscriptionStatus: "FREE" | "ACTIVE" | "EXPIRED";
+  startedAt: string | null;
+  daysRemaining: number | null;
+  amountPaidPaise: number | null;
+  amountPaidInr: number | null;
+  paymentId: string | null;
+  razorpayOrderId: string | null;
+  canRenew: boolean;
 };
 
 export async function getSubscriptionSummary(userId: number): Promise<SubscriptionSummary> {
@@ -101,15 +116,17 @@ export async function getSubscriptionSummary(userId: number): Promise<Subscripti
 async function getActiveSubscriptionRow(userId: number) {
   if (!(await ensureMonetizationTables())) return null;
   const now = new Date();
-  return MatrimonySubscription.findOne({
-    where: {
-      userId,
-      status: "ACTIVE",
-      plan: { [Op.in]: ["GOLD", "PLATINUM"] },
-      endsAt: { [Op.gt]: now }
-    },
-    order: [["endsAt", "DESC"]]
-  });
+  return MatrimonySubscription.findOne(
+    await withSubscriptionAttributes({
+      where: {
+        userId,
+        status: "ACTIVE",
+        plan: { [Op.in]: ["GOLD", "PLATINUM"] },
+        endsAt: { [Op.gt]: now }
+      },
+      order: [["endsAt", "DESC"]]
+    })
+  );
 }
 
 export async function countOpensInPeriod(userId: number, period: string): Promise<number> {
@@ -206,35 +223,139 @@ export async function recordProfileOpen(userId: number, candidateUserId: number)
   });
 }
 
+/** One logical view per viewer→profile per 24h (updates timestamp on repeat opens). */
 export async function recordProfileView(viewerId: number, viewedUserId: number): Promise<void> {
   if (!(await ensureMonetizationTables())) return;
   if (viewerId === viewedUserId) return;
+
+  const since = new Date();
+  since.setHours(since.getHours() - 24);
+
+  const existing = await MatrimonyProfileView.findOne({
+    where: {
+      viewerId,
+      viewedUserId,
+      createdAt: { [Op.gte]: since }
+    },
+    order: [["createdAt", "DESC"]]
+  });
+
+  if (existing) {
+    await existing.update({ createdAt: new Date() } as any);
+    return;
+  }
+
   await MatrimonyProfileView.create({
     viewerId,
     viewedUserId,
     createdAt: new Date()
   } as any);
+
+  const ownerPlan = await getActivePlan(viewedUserId);
+  if (ownerPlan === "PLATINUM") {
+    const { notifyMatrimonyProfileViewed } = await import("./Notification.service");
+    void notifyMatrimonyProfileViewed(viewedUserId, viewerId).catch(() => {});
+  }
+}
+
+/** True if `viewerId` opened `viewedUserId`'s full matrimony profile in the last N days. */
+export async function viewedProfileRecently(
+  viewerId: number,
+  viewedUserId: number,
+  days = 30
+): Promise<boolean> {
+  if (!(await ensureMonetizationTables())) return false;
+  const since = new Date();
+  since.setDate(since.getDate() - days);
+  const row = await MatrimonyProfileView.findOne({
+    where: {
+      viewerId,
+      viewedUserId,
+      createdAt: { [Op.gte]: since }
+    }
+  });
+  return !!row;
+}
+
+export async function getMySubscriptionDetail(userId: number): Promise<MySubscriptionDetail> {
+  const summary = await getSubscriptionSummary(userId);
+  const activeRow = await getActiveSubscriptionRow(userId);
+  const now = Date.now();
+
+  if (!activeRow) {
+    const lastPaid = await MatrimonySubscription.findOne(
+      await withSubscriptionAttributes({
+        where: { userId, plan: { [Op.in]: ["GOLD", "PLATINUM"] } },
+        order: [["endsAt", "DESC"]]
+      })
+    );
+    const expired =
+      lastPaid &&
+      (lastPaid.status === "EXPIRED" || lastPaid.endsAt.getTime() <= now);
+    const expiredCatalog = lastPaid
+      ? MATRIMONY_PLAN_CATALOG.find((p) => p.plan === lastPaid.plan)
+      : null;
+    return {
+      ...summary,
+      plan: expired ? "FREE" : summary.plan,
+      planLabel: expired && expiredCatalog ? expiredCatalog.label : summary.planLabel,
+      expiresAt: lastPaid?.endsAt.toISOString() ?? null,
+      subscriptionStatus: expired ? "EXPIRED" : "FREE",
+      startedAt: lastPaid?.startsAt.toISOString() ?? null,
+      daysRemaining: null,
+      amountPaidPaise: lastPaid?.amountPaise ?? null,
+      amountPaidInr: lastPaid?.amountPaise != null ? lastPaid.amountPaise / 100 : null,
+      paymentId: lastPaid?.paymentRef ?? null,
+      razorpayOrderId: lastPaid?.razorpayOrderId ?? null,
+      canRenew: true
+    };
+  }
+
+  const msLeft = activeRow.endsAt.getTime() - now;
+  const daysRemaining = Math.max(0, Math.ceil(msLeft / (24 * 60 * 60 * 1000)));
+
+  return {
+    ...summary,
+    subscriptionStatus: "ACTIVE",
+    startedAt: activeRow.startsAt.toISOString(),
+    daysRemaining,
+    amountPaidPaise: activeRow.amountPaise ?? null,
+    amountPaidInr: activeRow.amountPaise != null ? activeRow.amountPaise / 100 : null,
+    paymentId: activeRow.paymentRef ?? null,
+    razorpayOrderId: activeRow.razorpayOrderId ?? null,
+    canRenew: daysRemaining <= 30
+  };
 }
 
 export async function subscribePlan(
   userId: number,
   plan: "GOLD" | "PLATINUM",
   durationMonths = 6,
-  paymentRef?: string
+  paymentRef?: string,
+  options?: {
+    transaction?: Transaction;
+    amountPaise?: number;
+    razorpayOrderId?: string;
+    paymentOrderId?: number;
+  }
 ): Promise<SubscriptionSummary> {
   if (!(await ensureMonetizationTables())) {
     throw Object.assign(new Error("Monetization tables not migrated"), { status: 503 });
   }
+  const tx = options?.transaction;
   const startsAt = new Date();
   const endsAt = new Date(startsAt);
   endsAt.setMonth(endsAt.getMonth() + durationMonths);
 
   await MatrimonySubscription.update(
     { status: "EXPIRED" } as any,
-    { where: { userId, status: "ACTIVE", plan: { [Op.in]: ["GOLD", "PLATINUM"] } } }
+    {
+      where: { userId, status: "ACTIVE", plan: { [Op.in]: ["GOLD", "PLATINUM"] } },
+      transaction: tx
+    }
   );
 
-  await MatrimonySubscription.create({
+  const createRow = await subscriptionCreatePayload({
     userId,
     plan,
     status: "ACTIVE",
@@ -242,9 +363,16 @@ export async function subscribePlan(
     startsAt,
     endsAt,
     paymentRef: paymentRef ?? `dev-${Date.now()}`,
+    amountPaise: options?.amountPaise ?? null,
+    razorpayOrderId: options?.razorpayOrderId ?? null,
+    paymentOrderId: options?.paymentOrderId ?? null,
+    expiryReminder7dAt: null,
+    expiryReminder1dAt: null,
+    expiredNotifiedAt: null,
     createdAt: startsAt,
     updatedAt: startsAt
-  } as any);
+  });
+  await MatrimonySubscription.create(createRow as any, { transaction: tx });
 
   return getSubscriptionSummary(userId);
 }
@@ -253,13 +381,17 @@ export async function getContactRevealStatus(
   userId: number,
   targetUserId: number
 ): Promise<{ status: "NONE" | "PENDING" | "PAID"; amountPaise: number }> {
+  const contactPaise = PlatformSettings.contactRevealAmountPaise();
   if (!(await ensureMonetizationTables())) {
-    return { status: "NONE", amountPaise: MATRIMONY_CONTACT_REVEAL_PAISE };
+    throw Object.assign(new Error("Subscription billing is temporarily unavailable."), {
+      status: 503,
+      code: "MONETIZATION_UNAVAILABLE"
+    });
   }
   const row = await MatrimonyContactReveal.findOne({
     where: { userId, targetUserId }
   });
-  if (!row) return { status: "NONE", amountPaise: MATRIMONY_CONTACT_REVEAL_PAISE };
+  if (!row) return { status: "NONE", amountPaise: contactPaise };
   return {
     status: row.status === "PAID" ? "PAID" : row.status === "PENDING" ? "PENDING" : "NONE",
     amountPaise: row.amountPaise
@@ -288,7 +420,7 @@ export async function createContactRevealPayment(
       userId,
       targetUserId,
       matchId,
-      amountPaise: MATRIMONY_CONTACT_REVEAL_PAISE,
+      amountPaise: PlatformSettings.contactRevealAmountPaise(),
       currency: "INR",
       status: "PENDING",
       createdAt: new Date(),
@@ -307,27 +439,37 @@ export async function createContactRevealPayment(
 export async function confirmContactRevealPayment(
   userId: number,
   targetUserId: number,
-  paymentRef?: string
+  paymentRef?: string,
+  options?: { transaction?: Transaction }
 ): Promise<void> {
   if (!(await ensureMonetizationTables())) {
     throw Object.assign(new Error("Monetization tables not migrated"), { status: 503 });
   }
-  const row = await MatrimonyContactReveal.findOne({ where: { userId, targetUserId } });
+  const row = await MatrimonyContactReveal.findOne({
+    where: { userId, targetUserId },
+    transaction: options?.transaction
+  });
   if (!row) {
     throw Object.assign(new Error("No contact reveal payment started"), { status: 404 });
   }
-  await row.update({
-    status: "PAID",
-    paymentRef: paymentRef ?? `dev-paid-${Date.now()}`,
-    paidAt: new Date()
-  } as any);
+  await row.update(
+    {
+      status: "PAID",
+      paymentRef: paymentRef ?? `dev-paid-${Date.now()}`,
+      paidAt: new Date()
+    } as any,
+    { transaction: options?.transaction }
+  );
+  const Notifications = await import("./Notification.service");
+  void Notifications.notifyMatrimonyContactUnlocked(userId, targetUserId).catch(() => {});
 }
 
 export async function assertContactRevealPaid(userId: number, targetUserId: number): Promise<void> {
   const { status } = await getContactRevealStatus(userId, targetUserId);
   if (status !== "PAID") {
+    const amountInr = Math.round(PlatformSettings.getMatrimonyPlatformSettings().contactRevealPaise / 100);
     throw Object.assign(
-      new Error("Pay ₹500 to reveal contact after mutual match."),
+      new Error(`Pay ₹${amountInr} to reveal contact after mutual match.`),
       { status: 402, code: "CONTACT_PAYMENT_REQUIRED" }
     );
   }
@@ -359,20 +501,30 @@ export async function listWhoViewedMe(userId: number): Promise<
   const views = await MatrimonyProfileView.findAll({
     where: { viewedUserId: userId, createdAt: { [Op.gte]: since } },
     order: [["createdAt", "DESC"]],
-    limit: 50
+    limit: 200
   });
 
-  const viewerIds = [...new Set(views.map((v) => v.viewerId))];
-  if (!viewerIds.length) return [];
+  /** One row per viewer — show their most recent open in the last 30 days. */
+  const latestByViewer = new Map<number, (typeof views)[number]>();
+  for (const v of views) {
+    const prev = latestByViewer.get(v.viewerId);
+    if (!prev || v.createdAt > prev.createdAt) latestByViewer.set(v.viewerId, v);
+  }
+  const deduped = [...latestByViewer.values()].sort(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime()
+  );
+  if (!deduped.length) return [];
 
+  const viewerIds = deduped.map((v) => v.viewerId);
   const users = await User.findAll({
     where: { id: { [Op.in]: viewerIds }, status: "APPROVED" },
     attributes: ["id", "fullName", "dob", "district"]
   });
   const byId = new Map(users.map((u) => [u.id, u]));
 
-  return views
+  return deduped
     .filter((v) => byId.has(v.viewerId))
+    .slice(0, 50)
     .map((v) => {
       const u = byId.get(v.viewerId)!;
       const age = u.dob
@@ -391,5 +543,5 @@ export async function listWhoViewedMe(userId: number): Promise<
 }
 
 export function getPlanCatalog() {
-  return MATRIMONY_PLAN_CATALOG;
+  return PlatformSettings.getDynamicPlanCatalog();
 }

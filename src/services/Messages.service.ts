@@ -3,6 +3,7 @@ import { sequelize } from "../config/db";
 import { Message, User } from "../models";
 import { toSignedUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
+import { emitMessageEvents } from "../realtime/messageEvents";
 import * as NotificationService from "./Notification.service";
 import {
   assertMatrimonyChatAllowed,
@@ -178,11 +179,14 @@ export async function sendMessage(
     readAt: null
   } as any);
 
+  const dto = toMessageDto(msg);
+  emitMessageEvents(dto);
+
   if (!isOnline(recipientId)) {
     void NotificationService.notifyNewMessage(recipientId, senderId, trimmed).catch(() => {});
   }
 
-  return toMessageDto(msg);
+  return dto;
 }
 
 export async function markRead(me: number, otherUserId: number): Promise<{ readAt: string }> {

@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { ZodError } from "zod";
 import * as adminService from "../services/admin.service";
 import { mediaService } from "../services/Media.service";
 import { userService } from "../services/user.service";
@@ -10,6 +11,8 @@ import {
   approveProfileUpdateSchema,
   rejectProfileUpdateSchema
 } from "../validations/admin.validation";
+import { adminBroadcastSchema } from "../validations/notifications.validation";
+import { adminBroadcast, getNotificationAudienceStats } from "../services/Notification.service";
 
 const ADMIN_ID = process.env.ADMIN_API_KEY || "admin";
 
@@ -30,8 +33,15 @@ export async function listUsers(req: Request, res: Response) {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
   const status = typeof req.query.status === "string" ? req.query.status : undefined;
-  const result = await adminService.listUsers(page, limit, status);
+  const q = typeof req.query.q === "string" ? req.query.q : undefined;
+  const result = await adminService.listUsers(page, limit, status, q);
   return success(res, result);
+}
+
+/** GET /admin/notifications/stats – audience & push reach */
+export async function notificationStats(req: Request, res: Response) {
+  const stats = await getNotificationAudienceStats();
+  return success(res, stats);
 }
 
 /** List pending users (awaiting approval) */
@@ -135,6 +145,31 @@ export async function approveUpdate(req: Request, res: Response) {
     if (e.message === "Pending update not found") return error(res, "Pending update not found", 404);
     if (e.message === "Update is not pending") return error(res, "Update is not pending", 400);
     throw e;
+  }
+}
+
+/** POST /admin/notifications/broadcast – community / targeted announcements */
+export async function broadcastNotifications(req: Request, res: Response) {
+  try {
+    const body = adminBroadcastSchema.parse(req.body);
+    const result = await adminBroadcast({
+      title: body.title,
+      body: body.body,
+      category: body.category as import("../constants/notification.constants").NotificationCategory | undefined,
+      userIds: body.userIds,
+      actionType: body.actionType as import("../constants/notification.constants").NotificationActionType | undefined,
+      actionTargetId: body.actionTargetId,
+      persistInApp: body.persistInApp
+    });
+    return success(res, result);
+  } catch (e: any) {
+    if (e instanceof ZodError) {
+      return error(res, e.errors[0]?.message ?? "Invalid request", 400);
+    }
+    const status = e?.status === 400 ? 400 : 500;
+    const message = e?.message ?? "Broadcast failed";
+    if (status === 500) console.error("[admin broadcast]", e);
+    return error(res, message, status);
   }
 }
 

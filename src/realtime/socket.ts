@@ -5,6 +5,7 @@ import { User } from "../models";
 import { Message } from "../models";
 import { presenceAdd, presenceRemove, isOnline } from "./presence";
 import { setIo, communityRoom } from "./io";
+import { emitMessageEvents } from "./messageEvents";
 
 type AuthedSocketData = { userId: number };
 
@@ -104,8 +105,7 @@ export function initSocket(httpServer: HttpServer) {
             createdAt: msg.createdAt.toISOString()
           };
 
-          io.to(`user:${recipientId}`).emit("message:new", dto);
-          io.to(`user:${userId}`).emit("message:sent", dto);
+          emitMessageEvents(dto);
 
           if (!isOnline(recipientId)) {
             const { notifyNewMessage } = await import("../services/Notification.service");

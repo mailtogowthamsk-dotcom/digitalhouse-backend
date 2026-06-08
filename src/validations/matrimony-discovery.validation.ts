@@ -36,5 +36,6 @@ export const sendInterestSchema = z.object({
 });
 
 export const respondInterestSchema = z.object({
-  action: z.enum(["ACCEPT", "DECLINE"])
+  action: z.enum(["ACCEPT", "DECLINE"]),
+  introMessage: z.string().max(500).optional().nullable()
 });

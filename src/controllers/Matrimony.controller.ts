@@ -4,7 +4,9 @@ import { success, error } from "../utils/response";
 import {
   getMatrimonyHub,
   saveMatrimonyDraft,
-  submitMatrimonyProfile
+  submitMatrimonyProfile,
+  withdrawMatrimonyProfile,
+  assertMatrimonyBrowseAllowed
 } from "../services/Matrimony.service";
 import { validateMatrimonyDraftBody, validateMatrimonySubmitBody } from "../validations/matrimony.validation";
 import { MATRIMONY_INCOME_RANGES, MATRIMONY_HEIGHT_OPTIONS, MATRIMONY_COMPLEXION_OPTIONS, PARTNER_GENDER_OPTIONS } from "../constants/matrimony.constants";
@@ -19,12 +21,30 @@ import {
   respondInterestSchema
 } from "../validations/matrimony-discovery.validation";
 import * as Monetization from "../services/MatrimonyMonetization.service";
+import * as SubscriptionLifecycle from "../services/MatrimonySubscriptionLifecycle.service";
 import { subscribePlanSchema } from "../validations/matrimony-monetization.validation";
+import { assertDevMatrimonyPaymentsAllowed } from "../services/Razorpay.service";
 
 export async function getMe(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   const hub = await getMatrimonyHub(userId);
-  const subscription = await Monetization.getSubscriptionSummary(userId);
+  let subscription: Awaited<ReturnType<typeof Monetization.getSubscriptionSummary>>;
+  try {
+    subscription = await Monetization.getSubscriptionSummary(userId);
+  } catch (err: unknown) {
+    console.warn(
+      "[matrimony/me] subscription summary failed — run npm run db:run-matrimony-subscription-p1-sql",
+      err instanceof Error ? err.message : err
+    );
+    const period = Monetization.currentBillingPeriod();
+    subscription = {
+      plan: "FREE",
+      planLabel: "Free",
+      expiresAt: null,
+      quota: { used: 0, limit: 0, period, resetsAt: Monetization.billingPeriodResetsAt(period) },
+      features: { canOpenOneStar: false, canOpenTwoStar: false, whoViewedMe: false }
+    };
+  }
   return success(res, {
     ...hub,
     subscription,
@@ -136,19 +156,25 @@ export async function openCandidateProfile(req: Request, res: Response) {
 
 export async function getSubscription(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
-  const subscription = await Monetization.getSubscriptionSummary(userId);
-  return success(res, { subscription, plans: Monetization.getPlanCatalog() });
+  const [subscription, mySubscription] = await Promise.all([
+    Monetization.getSubscriptionSummary(userId),
+    Monetization.getMySubscriptionDetail(userId)
+  ]);
+  return success(res, { subscription, mySubscription, plans: Monetization.getPlanCatalog() });
+}
+
+export async function getPaymentHistory(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const items = await SubscriptionLifecycle.listUserPaymentHistory(userId);
+  return success(res, { items });
 }
 
 export async function subscribePlan(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   try {
+    assertDevMatrimonyPaymentsAllowed();
     const body = subscribePlanSchema.parse(req.body);
-    const subscription = await Monetization.subscribePlan(
-      userId,
-      body.plan,
-      body.durationMonths
-    );
+    const subscription = await Monetization.subscribePlan(userId, body.plan, 6);
     return success(res, {
       subscription,
       message: `${body.plan} plan activated (dev billing — connect Razorpay for production).`
@@ -181,6 +207,7 @@ export async function confirmContactPayment(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   const otherUserId = Number(req.params.userId);
   try {
+    assertDevMatrimonyPaymentsAllowed();
     await Monetization.confirmContactRevealPayment(userId, otherUserId);
     const data = await Discover.revealContactIfMatched(userId, otherUserId);
     return success(res, { ...data, message: "Contact revealed." });
@@ -193,6 +220,7 @@ export async function confirmContactPayment(req: Request, res: Response) {
 export async function listProfileViews(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   try {
+    await assertMatrimonyBrowseAllowed(userId);
     const items = await Monetization.listWhoViewedMe(userId);
     return success(res, { items });
   } catch (e: any) {
@@ -228,8 +256,8 @@ export async function respondInterest(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   const interestId = Number(req.params.id);
   try {
-    const { action } = respondInterestSchema.parse(req.body);
-    const data = await Discover.respondToInterest(userId, interestId, action);
+    const { action, introMessage } = respondInterestSchema.parse(req.body);
+    const data = await Discover.respondToInterest(userId, interestId, action, introMessage ?? undefined);
     return success(res, data);
   } catch (e: any) {
     if (e instanceof ZodError) return error(res, formatZodMessage(e), 400);
@@ -306,14 +334,21 @@ export async function revealContact(req: Request, res: Response) {
 
 export async function listSaved(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
-  const items = await MatrimonySafety.listSavedProfiles(userId);
-  return success(res, { items });
+  try {
+    await assertMatrimonyBrowseAllowed(userId);
+    const items = await MatrimonySafety.listSavedProfiles(userId);
+    return success(res, { items });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
 }
 
 export async function saveProfile(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   const candidateUserId = Number(req.params.userId);
   try {
+    await assertMatrimonyBrowseAllowed(userId);
     const data = await MatrimonySafety.saveProfile(userId, candidateUserId);
     return success(res, data);
   } catch (e: any) {
@@ -325,8 +360,14 @@ export async function saveProfile(req: Request, res: Response) {
 export async function unsaveProfile(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   const candidateUserId = Number(req.params.userId);
-  await MatrimonySafety.unsaveProfile(userId, candidateUserId);
-  return success(res, { ok: true });
+  try {
+    await assertMatrimonyBrowseAllowed(userId);
+    await MatrimonySafety.unsaveProfile(userId, candidateUserId);
+    return success(res, { ok: true });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
 }
 
 export async function blockProfile(req: Request, res: Response) {
@@ -365,4 +406,34 @@ export async function reportProfile(req: Request, res: Response) {
     if (e.status) return error(res, e.message, e.status);
     throw e;
   }
+}
+
+export async function withdrawProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  try {
+    const hub = await withdrawMatrimonyProfile(userId);
+    return success(res, { ...hub, message: "Matrimony profile withdrawn from discovery." });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function withdrawInterest(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const interestId = Number(req.params.id);
+  try {
+    const interest = await Discover.withdrawInterest(userId, interestId);
+    return success(res, { interest });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function getChatAccess(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const otherUserId = Number(req.params.userId);
+  const data = await Discover.getMatrimonyChatAccess(userId, otherUserId);
+  return success(res, data);
 }
