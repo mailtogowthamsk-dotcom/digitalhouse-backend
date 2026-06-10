@@ -23,6 +23,8 @@ import { toSignedUrlIfR2 } from "../utils/r2Client";
 import { Location } from "../models";
 import { computeMatrimonyMatchScore, starLabel } from "../utils/matrimonyMatchScore.util";
 import * as Monetization from "./MatrimonyMonetization.service";
+
+const MATRIMONY_DECLINE_COOLDOWN_MS = 60 * 24 * 60 * 60 * 1000;
 import type { MatrimonyStarLevel } from "../constants/matrimony-monetization.constants";
 
 export type DiscoverCardDto = {
@@ -188,7 +190,10 @@ async function loadLocationMap(): Promise<Map<number, string>> {
   return new Map(rows.map((l) => [l.id, l.name]));
 }
 
-async function getActiveMatch(userId: number, otherUserId: number): Promise<MatrimonyMatch | null> {
+export async function getActiveMatrimonyMatch(
+  userId: number,
+  otherUserId: number
+): Promise<MatrimonyMatch | null> {
   const { low, high } = normalizeMatchPair(userId, otherUserId);
   try {
     return await MatrimonyMatch.findOne({
@@ -489,7 +494,7 @@ async function candidateHasFullAccess(
   viewerId: number,
   candidateUserId: number
 ): Promise<boolean> {
-  const match = await getActiveMatch(viewerId, candidateUserId);
+  const match = await getActiveMatrimonyMatch(viewerId, candidateUserId);
   if (match) return true;
   const Entitlement = await import("./MatrimonyEntitlement.service");
   return Entitlement.viewerHasProfileUnlock(viewerId, candidateUserId, false);
@@ -505,7 +510,7 @@ export async function assertEligibleMatrimonyCandidate(
   }
   await MatrimonySafety.assertNotBlocked(viewerId, candidateUserId);
 
-  const existingMatch = await getActiveMatch(viewerId, candidateUserId);
+  const existingMatch = await getActiveMatrimonyMatch(viewerId, candidateUserId);
   if (existingMatch) {
     throw Object.assign(new Error("You are already matched with this profile."), {
       status: 400,
@@ -595,7 +600,7 @@ export async function openCandidateProfile(
     }
   });
 
-  const activeMatch = await getActiveMatch(viewerId, candidateUserId);
+  const activeMatch = await getActiveMatrimonyMatch(viewerId, candidateUserId);
   if (!activeMatch) {
     await Monetization.assertCanOpenProfile(viewerId, candidateUserId, matchScore.starLevel);
     await Monetization.recordProfileOpen(viewerId, candidateUserId);
@@ -658,7 +663,7 @@ export async function getCandidateDetail(
   const photoRaw = resolveCandidatePhotoUrl(m as Record<string, unknown>);
   const photoUrl = photoRaw ? (await toSignedUrlIfR2(photoRaw)) ?? photoRaw : null;
 
-  const match = await getActiveMatch(viewerId, candidateUserId);
+  const match = await getActiveMatrimonyMatch(viewerId, candidateUserId);
 
   let sentInterest: MatrimonyInterest | null = null;
   let recvInterest: MatrimonyInterest | null = null;
@@ -738,9 +743,15 @@ export async function getCandidateDetail(
     dosham: m!.dosham ?? null,
     kulamLabel,
     interestStatus,
-    canSendInterest:
-      !mutualMatch &&
-      (!sentInterest || sentInterest.status === "WITHDRAWN" || sentInterest.status === "DECLINED"),
+    canSendInterest: (() => {
+      if (mutualMatch) return false;
+      if (!sentInterest || sentInterest.status === "WITHDRAWN") return true;
+      if (sentInterest.status === "DECLINED") {
+        const elapsed = Date.now() - (sentInterest.respondedAt?.getTime() ?? 0);
+        return elapsed >= MATRIMONY_DECLINE_COOLDOWN_MS;
+      }
+      return false;
+    })(),
     canRespondInterest: recvInterest?.status === "PENDING",
     pendingInterestId: recvInterest?.status === "PENDING" ? recvInterest.id : null,
     mutualMatch,
@@ -786,6 +797,15 @@ export async function sendInterest(
   }
   if (existing?.status === "ACCEPTED") {
     throw Object.assign(new Error("Interest already accepted"), { status: 400 });
+  }
+  if (existing?.status === "DECLINED") {
+    const elapsed = Date.now() - (existing.respondedAt?.getTime() ?? 0);
+    if (elapsed < MATRIMONY_DECLINE_COOLDOWN_MS) {
+      throw Object.assign(
+        new Error("Please wait 60 days after a declined interest before sending again."),
+        { status: 403, code: "MATRIMONY_DECLINE_COOLDOWN" }
+      );
+    }
   }
 
   let interest: MatrimonyInterest;
@@ -867,6 +887,7 @@ export async function respondToInterest(
       );
     }
   } else {
+    await closeMatrimonyMatchBetween(interest.fromUserId, interest.toUserId);
     void NotificationService.notifyMatrimonyInterestDeclined(
       interest.fromUserId,
       interest.toUserId
@@ -884,11 +905,23 @@ export async function withdrawInterest(
   if (!interest || interest.fromUserId !== fromUserId) {
     throw Object.assign(new Error("Interest not found"), { status: 404 });
   }
-  if (interest.status !== "PENDING") {
-    throw Object.assign(new Error("Can only withdraw pending interest"), { status: 400 });
+  if (interest.status === "PENDING") {
+    await interest.update({ status: "WITHDRAWN", respondedAt: new Date() } as any);
+    return interest;
   }
-  await interest.update({ status: "WITHDRAWN", respondedAt: new Date() } as any);
-  return interest;
+  if (interest.status === "ACCEPTED") {
+    await interest.update({ status: "WITHDRAWN", respondedAt: new Date() } as any);
+    const otherId = interest.toUserId;
+    await closeMatrimonyMatchBetween(fromUserId, otherId);
+    const reverse = await MatrimonyInterest.findOne({
+      where: { fromUserId: otherId, toUserId: fromUserId, status: "ACCEPTED" }
+    });
+    if (reverse) {
+      await reverse.update({ status: "WITHDRAWN", respondedAt: new Date() } as any);
+    }
+    return interest;
+  }
+  throw Object.assign(new Error("This interest cannot be withdrawn"), { status: 400 });
 }
 
 export async function listInterests(
@@ -980,7 +1013,7 @@ export async function requestHoroscopeShare(
   viewerId: number,
   otherUserId: number
 ): Promise<{ requested: boolean }> {
-  const match = await getActiveMatch(viewerId, otherUserId);
+  const match = await getActiveMatrimonyMatch(viewerId, otherUserId);
   if (!match) {
     const err = new Error("Match required to request horoscope");
     (err as any).status = 403;
@@ -997,7 +1030,7 @@ export async function shareHoroscopeWithMatch(
   viewerId: number,
   otherUserId: number
 ): Promise<{ shared: boolean }> {
-  const match = await getActiveMatch(viewerId, otherUserId);
+  const match = await getActiveMatrimonyMatch(viewerId, otherUserId);
   if (!match) {
     const err = new Error("Match required to share horoscope");
     (err as any).status = 403;
@@ -1021,7 +1054,7 @@ export async function getHoroscopeForMatch(
   viewerId: number,
   otherUserId: number
 ): Promise<{ url: string | null; available: boolean }> {
-  const match = await getActiveMatch(viewerId, otherUserId);
+  const match = await getActiveMatrimonyMatch(viewerId, otherUserId);
   if (!match || !match.horoscopeShared) {
     const err = new Error("Horoscope available only after mutual match");
     (err as any).status = 403;
@@ -1053,7 +1086,7 @@ export async function assertMatrimonyChatAllowed(
   recipientId: number
 ): Promise<void> {
   await MatrimonySafety.assertNotBlocked(senderId, recipientId);
-  const match = await getActiveMatch(senderId, recipientId);
+  const match = await getActiveMatrimonyMatch(senderId, recipientId);
   if (!match || !match.chatEnabled) {
     const err = new Error(
       "Matrimony chat unlocks only after both parties accept interest and become a mutual match."
@@ -1068,7 +1101,7 @@ export async function getActiveMatchForContact(
   userId: number,
   otherUserId: number
 ): Promise<MatrimonyMatch> {
-  const match = await getActiveMatch(userId, otherUserId);
+  const match = await getActiveMatrimonyMatch(userId, otherUserId);
   if (!match) {
     throw Object.assign(new Error("Contact available only after mutual match"), { status: 403 });
   }
@@ -1079,7 +1112,7 @@ export async function revealContactIfMatched(
   viewerId: number,
   otherUserId: number
 ): Promise<{ mobile: string | null }> {
-  const match = await getActiveMatch(viewerId, otherUserId);
+  const match = await getActiveMatrimonyMatch(viewerId, otherUserId);
   if (!match) {
     const err = new Error("Contact available only after mutual match");
     (err as any).status = 403;
@@ -1099,6 +1132,52 @@ export async function revealContactIfMatched(
   }
   const other = await User.findByPk(otherUserId, { attributes: ["mobile"] });
   return { mobile: other?.mobile ?? null };
+}
+
+/** Close matrimony match chat between two users (community connection unaffected). */
+export async function closeMatrimonyMatchBetween(userA: number, userB: number): Promise<void> {
+  const { low, high } = normalizeMatchPair(userA, userB);
+  const match = await MatrimonyMatch.findOne({
+    where: { userLowId: low, userHighId: high, status: "ACTIVE" }
+  });
+  if (match) {
+    await match.update({ status: "UNMATCHED", chatEnabled: false } as any);
+  }
+}
+
+/** User leaves matrimony module — close pending interests and active matches. */
+export async function closeAllMatrimonyWorkflowForUser(userId: number): Promise<void> {
+  await MatrimonyInterest.update(
+    { status: "WITHDRAWN", respondedAt: new Date() } as any,
+    {
+      where: {
+        status: "PENDING",
+        [Op.or]: [{ fromUserId: userId }, { toUserId: userId }]
+      }
+    }
+  );
+
+  const accepted = await MatrimonyInterest.findAll({
+    where: {
+      status: "ACCEPTED",
+      [Op.or]: [{ fromUserId: userId }, { toUserId: userId }]
+    }
+  });
+  for (const row of accepted) {
+    await row.update({ status: "WITHDRAWN", respondedAt: new Date() } as any);
+    const otherId = row.fromUserId === userId ? row.toUserId : row.fromUserId;
+    await closeMatrimonyMatchBetween(userId, otherId);
+  }
+
+  const matches = await MatrimonyMatch.findAll({
+    where: {
+      status: "ACTIVE",
+      [Op.or]: [{ userLowId: userId }, { userHighId: userId }]
+    }
+  });
+  for (const m of matches) {
+    await m.update({ status: "UNMATCHED", chatEnabled: false } as any);
+  }
 }
 
 /** Proactive chat lock state for mobile Messages UI. */

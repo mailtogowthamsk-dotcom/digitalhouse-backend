@@ -4,10 +4,15 @@ import type { AuthProviderCode } from "../constants/auth.constants";
 
 /** User status: PENDING = awaiting approval; APPROVED = can login; REJECTED = denied; PENDING_REVIEW = profile updated, needs re-approval */
 export type UserStatus = "PENDING" | "APPROVED" | "REJECTED" | "PENDING_REVIEW";
+export type ProfileVisibility = "PUBLIC" | "PRIVATE";
 
 export class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
   declare id: number;
   declare fullName: string;
+  declare username: string | null;
+  declare profileVisibility: ProfileVisibility;
+  declare allowConnectionRequests: boolean;
+  declare usernameChangedAt: Date | null;
   declare gender: string | null;
   declare dob: Date | null;
   declare email: string;
@@ -44,6 +49,24 @@ User.init(
   {
     id: { type: DataTypes.INTEGER.UNSIGNED, autoIncrement: true, primaryKey: true },
     fullName: { type: DataTypes.STRING(120), allowNull: false },
+    username: { type: DataTypes.STRING(30), allowNull: true, unique: true },
+    profileVisibility: {
+      type: DataTypes.ENUM("PUBLIC", "PRIVATE"),
+      allowNull: false,
+      defaultValue: "PUBLIC",
+      field: "profile_visibility"
+    },
+    allowConnectionRequests: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+      field: "allow_connection_requests"
+    },
+    usernameChangedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "username_changed_at"
+    },
     gender: { type: DataTypes.STRING(20), allowNull: true },
     dob: { type: DataTypes.DATEONLY, allowNull: true },
     email: { type: DataTypes.STRING(191), allowNull: false, unique: true },

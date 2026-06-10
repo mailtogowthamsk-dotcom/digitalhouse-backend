@@ -681,6 +681,8 @@ export async function withdrawMatrimonyProfile(userId: number): Promise<Matrimon
   await writeAudit(userId, null, "PROFILE_WITHDRAWN", "user", { withdrawnAt: new Date().toISOString() }).catch(
     () => {}
   );
+  const { closeAllMatrimonyWorkflowForUser } = await import("./MatrimonyDiscover.service");
+  await closeAllMatrimonyWorkflowForUser(userId).catch(() => {});
   return getMatrimonyHub(userId);
 }
 

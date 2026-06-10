@@ -165,6 +165,7 @@ export async function authenticateWithGoogle(idToken: string): Promise<GoogleAut
 }
 
 export type CompleteGoogleProfileInput = {
+  username: string;
   gender: string;
   dob: string;
   district: string;
@@ -196,7 +197,16 @@ export async function completeGoogleProfile(
     }
   }
 
+  const { usernameService } = await import("./Username.service");
+  const username = usernameService.normalizeUsername(input.username);
+  usernameService.validateUsernameFormat(username);
+  if (!(await usernameService.isUsernameAvailable(username, userId))) {
+    throw Object.assign(new Error("This username is already taken."), { status: 409 });
+  }
+
   await user.update({
+    username,
+    usernameChangedAt: new Date(),
     gender: input.gender.trim(),
     dob: input.dob,
     district: input.district.trim(),

@@ -67,6 +67,8 @@ export type ProfileSectionsDto = {
 export type ProfileMeResponse = {
   id: number;
   name: string;
+  username: string | null;
+  profile_visibility: "PUBLIC" | "PRIVATE";
   profile_image: string | null;
   verified: boolean;
   member_since: string;
@@ -359,6 +361,8 @@ export async function getProfile(userId: number): Promise<ProfileMeResponse> {
   return {
     id: user.id,
     name: user.fullName,
+    username: user.username ?? null,
+    profile_visibility: user.profileVisibility ?? "PUBLIC",
     profile_image,
     verified: user.status === "APPROVED",
     member_since,

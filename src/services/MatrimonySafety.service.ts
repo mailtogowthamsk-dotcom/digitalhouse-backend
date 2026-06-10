@@ -149,6 +149,25 @@ export async function blockUser(viewerId: number, candidateUserId: number): Prom
   await MatrimonySavedProfile.destroy({
     where: { userId: viewerId, savedUserId: candidateUserId }
   });
+
+  const { severConnectionWorkflow } = await import("./Connection.service");
+  const { closeMatrimonyMatchBetween } = await import("./MatrimonyDiscover.service");
+  const { MatrimonyInterest } = await import("../models");
+  await severConnectionWorkflow(viewerId, candidateUserId).catch(() => {});
+  await closeMatrimonyMatchBetween(viewerId, candidateUserId).catch(() => {});
+  await MatrimonyInterest.update(
+    { status: "WITHDRAWN", respondedAt: new Date() } as any,
+    {
+      where: {
+        status: { [Op.in]: ["PENDING", "ACCEPTED"] },
+        [Op.or]: [
+          { fromUserId: viewerId, toUserId: candidateUserId },
+          { fromUserId: candidateUserId, toUserId: viewerId }
+        ]
+      }
+    }
+  ).catch(() => {});
+
   return { blocked: true };
 }
 

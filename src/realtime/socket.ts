@@ -3,9 +3,8 @@ import { Server } from "socket.io";
 import { verifyAccessToken } from "../utils/jwt.util";
 import { User } from "../models";
 import { Message } from "../models";
-import { presenceAdd, presenceRemove, isOnline } from "./presence";
+import { presenceAdd, presenceRemove } from "./presence";
 import { setIo, communityRoom } from "./io";
-import { emitMessageEvents } from "./messageEvents";
 
 type AuthedSocketData = { userId: number };
 
@@ -79,42 +78,12 @@ export function initSocket(httpServer: HttpServer) {
             cb?.({ ok: false, error: "Message is too long" });
             return;
           }
-          const recipient = await User.findByPk(recipientId, { attributes: ["id", "status"] });
-          if (!recipient || recipient.status !== "APPROVED") {
-            cb?.({ ok: false, error: "Recipient not found" });
-            return;
-          }
-
-          const msg = await Message.create({
-            senderId: userId,
-            recipientId,
-            body,
-            clientId,
-            deliveredAt: isOnline(recipientId) ? new Date() : null,
-            readAt: null
-          } as any);
-
-          const dto = {
-            id: msg.id,
-            senderId: msg.senderId,
-            recipientId: msg.recipientId,
-            body: msg.body,
-            clientId: (msg as any).clientId ?? null,
-            deliveredAt: (msg as any).deliveredAt ? (msg as any).deliveredAt.toISOString() : null,
-            readAt: msg.readAt ? msg.readAt.toISOString() : null,
-            createdAt: msg.createdAt.toISOString()
-          };
-
-          emitMessageEvents(dto);
-
-          if (!isOnline(recipientId)) {
-            const { notifyNewMessage } = await import("../services/Notification.service");
-            void notifyNewMessage(recipientId, userId, body).catch(() => {});
-          }
-
-          cb?.({ ok: true, messageId: msg.id });
-        } catch {
-          cb?.({ ok: false, error: "Failed to send" });
+          const { messagesService } = await import("../services/Messages.service");
+          const dto = await messagesService.sendMessage(userId, recipientId, body, clientId ?? undefined);
+          cb?.({ ok: true, messageId: dto.id });
+        } catch (e: unknown) {
+          const message = e instanceof Error ? e.message : "Failed to send";
+          cb?.({ ok: false, error: message });
         }
       }
     );

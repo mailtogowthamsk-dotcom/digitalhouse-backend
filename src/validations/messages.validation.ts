@@ -19,3 +19,15 @@ export const sendMessageSchema = z.object({
 
 export type SendMessageBody = z.infer<typeof sendMessageSchema>;
 
+export const threadPreferenceSchema = z
+  .object({
+    muted: z.boolean().optional(),
+    archived: z.boolean().optional(),
+    left: z.boolean().optional()
+  })
+  .refine((v) => v.muted !== undefined || v.archived !== undefined || v.left !== undefined, {
+    message: "At least one preference must be provided"
+  });
+
+export type ThreadPreferenceBody = z.infer<typeof threadPreferenceSchema>;
+

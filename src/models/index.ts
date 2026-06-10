@@ -31,6 +31,9 @@ import { MatrimonyProfileView } from "./MatrimonyProfileView.model";
 import { MatrimonyPaymentOrder } from "./MatrimonyPaymentOrder.model";
 import { RazorpayWebhookEvent } from "./RazorpayWebhookEvent.model";
 import { AuthAnalyticsEvent } from "./AuthAnalyticsEvent.model";
+import { UsernameReservation } from "./UsernameReservation.model";
+import { MessageThreadPreference } from "./MessageThreadPreference.model";
+import { MemberConnection } from "./MemberConnection.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
@@ -120,5 +123,8 @@ export {
   MatrimonyProfileView,
   MatrimonyPaymentOrder,
   RazorpayWebhookEvent,
-  AuthAnalyticsEvent
+  AuthAnalyticsEvent,
+  UsernameReservation,
+  MemberConnection,
+  MessageThreadPreference
 };

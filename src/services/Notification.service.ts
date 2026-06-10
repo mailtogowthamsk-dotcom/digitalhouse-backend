@@ -41,6 +41,38 @@ export async function createUserNotification(
   });
 }
 
+export async function notifyConnectionRequestReceived(
+  toUserId: number,
+  fromUserId: number
+): Promise<void> {
+  const name = await senderName(fromUserId);
+  await Platform.dispatchNotification({
+    userId: toUserId,
+    type: NOTIFICATION_TYPES.CONNECTION_REQUEST_RECEIVED,
+    title: "Connection request",
+    body: `${name} wants to connect with you.`,
+    actorUserId: fromUserId,
+    actionType: NOTIFICATION_ACTIONS.OPEN_CONNECTION_REQUESTS,
+    actionTargetId: fromUserId
+  });
+}
+
+export async function notifyConnectionRequestAccepted(
+  toUserId: number,
+  fromUserId: number
+): Promise<void> {
+  const name = await senderName(fromUserId);
+  await Platform.dispatchNotification({
+    userId: toUserId,
+    type: NOTIFICATION_TYPES.CONNECTION_REQUEST_ACCEPTED,
+    title: "Connection accepted",
+    body: `${name} accepted your connection request. You can now message each other.`,
+    actorUserId: fromUserId,
+    actionType: NOTIFICATION_ACTIONS.OPEN_MEMBER_PROFILE,
+    actionTargetId: fromUserId
+  });
+}
+
 export async function notifyMatrimonyInterestReceived(
   toUserId: number,
   fromUserId: number
@@ -314,6 +346,8 @@ export async function notifyNewMessage(
   preview: string
 ): Promise<void> {
   if (recipientId === senderId) return;
+  const { isThreadMuted } = await import("./ThreadPreference.service");
+  if (await isThreadMuted(recipientId, senderId)) return;
   const name = await senderName(senderId);
   const snippet = preview.trim().slice(0, 120);
   await Platform.dispatchNotification({

@@ -3,6 +3,7 @@ import { z } from "zod";
 /** Full registration payload: fullName, email, mobile, location, kulam required */
 export const registerSchema = z.object({
   fullName: z.string().min(1).max(120).trim(),
+  username: z.string().trim().min(3).max(30),
   gender: z.string().max(20).trim().optional().nullable(),
   dob: z.string().max(20).trim().optional().nullable(),
   email: z.string().email().max(191),
@@ -32,6 +33,7 @@ export const googleAuthSchema = z.object({
 });
 
 export const completeGoogleProfileSchema = z.object({
+  username: z.string().trim().min(3).max(30),
   gender: z.string().min(1).max(20).trim(),
   dob: z.string().min(8).max(20).trim(),
   district: z.string().min(1).max(80).trim(),

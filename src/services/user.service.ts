@@ -1,9 +1,11 @@
 import { User } from "../models";
 import { AUTH_PROVIDERS } from "../constants/auth.constants";
 import { ensureLinkedProviders, resolveLoginSource } from "../utils/authProvider.util";
+import { usernameService } from "./Username.service";
 
 export type RegisterInput = {
   fullName: string;
+  username: string;
   gender?: string | null;
   dob?: string | null;
   email: string;
@@ -29,8 +31,15 @@ export async function register(data: RegisterInput): Promise<User> {
     if (existingMobile) throw new Error("An account with this mobile number already exists.");
   }
 
+  const username = usernameService.normalizeUsername(data.username);
+  usernameService.validateUsernameFormat(username);
+  if (!(await usernameService.isUsernameAvailable(username))) {
+    throw new Error("This username is already taken.");
+  }
+
   const user = await User.create({
     fullName: data.fullName.trim(),
+    username,
     gender: data.gender?.trim() || null,
     dob: data.dob ? (data.dob as any) : null,
     email,
@@ -69,10 +78,14 @@ export function toAuthUser(user: User) {
   return {
     id: user.id,
     fullName: user.fullName,
+    username: user.username ?? null,
     email: user.email,
     status: user.status,
     createdAt: user.createdAt,
     profileComplete: user.profileComplete !== false,
+    needsUsernameSetup: user.status === "APPROVED" && !user.username,
+    profileVisibility: user.profileVisibility ?? "PUBLIC",
+    allowConnectionRequests: user.allowConnectionRequests !== false,
     signupProvider: user.signupProvider ?? AUTH_PROVIDERS.EXISTING_LOGIN,
     linkedProviders: ensureLinkedProviders(user),
     emailVerified: !!user.emailVerified,

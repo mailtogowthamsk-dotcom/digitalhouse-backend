@@ -5,14 +5,27 @@ import { toSignedUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
 import { emitMessageEvents } from "../realtime/messageEvents";
 import * as NotificationService from "./Notification.service";
-import {
-  assertMatrimonyChatAllowed,
-  bothUsersHaveActiveMatrimony
-} from "./MatrimonyDiscover.service";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
+import {
+  assertCanSendMessage,
+  assertCanViewHistory,
+  getMessageAccess,
+  getMessageAccessMap,
+  type ChatLane,
+  type MessageAccessDto
+} from "./MessagePermission.service";
+import {
+  getArchivedThreadUserIds,
+  getLeftThreadUserIds,
+  getThreadPreferencesMap
+} from "./ThreadPreference.service";
 
 export type ThreadDto = {
   otherUser: { id: number; name: string; profileImage: string | null; online: boolean };
+  chatLanes: ChatLane[];
+  primaryLane: ChatLane | null;
+  muted: boolean;
+  archived: boolean;
   lastMessage: {
     id: number;
     senderId: number;
@@ -49,7 +62,10 @@ function toMessageDto(m: Message): MessageDto {
   };
 }
 
-export async function listThreads(userId: number): Promise<ThreadDto[]> {
+export async function listThreads(
+  userId: number,
+  opts?: { includeArchived?: boolean }
+): Promise<ThreadDto[]> {
   const rows = await sequelize.query<
     { otherUserId: number; lastMessageId: number; unreadCount: number }[]
   >(
@@ -85,13 +101,23 @@ export async function listThreads(userId: number): Promise<ThreadDto[]> {
 
   const usersById = new Map<number, User>(users.map((u) => [u.id, u]));
   const lastById = new Map<number, Message>(lastMessages.map((m) => [m.id, m]));
+  const accessMap = await getMessageAccessMap(userId, otherUserIds);
+  const leftIds = await getLeftThreadUserIds(userId);
+  const archivedIds = await getArchivedThreadUserIds(userId);
+  const prefMap = await getThreadPreferencesMap(userId, otherUserIds);
+  const includeArchived = opts?.includeArchived === true;
 
   const threads = await Promise.all(
     filteredRows.map(async (r) => {
       const otherUserId = Number((r as any).otherUserId);
+      if (leftIds.has(otherUserId)) return null;
+      const pref = prefMap.get(otherUserId);
+      const isArchived = pref?.archived ?? archivedIds.has(otherUserId);
+      if (isArchived && !includeArchived) return null;
       const unreadCount = Number((r as any).unreadCount ?? 0);
       const u = usersById.get(otherUserId);
       const lm = lastById.get(Number((r as any).lastMessageId)) ?? null;
+      const access = accessMap.get(otherUserId);
 
       const profileImage =
         u?.profilePhoto ? (await toSignedUrlIfR2(u.profilePhoto)) ?? u.profilePhoto : null;
@@ -103,6 +129,10 @@ export async function listThreads(userId: number): Promise<ThreadDto[]> {
           profileImage,
           online: isOnline(otherUserId)
         },
+        chatLanes: access?.chatLanes ?? [],
+        primaryLane: access?.primaryLane ?? null,
+        muted: pref?.muted ?? false,
+        archived: isArchived,
         lastMessage: lm
           ? {
               id: lm.id,
@@ -119,7 +149,7 @@ export async function listThreads(userId: number): Promise<ThreadDto[]> {
     })
   );
 
-  return threads;
+  return threads.filter((t): t is ThreadDto => t != null);
 }
 
 export async function getHistory(
@@ -128,6 +158,8 @@ export async function getHistory(
   limit: number,
   cursorId?: number
 ): Promise<{ messages: MessageDto[]; nextCursorId: number | null }> {
+  await assertCanViewHistory(me, otherUserId);
+
   const where: any = {
     [Op.or]: [
       { senderId: me, recipientId: otherUserId },
@@ -158,16 +190,7 @@ export async function sendMessage(
   if (!recipient || recipient.status !== "APPROVED") throw new Error("Recipient not found");
   if (recipientId === senderId) throw new Error("Invalid recipient");
 
-  const blocked = await getBlockedUserIds(senderId);
-  if (blocked.has(recipientId)) {
-    const err = new Error("Cannot message this user.");
-    (err as any).status = 403;
-    throw err;
-  }
-
-  if (await bothUsersHaveActiveMatrimony(senderId, recipientId)) {
-    await assertMatrimonyChatAllowed(senderId, recipientId);
-  }
+  await assertCanSendMessage(senderId, recipientId);
 
   const trimmed = body.trim();
   const msg = await Message.create({
@@ -202,5 +225,29 @@ export async function unreadCount(me: number): Promise<number> {
   return Message.count({ where: { recipientId: me, readAt: null } });
 }
 
-export const messagesService = { listThreads, getHistory, sendMessage, markRead, unreadCount };
+export async function messageAccess(
+  me: number,
+  otherUserId: number
+): Promise<MessageAccessDto> {
+  return getMessageAccess(me, otherUserId);
+}
+
+export async function updateThreadPreference(
+  me: number,
+  otherUserId: number,
+  patch: { muted?: boolean; archived?: boolean; left?: boolean }
+) {
+  const { updateThreadPreference: updatePref } = await import("./ThreadPreference.service");
+  return updatePref(me, otherUserId, patch);
+}
+
+export const messagesService = {
+  listThreads,
+  getHistory,
+  sendMessage,
+  markRead,
+  unreadCount,
+  messageAccess,
+  updateThreadPreference
+};
 
