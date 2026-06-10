@@ -5,21 +5,44 @@ import { error } from "../utils/response";
 
 export type AuthPayload = { userId: number };
 
-/** Attach req.user if valid JWT; otherwise 401 */
-export async function authMiddleware(req: Request & { user?: User }, res: Response, next: NextFunction) {
+async function loadUserFromBearer(req: Request & { user?: User }, res: Response): Promise<User | null> {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
-
-  if (!token) return error(res, "Unauthorized", 401);
-
+  if (!token) {
+    error(res, "Unauthorized", 401);
+    return null;
+  }
   try {
     const payload = verifyAccessToken(token) as AuthPayload;
     const user = await User.findByPk(payload.userId);
-    if (!user) return error(res, "User not found", 401);
-    if (user.status !== "APPROVED") return error(res, "Account not approved", 403);
-    req.user = user;
-    next();
+    if (!user) {
+      error(res, "User not found", 401);
+      return null;
+    }
+    return user;
   } catch {
-    return error(res, "Invalid or expired token", 401);
+    error(res, "Invalid or expired token", 401);
+    return null;
   }
+}
+
+/** JWT valid + user exists (any status). Used for profile completion & /me during setup. */
+export async function jwtAuthMiddleware(
+  req: Request & { user?: User },
+  res: Response,
+  next: NextFunction
+) {
+  const user = await loadUserFromBearer(req, res);
+  if (!user) return;
+  req.user = user;
+  next();
+}
+
+/** Attach req.user if valid JWT; otherwise 401. Requires APPROVED status. */
+export async function authMiddleware(req: Request & { user?: User }, res: Response, next: NextFunction) {
+  const user = await loadUserFromBearer(req, res);
+  if (!user) return;
+  if (user.status !== "APPROVED") return error(res, "Account not approved", 403);
+  req.user = user;
+  next();
 }

@@ -34,7 +34,9 @@ export async function listUsers(req: Request, res: Response) {
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
   const status = typeof req.query.status === "string" ? req.query.status : undefined;
   const q = typeof req.query.q === "string" ? req.query.q : undefined;
-  const result = await adminService.listUsers(page, limit, status, q);
+  const loginSource =
+    typeof req.query.loginSource === "string" ? req.query.loginSource : undefined;
+  const result = await adminService.listUsers(page, limit, status, q, loginSource);
   return success(res, result);
 }
 

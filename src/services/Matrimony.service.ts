@@ -655,6 +655,16 @@ export async function submitMatrimonyProfile(
   const Notifications = await import("./Notification.service");
   void Notifications.notifyMatrimonyApplicationSubmitted(userId).catch(() => {});
 
+  const account = await User.findByPk(userId, { attributes: ["signupProvider", "googleId"] });
+  if (account?.signupProvider === "GOOGLE" || account?.googleId) {
+    const { trackAuthEvent } = await import("./authAnalytics.service");
+    void trackAuthEvent("GOOGLE_MATRIMONY_APPLY", {
+      userId,
+      provider: "GOOGLE",
+      metadata: { isResubmission }
+    });
+  }
+
   return getMatrimonyHub(userId);
 }
 

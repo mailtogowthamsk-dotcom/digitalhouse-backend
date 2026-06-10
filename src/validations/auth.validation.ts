@@ -27,6 +27,23 @@ export const verifyOtpSchema = z.object({
   otp: z.string().regex(/^\d{6}$/)
 });
 
+export const googleAuthSchema = z.object({
+  idToken: z.string().min(20)
+});
+
+export const completeGoogleProfileSchema = z.object({
+  gender: z.string().min(1).max(20).trim(),
+  dob: z.string().min(8).max(20).trim(),
+  district: z.string().min(1).max(80).trim(),
+  kulam: z.string().min(1).max(80).trim(),
+  community: z.string().max(80).trim().optional().nullable(),
+  location: z.string().max(120).trim().optional().nullable(),
+  mobile: z.string().min(10).max(20).trim().optional().nullable(),
+  profilePhoto: z.string().max(500).trim().optional().nullable()
+});
+
 export type RegisterBody = z.infer<typeof registerSchema>;
 export type LoginRequestBody = z.infer<typeof loginRequestSchema>;
 export type VerifyOtpBody = z.infer<typeof verifyOtpSchema>;
+export type GoogleAuthBody = z.infer<typeof googleAuthSchema>;
+export type CompleteGoogleProfileBody = z.infer<typeof completeGoogleProfileSchema>;

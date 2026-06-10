@@ -1,5 +1,7 @@
 import { Op, type WhereOptions } from "sequelize";
+import { sequelize } from "../config/db";
 import { User, UserProfile, PendingProfileUpdate, AdminVerification, PostReport } from "../models";
+import { resolveLoginSource } from "../utils/authProvider.util";
 import { sendApprovalEmail, sendRejectionEmail } from "./mail.service";
 import type { MatrimonySection, BusinessSection } from "../models/UserProfile.model";
 import { signAdminToken } from "../utils/jwt.util";
@@ -69,7 +71,8 @@ export async function listUsers(
   page: number = 1,
   limit: number = 20,
   status?: string,
-  q?: string
+  q?: string,
+  loginSource?: string
 ) {
   const offset = (page - 1) * limit;
   const where: WhereOptions = status ? { status: status as any } : {};
@@ -81,6 +84,28 @@ export async function listUsers(
         { email: { [Op.like]: `%${term}%` } },
         { mobile: { [Op.like]: `%${term}%` } }
       ]
+    });
+  }
+  if (loginSource === "google") {
+    Object.assign(where, {
+      googleId: { [Op.ne]: null },
+      [Op.and]: [
+        sequelize.literal(
+          `JSON_CONTAINS(COALESCE(linked_providers, JSON_ARRAY('EXISTING_LOGIN')), '"GOOGLE"')`
+        ),
+        sequelize.literal(
+          `NOT JSON_CONTAINS(COALESCE(linked_providers, JSON_ARRAY('EXISTING_LOGIN')), '"EXISTING_LOGIN"')`
+        )
+      ]
+    });
+  } else if (loginSource === "existing") {
+    Object.assign(where, { googleId: { [Op.is]: null } });
+  } else if (loginSource === "both") {
+    Object.assign(where, {
+      googleId: { [Op.ne]: null },
+      [Op.and]: sequelize.literal(
+        `JSON_CONTAINS(COALESCE(linked_providers, JSON_ARRAY()), '"GOOGLE"') AND JSON_CONTAINS(COALESCE(linked_providers, JSON_ARRAY()), '"EXISTING_LOGIN"')`
+      )
     });
   }
   const { count, rows } = await User.findAndCountAll({
@@ -96,6 +121,7 @@ export async function listUsers(
       email: u.email,
       mobile: u.mobile ?? null,
       status: u.status,
+      loginSource: resolveLoginSource(u),
       createdAt: u.createdAt.toISOString()
     })),
     total: count,

@@ -1,4 +1,6 @@
 import { User } from "../models";
+import { AUTH_PROVIDERS } from "../constants/auth.constants";
+import { ensureLinkedProviders, resolveLoginSource } from "../utils/authProvider.util";
 
 export type RegisterInput = {
   fullName: string;
@@ -40,7 +42,10 @@ export async function register(data: RegisterInput): Promise<User> {
     profilePhoto: data.profilePhoto?.trim() || null,
     govtIdType: data.govtIdType?.trim() || null,
     govtIdFile: data.govtIdFile?.trim() || null,
-    status: "PENDING"
+    status: "PENDING",
+    signupProvider: AUTH_PROVIDERS.EXISTING_LOGIN,
+    profileComplete: true,
+    linkedProviders: [AUTH_PROVIDERS.EXISTING_LOGIN]
   } as any);
 
   return user;
@@ -56,12 +61,22 @@ export async function findById(id: number): Promise<User | null> {
 
 /** Hide sensitive fields from API responses */
 export function toSafeUser(user: User) {
+  return toAuthUser(user);
+}
+
+/** Auth/session user payload for mobile */
+export function toAuthUser(user: User) {
   return {
     id: user.id,
     fullName: user.fullName,
     email: user.email,
     status: user.status,
-    createdAt: user.createdAt
+    createdAt: user.createdAt,
+    profileComplete: user.profileComplete !== false,
+    signupProvider: user.signupProvider ?? AUTH_PROVIDERS.EXISTING_LOGIN,
+    linkedProviders: ensureLinkedProviders(user),
+    emailVerified: !!user.emailVerified,
+    profilePhoto: user.profilePhoto ?? null
   };
 }
 
@@ -82,6 +97,13 @@ export function toAdminUser(user: User) {
     govtIdType: user.govtIdType,
     govtIdFile: user.govtIdFile,
     status: user.status,
+    signupProvider: user.signupProvider ?? AUTH_PROVIDERS.EXISTING_LOGIN,
+    googleId: user.googleId ?? null,
+    emailVerified: !!user.emailVerified,
+    lastLoginProvider: user.lastLoginProvider ?? null,
+    profileComplete: user.profileComplete !== false,
+    linkedProviders: ensureLinkedProviders(user),
+    loginSource: resolveLoginSource(user),
     createdAt: user.createdAt,
     updatedAt: user.updatedAt
   };
@@ -92,5 +114,6 @@ export const userService = {
   findByEmail,
   findById,
   toSafeUser,
+  toAuthUser,
   toAdminUser
 };

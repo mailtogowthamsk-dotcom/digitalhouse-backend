@@ -25,6 +25,7 @@
     "db:run-notifications-sql": "node scripts/run-notifications-migration.js",
     "db:run-matrimony-razorpay-sql": "node scripts/run-matrimony-razorpay-migration.js",
     "db:run-matrimony-subscription-p1-sql": "node scripts/run-matrimony-subscription-p1-migration.js",
+    "db:run-auth-google-sql": "node scripts/run-auth-google-migration.js",
     "db:apply-changes-requested": "node scripts/apply-matrimony-changes-requested.js",
     "verify:health": "node scripts/verify-production-health.js"
   },
@@ -35,6 +36,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^8.2.1",
+    "google-auth-library": "^10.7.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.11.3",
     "nodemailer": "^8.0.7",

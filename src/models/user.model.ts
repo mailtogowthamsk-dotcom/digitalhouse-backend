@@ -1,5 +1,6 @@
 import { DataTypes, InferAttributes, InferCreationAttributes, Model } from "sequelize";
 import { sequelize } from "../config/db";
+import type { AuthProviderCode } from "../constants/auth.constants";
 
 /** User status: PENDING = awaiting approval; APPROVED = can login; REJECTED = denied; PENDING_REVIEW = profile updated, needs re-approval */
 export type UserStatus = "PENDING" | "APPROVED" | "REJECTED" | "PENDING_REVIEW";
@@ -19,6 +20,13 @@ export class User extends Model<InferAttributes<User>, InferCreationAttributes<U
   declare govtIdType: string | null;
   declare govtIdFile: string | null;
   declare status: UserStatus;
+  declare signupProvider: AuthProviderCode;
+  declare providerUserId: string | null;
+  declare googleId: string | null;
+  declare emailVerified: boolean;
+  declare lastLoginProvider: AuthProviderCode | null;
+  declare profileComplete: boolean;
+  declare linkedProviders: AuthProviderCode[] | null;
   declare bloodGroup: string | null;
   declare education: string | null;
   declare jobTitle: string | null;
@@ -52,6 +60,32 @@ User.init(
       allowNull: false,
       defaultValue: "PENDING"
     },
+    signupProvider: {
+      type: DataTypes.ENUM("EXISTING_LOGIN", "GOOGLE"),
+      allowNull: false,
+      defaultValue: "EXISTING_LOGIN",
+      field: "signup_provider"
+    },
+    providerUserId: { type: DataTypes.STRING(191), allowNull: true, field: "provider_user_id" },
+    googleId: { type: DataTypes.STRING(191), allowNull: true, unique: true, field: "google_id" },
+    emailVerified: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: "email_verified"
+    },
+    lastLoginProvider: {
+      type: DataTypes.STRING(32),
+      allowNull: true,
+      field: "last_login_provider"
+    },
+    profileComplete: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+      field: "profile_complete"
+    },
+    linkedProviders: { type: DataTypes.JSON, allowNull: true, field: "linked_providers" },
     bloodGroup: { type: DataTypes.STRING(10), allowNull: true },
     education: { type: DataTypes.STRING(120), allowNull: true },
     jobTitle: { type: DataTypes.STRING(80), allowNull: true },
