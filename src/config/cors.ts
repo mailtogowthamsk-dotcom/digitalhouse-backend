@@ -18,7 +18,11 @@ const DEFAULT_ORIGINS = [
   "http://127.0.0.1:5173",
   "http://localhost:3001",
   "http://127.0.0.1:3001",
-  "http://localhost:8081"
+  "http://localhost:8081",
+  "https://konguvettuvagounder.com",
+  "https://www.konguvettuvagounder.com",
+  "http://konguvettuvagounder.com",
+  "http://www.konguvettuvagounder.com",
 ];
 
 const allowedExact = new Set([...DEFAULT_ORIGINS, ...EXTRA_ORIGINS]);
