@@ -296,7 +296,13 @@ export async function getHighlights(): Promise<HighlightsDto> {
       limit: 10
     }).then(rows => rows.map(toItem)),
     Post.findAll({
-      where: { ...baseWhere, postType: "HELP_REQUEST", urgent: true },
+      where: {
+        ...baseWhere,
+        postType: "HELP_REQUEST",
+        urgent: true,
+        // Only active requests — completed/cancelled must leave Home highlights
+        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] }
+      },
       order: [["createdAt", "DESC"]],
       limit: 10
     }).then(rows => rows.map(toItem))

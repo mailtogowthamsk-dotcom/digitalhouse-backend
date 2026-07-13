@@ -6,11 +6,18 @@ import { sendOtpEmail } from "./mail.service";
 const OTP_EXPIRES_MIN = Number(process.env.OTP_EXPIRES_MINUTES || 5);
 const RESEND_COOLDOWN_SEC = Number(process.env.OTP_RESEND_COOLDOWN_SECONDS || 60);
 
+export type CreateOtpResult =
+  | { ok: true; sent: true; message: string }
+  | { ok: true; sent: false; message: string; retryAfterSec: number }
+  | { ok: false; message: string };
+
 /**
  * Create OTP for an approved user, save hashed, send email.
- * Rate limit: do not send if last OTP was sent within cooldown.
+ * Rate limit: do not re-send while an unused OTP is still within cooldown.
+ * If the latest OTP was already used (e.g. verify succeeded but client failed),
+ * always allow a fresh code — otherwise the user is stuck until cooldown ends.
  */
-export async function createAndSendOtp(user: User): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
+export async function createAndSendOtp(user: User): Promise<CreateOtpResult> {
   const email = user.email.toLowerCase().trim();
   const now = new Date();
 
@@ -19,10 +26,17 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
     order: [["id", "DESC"]]
   });
 
-  if (lastOtp) {
+  if (lastOtp && !lastOtp.isUsed) {
     const sentAt = new Date(lastOtp.createdAt).getTime();
-    if ((now.getTime() - sentAt) / 1000 < RESEND_COOLDOWN_SEC) {
-      return { ok: true, message: "OTP recently sent. Please wait before requesting again." };
+    const ageSec = (now.getTime() - sentAt) / 1000;
+    if (ageSec < RESEND_COOLDOWN_SEC) {
+      const retryAfterSec = Math.max(1, Math.ceil(RESEND_COOLDOWN_SEC - ageSec));
+      return {
+        ok: true,
+        sent: false,
+        retryAfterSec,
+        message: `A code was already sent. Check your email, or wait ${retryAfterSec}s to request a new one.`
+      };
     }
   }
 
@@ -65,7 +79,7 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
     };
   }
 
-  return { ok: true, message: "OTP sent to your email." };
+  return { ok: true, sent: true, message: "OTP sent to your email." };
 }
 
 /**
@@ -85,8 +99,15 @@ export async function verifyOtpForUser(
   });
 
   if (!record) return { valid: false, message: "OTP not found. Please request a new OTP." };
-  if (record.isUsed) return { valid: false, message: "OTP already used. Please request a new OTP." };
-  if (new Date(record.expiresAt).getTime() < now.getTime()) return { valid: false, message: "OTP expired." };
+  if (record.isUsed) {
+    return {
+      valid: false,
+      message: "This code was already used. Go back and request a new OTP."
+    };
+  }
+  if (new Date(record.expiresAt).getTime() < now.getTime()) {
+    return { valid: false, message: "OTP expired. Go back and request a new OTP." };
+  }
 
   const expectedHash = hashEmailOtp(email.toLowerCase().trim(), otp);
   if (expectedHash !== record.otpHash) return { valid: false, message: "Invalid OTP." };

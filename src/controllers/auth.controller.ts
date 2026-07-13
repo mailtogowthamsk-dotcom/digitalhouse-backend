@@ -57,7 +57,11 @@ export async function loginRequest(req: Request, res: Response) {
   if (!result.ok) {
     return error(res, result.message, 503);
   }
-  return success(res, { message: result.message });
+  return success(res, {
+    message: result.message,
+    sent: result.sent,
+    ...(result.sent === false ? { retryAfterSec: result.retryAfterSec } : {})
+  });
 }
 
 /**
