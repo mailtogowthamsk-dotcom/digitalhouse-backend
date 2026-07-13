@@ -45,6 +45,29 @@ export type FeedItemDto = {
   savedByMe?: boolean;
   engagementScore?: number;
   isTrending?: boolean;
+  jobStatus?: string | null;
+  jobCompany?: string | null;
+  jobLocation?: string | null;
+  jobEmploymentType?: string | null;
+  jobSalaryMin?: number | null;
+  jobSalaryMax?: number | null;
+  marketplaceStatus?: string | null;
+  marketplaceIntent?: string | null;
+  marketplaceCategory?: string | null;
+  marketplaceCondition?: string | null;
+  marketplacePrice?: number | null;
+  marketplaceNegotiable?: boolean;
+  marketplaceDistrict?: string | null;
+  marketplaceExpiresAt?: string | null;
+  marketplaceGallery?: string[];
+  marketplaceFeatured?: boolean;
+  marketplacePhotoCount?: number;
+  helpStatus?: string | null;
+  helpCategory?: string | null;
+  helpUrgency?: string | null;
+  helpLocation?: string | null;
+  helpGallery?: string[];
+  helpHelperCount?: number;
 };
 
 export type FeedResultDto = {
@@ -144,10 +167,24 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
     communityUpdates
   ] = await Promise.all([
     Post.count({ where: baseWhere }),
-    Post.count({ where: { ...baseWhere, postType: "JOB", jobStatus: "OPEN" } }),
-    Post.count({ where: { ...baseWhere, postType: "MARKETPLACE" } }),
+    Post.count({
+      where: {
+        ...baseWhere,
+        postType: "JOB",
+        [Op.or]: [{ jobStatus: "OPEN" }, { jobStatus: null }]
+      }
+    }),
+    Post.count({
+      where: { ...baseWhere, postType: "MARKETPLACE", marketplaceStatus: "LIVE" }
+    }),
     Post.count({ where: { ...baseWhere, postType: "MATRIMONY" } }),
-    Post.count({ where: { ...baseWhere, postType: "HELP_REQUEST" } }),
+    Post.count({
+      where: {
+        ...baseWhere,
+        postType: "HELP_REQUEST",
+        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] }
+      }
+    }),
     Post.count({ where: { ...baseWhere, postType: "ANNOUNCEMENT" } })
   ]);
 
@@ -166,11 +203,51 @@ export async function getFeed(
   page: number,
   limit: number,
   currentUserId: number,
-  options?: { cursor?: number | null; sort?: "recent" | "popular" }
+  options?: {
+    cursor?: number | null;
+    sort?: "recent" | "popular";
+    postType?: string;
+    jobStatus?: "open" | "closed" | "all";
+    q?: string;
+    jobLocation?: string;
+    jobEmploymentType?: string;
+    marketplaceStatus?: "live" | "pending" | "changes" | "rejected" | "sold" | "hidden" | "expired" | "archived" | "all";
+    marketplaceCategory?: string;
+    marketplaceDistrict?: string;
+    marketplaceIntent?: string;
+    marketplaceCondition?: string;
+    marketplacePriceMin?: number;
+    marketplacePriceMax?: number;
+    helpCategory?: string;
+    helpStatus?: "open" | "in_progress" | "completed" | "cancelled" | "all";
+    mine?: boolean;
+    saved?: boolean;
+  }
 ): Promise<FeedResultDto & { nextCursor?: number | null; sort?: string }> {
   const { feedService } = await import("./Feed.service");
   return feedService.getFeed(
-    { page, limit, cursor: options?.cursor, sort: options?.sort },
+    {
+      page,
+      limit,
+      cursor: options?.cursor,
+      sort: options?.sort,
+      postType: options?.postType,
+      jobStatus: options?.jobStatus,
+      q: options?.q,
+      jobLocation: options?.jobLocation,
+      jobEmploymentType: options?.jobEmploymentType,
+      marketplaceStatus: options?.marketplaceStatus,
+      marketplaceCategory: options?.marketplaceCategory,
+      marketplaceDistrict: options?.marketplaceDistrict,
+      marketplaceIntent: options?.marketplaceIntent,
+      marketplaceCondition: options?.marketplaceCondition,
+      marketplacePriceMin: options?.marketplacePriceMin,
+      marketplacePriceMax: options?.marketplacePriceMax,
+      helpCategory: options?.helpCategory,
+      helpStatus: options?.helpStatus,
+      mine: options?.mine,
+      saved: options?.saved
+    },
     currentUserId
   );
 }

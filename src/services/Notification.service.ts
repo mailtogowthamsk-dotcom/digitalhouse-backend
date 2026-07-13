@@ -420,3 +420,196 @@ export async function notifyCommentReply(
     groupKey: `comment_reply:${parentCommentId}`
   });
 }
+
+export async function notifyJobInterestReceived(
+  posterId: number,
+  fromUserId: number,
+  postId: number,
+  postTitle: string,
+  message: string | null
+): Promise<void> {
+  const name = await senderName(fromUserId);
+  await Platform.dispatchNotification({
+    userId: posterId,
+    type: NOTIFICATION_TYPES.JOB_INTEREST_RECEIVED,
+    title: `${name} is interested in your job`,
+    body: (message || postTitle).slice(0, 120),
+    actorUserId: fromUserId,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `job_interest:${postId}:${fromUserId}`
+  });
+}
+
+export async function notifyJobClosedByAdmin(
+  posterId: number,
+  postId: number,
+  postTitle: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId: posterId,
+    type: NOTIFICATION_TYPES.JOB_CLOSED_BY_ADMIN,
+    title: "Job listing closed by admin",
+    body: `"${postTitle.slice(0, 80)}" was closed by Digital House moderation.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `job_closed_admin:${postId}`
+  });
+}
+
+export async function notifyMarketplaceListingApproved(
+  userId: number,
+  postId: number,
+  title: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.MARKETPLACE_LISTING_APPROVED,
+    title: "Marketplace listing approved",
+    body: `"${title.slice(0, 80)}" is now live on Marketplace.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `marketplace_approved:${postId}`
+  });
+}
+
+export async function notifyMarketplaceListingRejected(
+  userId: number,
+  postId: number,
+  title: string,
+  reason: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.MARKETPLACE_LISTING_REJECTED,
+    title: "Marketplace listing rejected",
+    body: `"${title.slice(0, 60)}" — ${reason.slice(0, 80)}`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `marketplace_rejected:${postId}`
+  });
+}
+
+export async function notifyMarketplaceChangesRequested(
+  userId: number,
+  postId: number,
+  title: string,
+  notes: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.MARKETPLACE_CHANGES_REQUESTED,
+    title: "Changes requested on your listing",
+    body: `"${title.slice(0, 50)}" — ${notes.slice(0, 90)}`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `marketplace_changes:${postId}`
+  });
+}
+
+export async function notifyMarketplaceListingHidden(
+  userId: number,
+  postId: number,
+  title: string,
+  reason: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.MARKETPLACE_LISTING_HIDDEN,
+    title: "Marketplace listing hidden",
+    body: `"${title.slice(0, 60)}" — ${reason.slice(0, 80)}`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `marketplace_hidden:${postId}`
+  });
+}
+
+export async function notifyMarketplaceListingExpiring(
+  userId: number,
+  postId: number,
+  title: string,
+  daysLeft: number
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.MARKETPLACE_LISTING_EXPIRING,
+    title: daysLeft <= 1 ? "Listing expires tomorrow" : `Listing expires in ${daysLeft} days`,
+    body: `"${title.slice(0, 80)}" — renew after it expires to keep it live.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `marketplace_expiring:${postId}:${daysLeft}`
+  });
+}
+
+export async function notifyMarketplaceListingExpired(
+  userId: number,
+  postId: number,
+  title: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.MARKETPLACE_LISTING_EXPIRED,
+    title: "Marketplace listing expired",
+    body: `"${title.slice(0, 80)}" is no longer public. Renew to resubmit for review.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `marketplace_expired:${postId}`
+  });
+}
+
+export async function notifyHelpOfferReceived(
+  requesterId: number,
+  fromUserId: number,
+  postId: number,
+  postTitle: string,
+  message: string | null
+): Promise<void> {
+  const name = await senderName(fromUserId);
+  await Platform.dispatchNotification({
+    userId: requesterId,
+    type: NOTIFICATION_TYPES.HELP_OFFER_RECEIVED,
+    title: `${name} is ready to help`,
+    body: (message || postTitle).slice(0, 120),
+    actorUserId: fromUserId,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `help_offer:${postId}:${fromUserId}`
+  });
+}
+
+export async function notifyHelpRequestCompleted(
+  userId: number,
+  postId: number,
+  postTitle: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.HELP_REQUEST_COMPLETED,
+    title: "Help request completed",
+    body: `"${postTitle.slice(0, 80)}" was marked as completed.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `help_completed:${postId}:${userId}`
+  });
+}
+
+export async function notifyHelpAppreciationReceived(
+  helperUserId: number,
+  fromUserId: number,
+  postId: number,
+  postTitle: string,
+  preview: string
+): Promise<void> {
+  const name = await senderName(fromUserId);
+  await Platform.dispatchNotification({
+    userId: helperUserId,
+    type: NOTIFICATION_TYPES.HELP_APPRECIATION_RECEIVED,
+    title: `${name} appreciated your help`,
+    body: preview.slice(0, 120) || `"${postTitle.slice(0, 60)}"`,
+    actorUserId: fromUserId,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `help_appreciation:${postId}:${helperUserId}`
+  });
+}
+

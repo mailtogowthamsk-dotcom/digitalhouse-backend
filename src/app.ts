@@ -29,7 +29,7 @@ for (const mount of getApiMountPaths()) {
   );
 }
 
-app.use(express.json());
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "1mb" }));
 
 // Root: some platforms hit / for health – respond quickly so Railway sees the app as up
 app.get("/", (_req, res) => {

@@ -1,7 +1,7 @@
 import { DataTypes, InferAttributes, InferCreationAttributes, Model } from "sequelize";
 import { sequelize } from "../config/db";
 
-export const MATRIMONY_REPORT_STATUSES = ["PENDING", "RESOLVED", "DISMISSED"] as const;
+export const MATRIMONY_REPORT_STATUSES = ["PENDING", "RESOLVED", "DISMISSED", "ESCALATED"] as const;
 export type MatrimonyReportStatus = (typeof MATRIMONY_REPORT_STATUSES)[number];
 
 export class MatrimonyReport extends Model<

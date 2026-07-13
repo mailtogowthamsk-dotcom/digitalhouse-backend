@@ -34,7 +34,23 @@ export async function getFeed(req: AuthRequest, res: Response) {
   const query = validateFeedQuery(req.query);
   const data = await homeService.getFeed(query.page, query.limit, req.user.id, {
     cursor: query.cursor,
-    sort: query.sort
+    sort: query.sort,
+    postType: query.postType,
+    jobStatus: query.jobStatus,
+    q: query.q,
+    jobLocation: query.jobLocation,
+    jobEmploymentType: query.jobEmploymentType,
+    marketplaceStatus: query.marketplaceStatus,
+    marketplaceCategory: query.marketplaceCategory,
+    marketplaceDistrict: query.marketplaceDistrict,
+    marketplaceIntent: query.marketplaceIntent,
+    marketplaceCondition: query.marketplaceCondition,
+    marketplacePriceMin: query.marketplacePriceMin,
+    marketplacePriceMax: query.marketplacePriceMax,
+    helpCategory: query.helpCategory,
+    helpStatus: query.helpStatus,
+    mine: query.mine,
+    saved: query.saved
   });
   return success(res, data);
 }

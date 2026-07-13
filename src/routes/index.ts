@@ -12,11 +12,14 @@ import { usersRouter } from "./users.routes";
 import { matrimonyRouter } from "./matrimony.routes";
 import { notificationsRouter } from "./notifications.routes";
 import { connectionsRouter } from "./connections.routes";
+import { helpingHandsRouter } from "./helpingHands.routes";
+import { platformRouter } from "./platform.routes";
 
 export const apiRouter = Router();
 
 apiRouter.use("/auth", authRouter);
 apiRouter.use("/admin", adminRouter);
+apiRouter.use("/platform", platformRouter);
 apiRouter.use("/options", optionsRouter);
 apiRouter.use("/home", homeRouter);
 apiRouter.use("/profile", profileRouter);
@@ -27,4 +30,5 @@ apiRouter.use("/users", usersRouter);
 apiRouter.use("/matrimony", matrimonyRouter);
 apiRouter.use("/notifications", notificationsRouter);
 apiRouter.use("/connections", connectionsRouter);
+apiRouter.use("/helping-hands", helpingHandsRouter);
 apiRouter.use("/landing", landingRouter);

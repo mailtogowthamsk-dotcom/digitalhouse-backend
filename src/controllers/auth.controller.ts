@@ -50,6 +50,9 @@ export async function loginRequest(req: Request, res: Response) {
   if (user.status === "REJECTED") {
     return error(res, "Your account was not approved. Please contact support.", 403);
   }
+  if (user.status === "SUSPENDED") {
+    return error(res, "Your account has been suspended. Please contact support.", 403);
+  }
   const result = await otpService.createAndSendOtp(user);
   if (!result.ok) {
     return error(res, result.message, 503);

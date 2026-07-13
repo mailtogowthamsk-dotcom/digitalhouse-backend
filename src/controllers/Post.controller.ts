@@ -9,7 +9,9 @@ import {
   validateCommentsQuery,
   validateUpdateCommentBody
 } from "../validations/post.validation";
-import type { User, PostType, JobStatus } from "../models";
+import type { User, PostType, JobStatus, JobEmploymentType } from "../models";
+import type { MarketplaceIntent, MarketplaceCondition, MarketplaceStatus } from "../constants/marketplace.constants";
+import type { HelpStatus, HelpUrgency } from "../constants/helpingHands.constants";
 import { z } from "zod";
 
 type AuthRequest = {
@@ -42,10 +44,33 @@ export async function createPost(req: AuthRequest, res: Response) {
     pinned: body.pinned ?? false,
     urgent: body.urgent ?? false,
     meetup_at: body.meetup_at ?? null,
-    job_status: (body.job_status ?? null) as JobStatus | null
+    job_status: (body.job_status ?? null) as JobStatus | null,
+    job_company: body.job_company ?? null,
+    job_location: body.job_location ?? null,
+    job_employment_type: (body.job_employment_type ?? null) as JobEmploymentType | null,
+    job_salary_min: body.job_salary_min ?? null,
+    job_salary_max: body.job_salary_max ?? null,
+    marketplace_intent: (body.marketplace_intent ?? null) as MarketplaceIntent | null,
+    marketplace_category: body.marketplace_category ?? null,
+    marketplace_condition: (body.marketplace_condition ?? null) as MarketplaceCondition | null,
+    marketplace_price: body.marketplace_price ?? null,
+    marketplace_negotiable: body.marketplace_negotiable,
+    marketplace_district: body.marketplace_district ?? null,
+    marketplace_gallery: body.marketplace_gallery,
+    help_category: body.help_category ?? null,
+    help_urgency: (body.help_urgency ?? null) as HelpUrgency | null,
+    help_location: body.help_location ?? null,
+    help_contact_phone: body.help_contact_phone ?? null,
+    help_gallery: body.help_gallery
   };
-  const data = await postService.createPost(req.user.id, payload);
-  return success(res, data, 201);
+  try {
+    const data = await postService.createPost(req.user.id, payload);
+    return success(res, data, 201);
+  } catch (e: any) {
+    if (e?.status === 409) return error(res, e.message, 409);
+    if (e?.status === 400) return error(res, e.message, 400);
+    throw e;
+  }
 }
 
 export async function getPost(req: AuthRequest, res: Response) {
@@ -73,7 +98,40 @@ export async function updatePost(req: AuthRequest, res: Response) {
     ...(body.pinned !== undefined && { pinned: body.pinned }),
     ...(body.urgent !== undefined && { urgent: body.urgent }),
     ...(body.meetup_at !== undefined && { meetup_at: body.meetup_at ?? null }),
-    ...(body.job_status !== undefined && { job_status: (body.job_status ?? null) as JobStatus | null })
+    ...(body.job_status !== undefined && { job_status: (body.job_status ?? null) as JobStatus | null }),
+    ...(body.job_company !== undefined && { job_company: body.job_company ?? null }),
+    ...(body.job_location !== undefined && { job_location: body.job_location ?? null }),
+    ...(body.job_employment_type !== undefined && {
+      job_employment_type: (body.job_employment_type ?? null) as JobEmploymentType | null
+    }),
+    ...(body.job_salary_min !== undefined && { job_salary_min: body.job_salary_min ?? null }),
+    ...(body.job_salary_max !== undefined && { job_salary_max: body.job_salary_max ?? null }),
+    ...(body.marketplace_status !== undefined && {
+      marketplace_status: body.marketplace_status as MarketplaceStatus | null
+    }),
+    ...(body.marketplace_intent !== undefined && {
+      marketplace_intent: body.marketplace_intent as MarketplaceIntent | null
+    }),
+    ...(body.marketplace_category !== undefined && { marketplace_category: body.marketplace_category }),
+    ...(body.marketplace_condition !== undefined && {
+      marketplace_condition: body.marketplace_condition as MarketplaceCondition | null
+    }),
+    ...(body.marketplace_price !== undefined && { marketplace_price: body.marketplace_price }),
+    ...(body.marketplace_negotiable !== undefined && {
+      marketplace_negotiable: body.marketplace_negotiable
+    }),
+    ...(body.marketplace_district !== undefined && {
+      marketplace_district: body.marketplace_district
+    }),
+    ...(body.marketplace_gallery !== undefined && { marketplace_gallery: body.marketplace_gallery }),
+    ...(body.help_status !== undefined && { help_status: body.help_status as HelpStatus | null }),
+    ...(body.help_category !== undefined && { help_category: body.help_category }),
+    ...(body.help_urgency !== undefined && {
+      help_urgency: body.help_urgency as HelpUrgency | null
+    }),
+    ...(body.help_location !== undefined && { help_location: body.help_location }),
+    ...(body.help_contact_phone !== undefined && { help_contact_phone: body.help_contact_phone }),
+    ...(body.help_gallery !== undefined && { help_gallery: body.help_gallery })
   };
   try {
     const data = await postService.updatePost(req.user.id, postId, payload);
@@ -81,6 +139,8 @@ export async function updatePost(req: AuthRequest, res: Response) {
   } catch (e: any) {
     if (e?.status === 404) return error(res, "Post not found", 404);
     if (e?.status === 403) return error(res, "Forbidden", 403);
+    if (e?.status === 400) return error(res, e.message, 400);
+    if (e?.status === 409) return error(res, e.message, 409);
     throw e;
   }
 }
@@ -214,6 +274,41 @@ export async function reportPost(req: AuthRequest, res: Response) {
   } catch (e: any) {
     if (e?.status === 404) return error(res, "Post not found", 404);
     if (e?.status === 409) return error(res, "You have already reported this post", 409);
+    throw e;
+  }
+}
+
+const jobInterestSchema = z
+  .object({
+    message: z.string().trim().max(500).nullable().optional()
+  })
+  .strict();
+
+export async function expressJobInterest(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  if (postId == null) return error(res, "Invalid post id", 400);
+  const body = jobInterestSchema.parse(req.body ?? {});
+  try {
+    const { expressJobInterest: express } = await import("../services/JobInterest.service");
+    const data = await express(req.user.id, postId, body.message);
+    return success(res, data, data.created ? 201 : 200);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function listJobInterests(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  if (postId == null) return error(res, "Invalid post id", 400);
+  try {
+    const { listJobInterestsForOwner } = await import("../services/JobInterest.service");
+    const data = await listJobInterestsForOwner(req.user.id, postId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
     throw e;
   }
 }

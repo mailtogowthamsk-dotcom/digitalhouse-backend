@@ -37,3 +37,13 @@ postRouter.delete(
   asyncHandler(PostController.deleteComment)
 );
 postRouter.post("/:postId/report", authMiddleware, asyncHandler(PostController.reportPost));
+postRouter.post(
+  "/:postId/job-interest",
+  authMiddleware,
+  asyncHandler(PostController.expressJobInterest)
+);
+postRouter.get(
+  "/:postId/job-interests",
+  authMiddleware,
+  asyncHandler(PostController.listJobInterests)
+);

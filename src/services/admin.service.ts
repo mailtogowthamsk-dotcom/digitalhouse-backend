@@ -1,12 +1,15 @@
 import { Op, type WhereOptions } from "sequelize";
 import { sequelize } from "../config/db";
-import { User, UserProfile, PendingProfileUpdate, AdminVerification, PostReport } from "../models";
+import { User, UserProfile, PendingProfileUpdate, AdminVerification } from "../models";
 import { resolveLoginSource } from "../utils/authProvider.util";
 import { sendApprovalEmail, sendRejectionEmail } from "./mail.service";
 import type { MatrimonySection, BusinessSection } from "../models/UserProfile.model";
 import { signAdminToken } from "../utils/jwt.util";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
 import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { getPendingReportCount } from "./AdminReports.service";
+import { resolveAdminRole } from "./AdminRoles.service";
+import { ADMIN_ROLE_LABELS } from "../constants/adminRoles.constants";
 
 const MATRIMONY_MEDIA_URL_KEYS = ["candidatePhotoUrl", "profilePhotoUrl", "horoscopeDocumentUrl"] as const;
 
@@ -41,7 +44,7 @@ function getAdminWhitelist(): { emails: Set<string>; password: string } {
 export async function adminLogin(
   email: string,
   password: string
-): Promise<{ token: string; admin: { email: string } }> {
+): Promise<{ token: string; admin: { email: string; role: string; roleLabel: string } }> {
   const { emails, password: expectedPassword } = getAdminWhitelist();
   const normalized = email.trim().toLowerCase();
   if (!emails.has(normalized)) {
@@ -54,8 +57,12 @@ export async function adminLogin(
     (err as any).status = 401;
     throw err;
   }
-  const token = signAdminToken({ email: normalized });
-  return { token, admin: { email: normalized } };
+  const role = resolveAdminRole(normalized);
+  const token = signAdminToken({ email: normalized, role });
+  return {
+    token,
+    admin: { email: normalized, role, roleLabel: ADMIN_ROLE_LABELS[role] }
+  };
 }
 
 /** List users with status PENDING (awaiting admin verification) */
@@ -340,7 +347,7 @@ export async function getDashboardStats(): Promise<{
     User.count({ where: { status: "PENDING" } }),
     PendingProfileUpdate.count({ where: { section: "MATRIMONY", status: "PENDING" } }),
     PendingProfileUpdate.count({ where: { section: "BUSINESS", status: "PENDING" } }),
-    PostReport.count()
+    getPendingReportCount()
   ]);
   return {
     totalUsers,

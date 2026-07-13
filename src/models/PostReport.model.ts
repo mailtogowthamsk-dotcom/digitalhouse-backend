@@ -1,7 +1,7 @@
 import { DataTypes, InferAttributes, InferCreationAttributes, Model } from "sequelize";
 import { sequelize } from "../config/db";
 
-export const REPORT_STATUSES = ["PENDING", "RESOLVED", "DISMISSED"] as const;
+export const REPORT_STATUSES = ["PENDING", "RESOLVED", "DISMISSED", "ESCALATED"] as const;
 export type ReportStatus = (typeof REPORT_STATUSES)[number];
 
 export class PostReport extends Model<InferAttributes<PostReport>, InferCreationAttributes<PostReport>> {
@@ -10,6 +10,9 @@ export class PostReport extends Model<InferAttributes<PostReport>, InferCreation
   declare postId: number;
   declare reason: string;
   declare status: ReportStatus;
+  declare adminRemarks: string | null;
+  declare reviewedBy: string | null;
+  declare reviewedAt: Date | null;
   declare createdAt: Date;
   declare updatedAt: Date;
 }
@@ -25,6 +28,9 @@ PostReport.init(
       allowNull: false,
       defaultValue: "PENDING"
     },
+    adminRemarks: { type: DataTypes.TEXT, allowNull: true, field: "admin_remarks" },
+    reviewedBy: { type: DataTypes.STRING(191), allowNull: true, field: "reviewed_by" },
+    reviewedAt: { type: DataTypes.DATE, allowNull: true, field: "reviewed_at" },
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }
   },

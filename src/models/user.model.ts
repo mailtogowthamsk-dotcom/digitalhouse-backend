@@ -2,8 +2,8 @@ import { DataTypes, InferAttributes, InferCreationAttributes, Model } from "sequ
 import { sequelize } from "../config/db";
 import type { AuthProviderCode } from "../constants/auth.constants";
 
-/** User status: PENDING = awaiting approval; APPROVED = can login; REJECTED = denied; PENDING_REVIEW = profile updated, needs re-approval */
-export type UserStatus = "PENDING" | "APPROVED" | "REJECTED" | "PENDING_REVIEW";
+/** User status: PENDING = awaiting approval; APPROVED = can login; REJECTED = denied; PENDING_REVIEW = profile updated, needs re-approval; SUSPENDED = blocked by moderation */
+export type UserStatus = "PENDING" | "APPROVED" | "REJECTED" | "PENDING_REVIEW" | "SUSPENDED";
 export type ProfileVisibility = "PUBLIC" | "PRIVATE";
 
 export class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
@@ -79,7 +79,7 @@ User.init(
     govtIdType: { type: DataTypes.STRING(40), allowNull: true },
     govtIdFile: { type: DataTypes.STRING(500), allowNull: true },
     status: {
-      type: DataTypes.ENUM("PENDING", "APPROVED", "REJECTED", "PENDING_REVIEW"),
+      type: DataTypes.ENUM("PENDING", "APPROVED", "REJECTED", "PENDING_REVIEW", "SUSPENDED"),
       allowNull: false,
       defaultValue: "PENDING"
     },

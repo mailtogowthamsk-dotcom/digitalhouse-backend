@@ -58,6 +58,16 @@ export function validateFinalizeMediaBody(body: unknown): { mediaFileId: number 
   return finalizeMediaSchema.parse(body);
 }
 
+const deleteMediaSchema = z
+  .object({
+    urls: z.array(z.string().trim().min(1).max(1000)).min(1).max(12)
+  })
+  .strict();
+
+export function validateDeleteMediaBody(body: unknown): { urls: string[] } {
+  return deleteMediaSchema.parse(body);
+}
+
 export const ALLOWED_IMAGE_MIMES = new Set(ALLOWED_IMAGE_TYPES);
 export const ALLOWED_VIDEO_MIMES = new Set(ALLOWED_VIDEO_TYPES);
 export { IMAGE_MAX_BYTES, VIDEO_MAX_BYTES };

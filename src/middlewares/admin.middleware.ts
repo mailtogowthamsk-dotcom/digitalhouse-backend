@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from "express";
 import { error } from "../utils/response";
 import { verifyAdminToken } from "../utils/jwt.util";
+import { resolveAdminRole } from "../services/AdminRoles.service";
+import { isAdminRole } from "../constants/adminRoles.constants";
 
 /** Normalize: trim and strip line endings + control chars */
 function normalizeKey(value: string): string {
@@ -31,6 +33,9 @@ export function adminMiddleware(req: Request, res: Response, next: NextFunction)
     try {
       const decoded = verifyAdminToken(token);
       (req as any).adminEmail = decoded.email;
+      const roleFromToken =
+        decoded.role && isAdminRole(decoded.role) ? decoded.role : resolveAdminRole(decoded.email);
+      (req as any).adminRole = roleFromToken;
       return next();
     } catch (_) {
       // Not a valid admin JWT; fall through to API key
@@ -50,10 +55,11 @@ export function adminMiddleware(req: Request, res: Response, next: NextFunction)
   if (!key && token) key = normalizeKey(token);
   const keyHex = key ? normalizeHexKey(key) : "";
   const match =
-    key === expectedRaw ||
-    (expectedHex && keyHex && keyHex === expectedHex);
+    key === expectedRaw || (expectedHex && keyHex && keyHex === expectedHex);
   if (!key || !match) {
     return error(res, "Unauthorized. Use admin login or X-Admin-Key.", 401);
   }
+  (req as any).adminEmail = null;
+  (req as any).adminRole = "SUPER_ADMIN";
   next();
 }

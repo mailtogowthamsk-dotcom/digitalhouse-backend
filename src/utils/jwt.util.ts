@@ -1,6 +1,18 @@
 import jwt from "jsonwebtoken";
 
-const secret = process.env.JWT_ACCESS_SECRET || "change_me_access";
+const rawSecret = process.env.JWT_ACCESS_SECRET?.trim();
+const DEFAULT_DEV_SECRET = "change_me_access";
+
+if (
+  process.env.NODE_ENV === "production" &&
+  (!rawSecret || rawSecret === DEFAULT_DEV_SECRET)
+) {
+  throw new Error(
+    "JWT_ACCESS_SECRET must be set to a strong secret in production (not the default)."
+  );
+}
+
+const secret = rawSecret || DEFAULT_DEV_SECRET;
 
 export function signAccessToken(payload: { userId: number }) {
   return jwt.sign(payload, secret as jwt.Secret, {
@@ -13,7 +25,7 @@ export function verifyAccessToken(token: string): { userId: number } {
 }
 
 /** Admin JWT (same secret, payload.admin = true). Used after admin login. */
-export function signAdminToken(payload: { email: string }) {
+export function signAdminToken(payload: { email: string; role?: string }) {
   return jwt.sign(
     { ...payload, admin: true },
     secret as jwt.Secret,
@@ -21,9 +33,13 @@ export function signAdminToken(payload: { email: string }) {
   );
 }
 
-export function verifyAdminToken(token: string): { email: string; admin: true } {
-  const decoded = jwt.verify(token, secret as jwt.Secret) as { email?: string; admin?: boolean };
+export function verifyAdminToken(token: string): { email: string; admin: true; role?: string } {
+  const decoded = jwt.verify(token, secret as jwt.Secret) as {
+    email?: string;
+    admin?: boolean;
+    role?: string;
+  };
   if (!decoded.admin || !decoded.email) throw new Error("Invalid admin token");
-  return { email: decoded.email, admin: true };
+  return { email: decoded.email, admin: true, role: decoded.role };
 }
 

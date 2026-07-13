@@ -151,6 +151,12 @@ export async function authenticateWithGoogle(idToken: string): Promise<GoogleAut
       code: "ACCOUNT_REJECTED"
     });
   }
+  if (user.status === "SUSPENDED") {
+    throw Object.assign(new Error("Your account has been suspended. Please contact support."), {
+      status: 403,
+      code: "ACCOUNT_SUSPENDED"
+    });
+  }
 
   const accessToken = signAccessToken({ userId: user.id });
   const needsProfileCompletion = !user.profileComplete;

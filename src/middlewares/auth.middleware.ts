@@ -46,3 +46,22 @@ export async function authMiddleware(req: Request & { user?: User }, res: Respon
   req.user = user;
   next();
 }
+
+/** Attach req.user when Bearer token is present; never fail the request. */
+export async function optionalAuth(
+  req: Request & { user?: User },
+  _res: Response,
+  next: NextFunction
+) {
+  const authHeader = req.headers.authorization;
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  if (!token) return next();
+  try {
+    const payload = verifyAccessToken(token) as AuthPayload;
+    const user = await User.findByPk(payload.userId);
+    if (user && user.status === "APPROVED") req.user = user;
+  } catch {
+    /* ignore invalid token for optional auth */
+  }
+  next();
+}

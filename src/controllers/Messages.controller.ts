@@ -10,7 +10,11 @@ type AuthRequest = Request & { user?: User };
 export async function listThreads(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const includeArchived = String(req.query.includeArchived ?? "") === "1";
-  const threads = await messagesService.listThreads(req.user.id, { includeArchived });
+  const archivedOnly = String(req.query.archivedOnly ?? "") === "1";
+  const threads = await messagesService.listThreads(req.user.id, {
+    includeArchived,
+    archivedOnly
+  });
   return success(res, { threads });
 }
 

@@ -1,8 +1,220 @@
 import { z } from "zod";
-import { POST_TYPES, JOB_STATUSES } from "../models";
+import { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES } from "../models";
+import {
+  MARKETPLACE_STATUSES,
+  MARKETPLACE_INTENTS,
+  MARKETPLACE_CONDITIONS,
+  MARKETPLACE_CATEGORIES,
+  MARKETPLACE_MAX_PHOTOS
+} from "../constants/marketplace.constants";
+import {
+  HELP_STATUSES,
+  HELP_URGENCIES,
+  HELP_CATEGORIES,
+  HELP_MAX_PHOTOS
+} from "../constants/helpingHands.constants";
 
 const postTypeSchema = z.enum(POST_TYPES as unknown as [string, ...string[]]);
 const jobStatusSchema = z.enum(JOB_STATUSES as unknown as [string, ...string[]]);
+const jobEmploymentTypeSchema = z.enum(
+  JOB_EMPLOYMENT_TYPES as unknown as [string, ...string[]]
+);
+const marketplaceStatusSchema = z.enum(
+  MARKETPLACE_STATUSES as unknown as [string, ...string[]]
+);
+const marketplaceIntentSchema = z.enum(
+  MARKETPLACE_INTENTS as unknown as [string, ...string[]]
+);
+const marketplaceConditionSchema = z.enum(
+  MARKETPLACE_CONDITIONS as unknown as [string, ...string[]]
+);
+const marketplaceCategorySchema = z.enum(
+  MARKETPLACE_CATEGORIES as unknown as [string, ...string[]]
+);
+const helpStatusSchema = z.enum(HELP_STATUSES as unknown as [string, ...string[]]);
+const helpUrgencySchema = z.enum(HELP_URGENCIES as unknown as [string, ...string[]]);
+const helpCategorySchema = z.enum(HELP_CATEGORIES as unknown as [string, ...string[]]);
+
+/** Empty string / undefined → null so coerce.number does not turn "" into 0. */
+const optionalSalary = z.preprocess(
+  (v) => (v === "" || v === undefined ? null : v),
+  z.coerce.number().int().min(0).max(100_000_000).nullable().optional()
+);
+
+const optionalPrice = z.preprocess(
+  (v) => (v === "" || v === undefined ? null : v),
+  z.coerce.number().int().min(0).max(100_000_000).nullable().optional()
+);
+
+const jobFieldsSchema = {
+  job_company: z.string().trim().max(255).nullable().optional(),
+  job_location: z.string().trim().max(255).nullable().optional(),
+  job_employment_type: jobEmploymentTypeSchema.nullable().optional(),
+  job_salary_min: optionalSalary,
+  job_salary_max: optionalSalary
+};
+
+const marketplaceFieldsSchema = {
+  marketplace_status: marketplaceStatusSchema.nullable().optional(),
+  marketplace_intent: marketplaceIntentSchema.nullable().optional(),
+  marketplace_category: marketplaceCategorySchema.nullable().optional(),
+  marketplace_condition: marketplaceConditionSchema.nullable().optional(),
+  marketplace_price: optionalPrice,
+  marketplace_negotiable: z.boolean().optional(),
+  marketplace_district: z.string().trim().max(255).nullable().optional(),
+  marketplace_gallery: z
+    .array(z.string().trim().url().max(500))
+    .max(MARKETPLACE_MAX_PHOTOS)
+    .optional()
+};
+
+const helpFieldsSchema = {
+  help_status: helpStatusSchema.nullable().optional(),
+  help_category: helpCategorySchema.nullable().optional(),
+  help_urgency: helpUrgencySchema.nullable().optional(),
+  help_location: z.string().trim().max(255).nullable().optional(),
+  help_contact_phone: z.string().trim().max(32).nullable().optional(),
+  help_gallery: z.array(z.string().trim().url().max(500)).max(HELP_MAX_PHOTOS).optional()
+};
+
+function refineSalaryRange<T extends { job_salary_min?: number | null; job_salary_max?: number | null }>(
+  data: T,
+  ctx: z.RefinementCtx
+) {
+  if (
+    data.job_salary_min != null &&
+    data.job_salary_max != null &&
+    data.job_salary_max < data.job_salary_min
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "job_salary_max must be greater than or equal to job_salary_min",
+      path: ["job_salary_max"]
+    });
+  }
+}
+
+function refineMarketplaceCreate(
+  data: {
+    post_type: string;
+    description?: string | null;
+    media_url?: string | null;
+    marketplace_gallery?: string[];
+    marketplace_intent?: string | null;
+    marketplace_category?: string | null;
+    marketplace_condition?: string | null;
+    marketplace_price?: number | null;
+    marketplace_district?: string | null;
+  },
+  ctx: z.RefinementCtx
+) {
+  if (data.post_type !== "MARKETPLACE") return;
+
+  if (!data.marketplace_intent) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "marketplace_intent is required",
+      path: ["marketplace_intent"]
+    });
+  }
+  if (!data.marketplace_category) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "marketplace_category is required",
+      path: ["marketplace_category"]
+    });
+  }
+  if (!data.marketplace_condition) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "marketplace_condition is required",
+      path: ["marketplace_condition"]
+    });
+  }
+  if (!data.marketplace_district?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "marketplace_district is required",
+      path: ["marketplace_district"]
+    });
+  }
+  const desc = data.description?.trim() ?? "";
+  if (desc.length < 20) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Description must be at least 20 characters",
+      path: ["description"]
+    });
+  }
+  const hasPhoto =
+    Boolean(data.media_url?.trim()) ||
+    (Array.isArray(data.marketplace_gallery) && data.marketplace_gallery.length > 0);
+  if (!hasPhoto) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "At least one photo is required",
+      path: ["media_url"]
+    });
+  }
+  if (data.marketplace_intent === "SALE" && (data.marketplace_price == null || data.marketplace_price < 0)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Price is required for sale listings",
+      path: ["marketplace_price"]
+    });
+  }
+}
+
+function refineHelpCreate(
+  data: {
+    post_type: string;
+    description?: string | null;
+    help_category?: string | null;
+    help_urgency?: string | null;
+    help_location?: string | null;
+    help_contact_phone?: string | null;
+  },
+  ctx: z.RefinementCtx
+) {
+  if (data.post_type !== "HELP_REQUEST") return;
+
+  if (!data.help_category) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Category is required",
+      path: ["help_category"]
+    });
+  }
+  if (!data.help_urgency) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Urgency is required",
+      path: ["help_urgency"]
+    });
+  }
+  if (!data.help_location?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Location is required",
+      path: ["help_location"]
+    });
+  }
+  if (!data.help_contact_phone?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Contact phone is required",
+      path: ["help_contact_phone"]
+    });
+  }
+  const desc = data.description?.trim() ?? "";
+  if (desc.length < 20) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Description must be at least 20 characters",
+      path: ["description"]
+    });
+  }
+}
 
 export const createPostSchema = z
   .object({
@@ -13,9 +225,17 @@ export const createPostSchema = z
     pinned: z.boolean().optional().default(false),
     urgent: z.boolean().optional().default(false),
     meetup_at: z.string().datetime().nullable().optional(),
-    job_status: jobStatusSchema.nullable().optional()
+    job_status: jobStatusSchema.nullable().optional(),
+    ...jobFieldsSchema,
+    ...marketplaceFieldsSchema,
+    ...helpFieldsSchema
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    refineSalaryRange(data, ctx);
+    refineMarketplaceCreate(data, ctx);
+    refineHelpCreate(data, ctx);
+  });
 
 export type CreatePostBody = z.infer<typeof createPostSchema>;
 
@@ -31,9 +251,13 @@ export const updatePostSchema = z
     pinned: z.boolean().optional(),
     urgent: z.boolean().optional(),
     meetup_at: z.string().datetime().nullable().optional(),
-    job_status: jobStatusSchema.nullable().optional()
+    job_status: jobStatusSchema.nullable().optional(),
+    ...jobFieldsSchema,
+    ...marketplaceFieldsSchema,
+    ...helpFieldsSchema
   })
-  .strict();
+  .strict()
+  .superRefine(refineSalaryRange);
 
 export type UpdatePostBody = z.infer<typeof updatePostSchema>;
 

@@ -5,9 +5,12 @@ import { app } from "./app";
 import { getApiMountPaths } from "./config/apiPath";
 import { sequelize } from "./config/db";
 import { seedOptionsIfEmpty } from "./seed/options.seed";
+import { masterDataService } from "./services/MasterData.service";
 import { setDbReady, setDbFailed } from "./state";
 import { initSocket } from "./realtime/socket";
 import { startMatrimonySubscriptionJobs } from "./services/MatrimonySubscriptionLifecycle.service";
+import { startMarketplaceExpiryJobs } from "./services/MarketplaceExpiry.service";
+import { ensurePlatformDefaults, startPlatformNotificationJobs } from "./services/Platform.service";
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -51,14 +54,29 @@ httpServer.listen(PORT, "0.0.0.0", () => {
 async function initDb() {
   try {
     await sequelize.authenticate();
-    // Avoid alter:true on every boot — it duplicates indexes on MySQL (max 64 keys per table).
-    // Set DB_SYNC_ALTER=true only when you intentionally want Sequelize to ALTER tables.
-    const syncAlter = process.env.DB_SYNC_ALTER === "true";
-    await sequelize.sync(syncAlter ? { alter: true } : {});
-    await seedOptionsIfEmpty();
+    // Prefer explicit SQL migrations in production. Sync invents schema from models.
+    // Set DB_SYNC=true only when intentionally bootstrapping a fresh/dev schema.
+    // Set DB_SYNC_ALTER=true only when you want Sequelize to ALTER tables (never in prod).
+    const allowSync =
+      process.env.DB_SYNC === "true" || process.env.NODE_ENV !== "production";
+    if (allowSync) {
+      const syncAlter = process.env.DB_SYNC_ALTER === "true";
+      if (syncAlter && process.env.NODE_ENV === "production") {
+        console.warn("Refusing DB_SYNC_ALTER=true in production (index duplication risk).");
+        await sequelize.sync({});
+      } else {
+        await sequelize.sync(syncAlter ? { alter: true } : {});
+      }
+    } else {
+      console.log("Skipping sequelize.sync (production). Use SQL migrations.");
+    }    await seedOptionsIfEmpty();
+    await masterDataService.seedMasterDataIfNeeded();
+    await ensurePlatformDefaults();
     setDbReady(true);
     console.log("Database ready.");
     startMatrimonySubscriptionJobs();
+    startMarketplaceExpiryJobs();
+    startPlatformNotificationJobs();
     if (!process.env.ADMIN_API_KEY) {
       console.warn("Warning: ADMIN_API_KEY is not set in .env — admin APIs will return 500.");
     }

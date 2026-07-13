@@ -124,10 +124,11 @@ function buildAccessDto(
     readOnly = true;
     reason = "legacy_thread";
     code = "READ_ONLY_LEGACY";
+    // Do NOT say "archived" here — that confuses users with Inbox archive (thread preference).
     message =
       community.allowed === false && matrimony.applicable
-        ? "This conversation is archived. New messages require connection or an active matrimony match."
-        : "This conversation is archived. Messaging will be available after connection is accepted or mutual matrimony match.";
+        ? "You can view past messages, but new messages need an accepted connection or an active matrimony match."
+        : "You can view past messages, but messaging unlocks after connection is accepted or you become a mutual matrimony match.";
   } else {
     canViewHistory = false;
     reason = "no_permission";

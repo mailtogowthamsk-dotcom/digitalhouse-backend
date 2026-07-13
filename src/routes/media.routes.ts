@@ -20,3 +20,4 @@ mediaRouter.use(authMiddleware);
 
 mediaRouter.post("/upload-url", asyncHandler(MediaController.getUploadUrl));
 mediaRouter.post("/finalize", asyncHandler(MediaController.finalizeUpload));
+mediaRouter.post("/delete", asyncHandler(MediaController.deleteMedia));

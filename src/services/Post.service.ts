@@ -1,9 +1,21 @@
 import { Op } from "sequelize";
 import { User, Post, PostLike, Comment, Notification, PostReport, SavedPost } from "../models";
 import { toSignedUrlIfR2, deleteR2ImageVariants } from "../utils/r2Client";
-import type { PostType, JobStatus } from "../models";
+import type { PostType, JobStatus, JobEmploymentType } from "../models";
+import type {
+  MarketplaceStatus,
+  MarketplaceIntent,
+  MarketplaceCondition
+} from "../constants/marketplace.constants";
+import type { HelpStatus, HelpUrgency } from "../constants/helpingHands.constants";
 import { emitFeedLike, emitFeedComment, emitFeedSave, emitFeedNewPost } from "../realtime/feedEvents";
 import { logFeedEvent } from "../utils/feedAnalytics";
+import {
+  parseMarketplaceGallery,
+  resolveMarketplaceMedia,
+  signMarketplaceGallery
+} from "../utils/marketplaceGallery";
+import { parseHelpGallery, resolveHelpMedia, signHelpGallery } from "../utils/helpGallery";
 
 const APPROVED = "APPROVED";
 
@@ -27,6 +39,30 @@ export type PostDetailDto = {
   urgent: boolean;
   meetup_at: string | null;
   job_status: string | null;
+  job_company: string | null;
+  job_location: string | null;
+  job_employment_type: string | null;
+  job_salary_min: number | null;
+  job_salary_max: number | null;
+  marketplace_status: string | null;
+  marketplace_intent: string | null;
+  marketplace_category: string | null;
+  marketplace_condition: string | null;
+  marketplace_price: number | null;
+  marketplace_negotiable: boolean;
+  marketplace_district: string | null;
+  marketplace_admin_note: string | null;
+  marketplace_expires_at: string | null;
+  marketplace_gallery: string[];
+  marketplace_featured: boolean;
+  help_status: string | null;
+  help_category: string | null;
+  help_urgency: string | null;
+  help_location: string | null;
+  help_contact_phone: string | null;
+  help_gallery: string[];
+  help_helper_count?: number;
+  help_offered_by_me?: boolean;
   created_at: string;
   updated_at: string;
   author: PostAuthorDto;
@@ -34,6 +70,9 @@ export type PostDetailDto = {
   comment_count: number;
   liked_by_me: boolean;
   saved_by_me: boolean;
+  job_interested_by_me?: boolean;
+  job_interest_count?: number;
+  job_can_message_poster?: boolean;
 };
 
 export type CommentDto = {
@@ -66,12 +105,152 @@ export type CreatePostPayload = {
   urgent?: boolean;
   meetup_at?: string | null;
   job_status?: JobStatus | null;
+  job_company?: string | null;
+  job_location?: string | null;
+  job_employment_type?: JobEmploymentType | null;
+  job_salary_min?: number | null;
+  job_salary_max?: number | null;
+  marketplace_status?: MarketplaceStatus | null;
+  marketplace_intent?: MarketplaceIntent | null;
+  marketplace_category?: string | null;
+  marketplace_condition?: MarketplaceCondition | null;
+  marketplace_price?: number | null;
+  marketplace_negotiable?: boolean;
+  marketplace_district?: string | null;
+  marketplace_gallery?: string[];
+  help_status?: HelpStatus | null;
+  help_category?: string | null;
+  help_urgency?: HelpUrgency | null;
+  help_location?: string | null;
+  help_contact_phone?: string | null;
+  help_gallery?: string[];
 };
 
-export type UpdatePostPayload = Partial<
-  Omit<CreatePostPayload, "post_type">
->;
+export type UpdatePostPayload = Partial<Omit<CreatePostPayload, "post_type">>;
 
+function jobFieldsFromPost(post: Post) {
+  return {
+    job_company: post.jobCompany ?? null,
+    job_location: post.jobLocation ?? null,
+    job_employment_type: post.jobEmploymentType ?? null,
+    job_salary_min: post.jobSalaryMin ?? null,
+    job_salary_max: post.jobSalaryMax ?? null
+  };
+}
+
+function marketplaceFieldsFromPost(post: Post, gallerySigned?: string[]) {
+  const gallery =
+    gallerySigned ??
+    parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null);
+  return {
+    marketplace_status: post.marketplaceStatus ?? null,
+    marketplace_intent: post.marketplaceIntent ?? null,
+    marketplace_category: post.marketplaceCategory ?? null,
+    marketplace_condition: post.marketplaceCondition ?? null,
+    marketplace_price: post.marketplacePrice ?? null,
+    marketplace_negotiable: Boolean(post.marketplaceNegotiable),
+    marketplace_district: post.marketplaceDistrict ?? null,
+    marketplace_admin_note: post.marketplaceAdminNote ?? null,
+    marketplace_expires_at: post.marketplaceExpiresAt
+      ? post.marketplaceExpiresAt.toISOString()
+      : null,
+    marketplace_gallery: gallery,
+    marketplace_featured: Boolean(post.marketplaceFeatured)
+  };
+}
+
+function helpFieldsFromPost(post: Post, gallerySigned?: string[]) {
+  const gallery =
+    gallerySigned ?? parseHelpGallery(post.helpGallery, post.mediaUrl ?? null);
+  return {
+    help_status: post.helpStatus ?? null,
+    help_category: post.helpCategory ?? null,
+    help_urgency: post.helpUrgency ?? null,
+    help_location: post.helpLocation ?? null,
+    help_contact_phone: post.helpContactPhone ?? null,
+    help_gallery: gallery
+  };
+}
+
+function normalizeHelpFields(payload: {
+  help_category?: string | null;
+  help_urgency?: HelpUrgency | null;
+  help_location?: string | null;
+  help_contact_phone?: string | null;
+  urgent?: boolean;
+}) {
+  const urgency =
+    payload.help_urgency ??
+    (payload.urgent ? ("URGENT" as HelpUrgency) : ("NORMAL" as HelpUrgency));
+  return {
+    helpCategory: payload.help_category?.trim() || null,
+    helpUrgency: urgency,
+    helpLocation: payload.help_location?.trim() || null,
+    helpContactPhone: payload.help_contact_phone?.trim() || null
+  };
+}
+
+const emptyHelpFields = {
+  helpStatus: null as HelpStatus | null,
+  helpCategory: null as string | null,
+  helpUrgency: null as HelpUrgency | null,
+  helpLocation: null as string | null,
+  helpContactPhone: null as string | null,
+  helpGallery: null as string[] | null
+};
+
+function normalizeJobFields(payload: {
+  job_company?: string | null;
+  job_location?: string | null;
+  job_employment_type?: JobEmploymentType | null;
+  job_salary_min?: number | null;
+  job_salary_max?: number | null;
+}) {
+  return {
+    jobCompany: payload.job_company?.trim() || null,
+    jobLocation: payload.job_location?.trim() || null,
+    jobEmploymentType: payload.job_employment_type ?? null,
+    jobSalaryMin: payload.job_salary_min ?? null,
+    jobSalaryMax: payload.job_salary_max ?? null
+  };
+}
+
+function normalizeMarketplaceFields(payload: {
+  marketplace_intent?: MarketplaceIntent | null;
+  marketplace_category?: string | null;
+  marketplace_condition?: MarketplaceCondition | null;
+  marketplace_price?: number | null;
+  marketplace_negotiable?: boolean;
+  marketplace_district?: string | null;
+}) {
+  const intent = payload.marketplace_intent ?? null;
+  const price =
+    intent === "FREE" ? null : intent === "EXCHANGE" ? payload.marketplace_price ?? null : payload.marketplace_price ?? null;
+  return {
+    marketplaceIntent: intent,
+    marketplaceCategory: payload.marketplace_category?.trim() || null,
+    marketplaceCondition: payload.marketplace_condition ?? null,
+    marketplacePrice: price,
+    marketplaceNegotiable: intent === "SALE" ? Boolean(payload.marketplace_negotiable) : false,
+    marketplaceDistrict: payload.marketplace_district?.trim() || null
+  };
+}
+
+const emptyMarketplaceFields = {
+  marketplaceStatus: null as MarketplaceStatus | null,
+  marketplaceIntent: null,
+  marketplaceCategory: null,
+  marketplaceCondition: null,
+  marketplacePrice: null,
+  marketplaceNegotiable: false,
+  marketplaceDistrict: null,
+  marketplaceAdminNote: null,
+  marketplaceExpiresAt: null as Date | null,
+  marketplaceExpiryReminder: null as string | null,
+  marketplaceGallery: null as string[] | null,
+  marketplaceFeatured: false,
+  marketplaceFeaturedAt: null as Date | null
+};
 function toAuthorDto(user: User): PostAuthorDto {
   return {
     id: user.id,
@@ -139,19 +318,99 @@ async function approvedUserIdsInCommunity(userId: number): Promise<number[]> {
 }
 
 export async function createPost(userId: number, payload: CreatePostPayload): Promise<PostDetailDto> {
+  const isJob = payload.post_type === "JOB";
+  const isMarketplace = payload.post_type === "MARKETPLACE";
+  const isHelp = payload.post_type === "HELP_REQUEST";
+  const resolvedJobStatus: JobStatus | null = isJob ? (payload.job_status ?? "OPEN") : null;
+  const jobFields = isJob
+    ? normalizeJobFields(payload)
+    : {
+        jobCompany: null,
+        jobLocation: null,
+        jobEmploymentType: null,
+        jobSalaryMin: null,
+        jobSalaryMax: null
+      };
+
+  if (isMarketplace) {
+    const { MARKETPLACE_DUPLICATE_WINDOW_HOURS } = await import(
+      "../constants/marketplace.constants"
+    );
+    const titleNorm = payload.title.trim().toLowerCase();
+    const since = new Date(Date.now() - MARKETPLACE_DUPLICATE_WINDOW_HOURS * 60 * 60 * 1000);
+    const dup = await Post.findOne({
+      where: {
+        userId,
+        postType: "MARKETPLACE",
+        createdAt: { [Op.gte]: since },
+        marketplaceStatus: {
+          [Op.in]: ["PENDING_REVIEW", "CHANGES_REQUESTED", "LIVE"]
+        }
+      },
+      order: [["createdAt", "DESC"]]
+    });
+    if (dup && dup.title.trim().toLowerCase() === titleNorm) {
+      const err = new Error(
+        "You already posted a listing with this title recently. Edit the existing one or wait 24 hours."
+      );
+      (err as any).status = 409;
+      (err as any).code = "MARKETPLACE_DUPLICATE";
+      throw err;
+    }
+  }
+
+  const marketplaceFields = isMarketplace
+    ? {
+        marketplaceStatus: "PENDING_REVIEW" as MarketplaceStatus,
+        ...normalizeMarketplaceFields(payload),
+        marketplaceAdminNote: null,
+        marketplaceExpiresAt: null,
+        marketplaceExpiryReminder: null,
+        marketplaceFeatured: false,
+        marketplaceFeaturedAt: null
+      }
+    : emptyMarketplaceFields;
+
+  const helpFields = isHelp
+    ? {
+        helpStatus: "OPEN" as HelpStatus,
+        ...normalizeHelpFields(payload),
+        helpGallery: null as string[] | null
+      }
+    : emptyHelpFields;
+
+  const mediaResolved = isMarketplace
+    ? resolveMarketplaceMedia(payload.media_url, payload.marketplace_gallery ?? null)
+    : isHelp
+      ? (() => {
+          const h = resolveHelpMedia(payload.media_url, payload.help_gallery ?? null);
+          return { mediaUrl: h.mediaUrl, marketplaceGallery: null as string[] | null, helpGallery: h.helpGallery };
+        })()
+      : { mediaUrl: payload.media_url?.trim() ?? null, marketplaceGallery: null, helpGallery: null };
+
   const post = await Post.create({
     userId,
     postType: payload.post_type,
     title: payload.title.trim(),
     description: payload.description?.trim() ?? null,
-    mediaUrl: payload.media_url?.trim() ?? null,
+    mediaUrl: mediaResolved.mediaUrl,
     pinned: payload.pinned ?? false,
-    urgent: payload.urgent ?? false,
+    urgent: isHelp
+      ? Boolean(payload.urgent) || payload.help_urgency === "URGENT" || payload.help_urgency === "CRITICAL"
+      : payload.urgent ?? false,
     meetupAt: payload.meetup_at ? new Date(payload.meetup_at) : null,
-    jobStatus: payload.job_status ?? null
+    jobStatus: resolvedJobStatus,
+    ...jobFields,
+    ...marketplaceFields,
+    ...helpFields,
+    ...(isMarketplace ? { marketplaceGallery: mediaResolved.marketplaceGallery } : {}),
+    ...(isHelp ? { helpGallery: (mediaResolved as any).helpGallery ?? helpFields.helpGallery } : {})
   } as any);
   const community = await viewerCommunity(userId);
-  emitFeedNewPost(community, post.id);
+  // Pending marketplace listings are not public — skip feed emit until approved
+  if (!isMarketplace) {
+    emitFeedNewPost(community, post.id);
+  }
   logFeedEvent(userId, "post_impression", post.id, { action: "create" });
   const author = await User.findByPk(userId, { attributes: ["id", "fullName", "profilePhoto", "status"] });
   const authorDto = author ? await toAuthorDtoSigned(author) : { id: userId, name: "Unknown", profile_image: null as string | null, verified: false };
@@ -166,13 +425,18 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     urgent: post.urgent,
     meetup_at: post.meetupAt ? post.meetupAt.toISOString() : null,
     job_status: post.jobStatus ?? null,
+    ...jobFieldsFromPost(post),
+    ...marketplaceFieldsFromPost(post),
+    ...helpFieldsFromPost(post),
     created_at: post.createdAt.toISOString(),
     updated_at: post.updatedAt.toISOString(),
     author: authorDto,
     like_count: 0,
     comment_count: 0,
     liked_by_me: false,
-    saved_by_me: false
+    saved_by_me: false,
+    help_helper_count: 0,
+    help_offered_by_me: false
   };
 }
 
@@ -188,17 +452,256 @@ export async function updatePost(userId: number, postId: number, payload: Update
     (err as any).status = 403;
     throw err;
   }
+
+  const isJob = post.postType === "JOB";
+  const isMarketplace = post.postType === "MARKETPLACE";
+  const isHelp = post.postType === "HELP_REQUEST";
+  if (isJob) {
+    const nextMin =
+      payload.job_salary_min !== undefined ? payload.job_salary_min : post.jobSalaryMin;
+    const nextMax =
+      payload.job_salary_max !== undefined ? payload.job_salary_max : post.jobSalaryMax;
+    if (nextMin != null && nextMax != null && nextMax < nextMin) {
+      const err = new Error("job_salary_max must be greater than or equal to job_salary_min");
+      (err as any).status = 400;
+      throw err;
+    }
+  }
+
+  const marketplaceFieldTouched =
+    isMarketplace &&
+    (payload.marketplace_intent !== undefined ||
+      payload.marketplace_category !== undefined ||
+      payload.marketplace_condition !== undefined ||
+      payload.marketplace_price !== undefined ||
+      payload.marketplace_negotiable !== undefined ||
+      payload.marketplace_district !== undefined ||
+      payload.marketplace_gallery !== undefined ||
+      payload.title !== undefined ||
+      payload.description !== undefined ||
+      payload.media_url !== undefined);
+
+  if (isMarketplace && payload.marketplace_status !== undefined) {
+    const next = payload.marketplace_status;
+    if (next === "SOLD") {
+      if (post.marketplaceStatus !== "LIVE") {
+        const err = new Error("Only live listings can be marked sold");
+        (err as any).status = 400;
+        throw err;
+      }
+    } else if (next === "PENDING_REVIEW") {
+      // Resubmit after changes OR renew expired listing
+      if (
+        post.marketplaceStatus !== "CHANGES_REQUESTED" &&
+        post.marketplaceStatus !== "EXPIRED"
+      ) {
+        const err = new Error(
+          "Only change-requested or expired listings can be submitted for review"
+        );
+        (err as any).status = 400;
+        throw err;
+      }
+    } else if (next === "ARCHIVED") {
+      if (post.marketplaceStatus !== "EXPIRED" && post.marketplaceStatus !== "SOLD") {
+        const err = new Error("Only expired or sold listings can be archived");
+        (err as any).status = 400;
+        throw err;
+      }
+    } else {
+      const err = new Error("Invalid marketplace status update");
+      (err as any).status = 400;
+      throw err;
+    }
+  }
+
+  if (isMarketplace && marketplaceFieldTouched) {
+    const editable =
+      post.marketplaceStatus === "LIVE" ||
+      post.marketplaceStatus === "PENDING_REVIEW" ||
+      post.marketplaceStatus === "CHANGES_REQUESTED";
+    if (!editable) {
+      const err = new Error("This listing cannot be edited in its current status");
+      (err as any).status = 400;
+      throw err;
+    }
+  }
+
+  const requeueForReview =
+    isMarketplace &&
+    marketplaceFieldTouched &&
+    (post.marketplaceStatus === "LIVE" || post.marketplaceStatus === "CHANGES_REQUESTED") &&
+    payload.marketplace_status !== "SOLD";
+
+  const resubmitFromChanges =
+    isMarketplace &&
+    payload.marketplace_status === "PENDING_REVIEW" &&
+    post.marketplaceStatus === "CHANGES_REQUESTED";
+
+  const mediaUpdate =
+    isMarketplace &&
+    (payload.media_url !== undefined || payload.marketplace_gallery !== undefined)
+      ? resolveMarketplaceMedia(
+          payload.media_url !== undefined ? payload.media_url : post.mediaUrl,
+          payload.marketplace_gallery !== undefined
+            ? payload.marketplace_gallery
+            : parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl)
+        )
+      : null;
+
+  const helpMediaUpdate =
+    isHelp && (payload.media_url !== undefined || payload.help_gallery !== undefined)
+      ? resolveHelpMedia(
+          payload.media_url !== undefined ? payload.media_url : post.mediaUrl,
+          payload.help_gallery !== undefined
+            ? payload.help_gallery
+            : parseHelpGallery(post.helpGallery, post.mediaUrl)
+        )
+      : null;
+
+  const previousMediaUrls = isMarketplace
+    ? parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null)
+    : isHelp
+      ? parseHelpGallery(post.helpGallery, post.mediaUrl ?? null)
+      : post.mediaUrl
+        ? [post.mediaUrl]
+        : [];
+  const nextMediaUrls = mediaUpdate
+    ? mediaUpdate.marketplaceGallery ?? (mediaUpdate.mediaUrl ? [mediaUpdate.mediaUrl] : [])
+    : helpMediaUpdate
+      ? helpMediaUpdate.helpGallery ?? (helpMediaUpdate.mediaUrl ? [helpMediaUpdate.mediaUrl] : [])
+      : payload.media_url !== undefined && !isMarketplace && !isHelp
+        ? payload.media_url?.trim()
+          ? [payload.media_url.trim()]
+          : []
+        : null;
+
   await post.update({
     ...(payload.title !== undefined && { title: payload.title.trim() }),
     ...(payload.description !== undefined && { description: payload.description?.trim() ?? null }),
-    ...(payload.media_url !== undefined && { mediaUrl: payload.media_url?.trim() ?? null }),
+    ...(mediaUpdate
+      ? { mediaUrl: mediaUpdate.mediaUrl, marketplaceGallery: mediaUpdate.marketplaceGallery }
+      : helpMediaUpdate
+        ? { mediaUrl: helpMediaUpdate.mediaUrl, helpGallery: helpMediaUpdate.helpGallery }
+        : payload.media_url !== undefined && !isMarketplace && !isHelp
+          ? { mediaUrl: payload.media_url?.trim() ?? null }
+          : {}),
     ...(payload.pinned !== undefined && { pinned: payload.pinned }),
     ...(payload.urgent !== undefined && { urgent: payload.urgent }),
     ...(payload.meetup_at !== undefined && {
       meetupAt: payload.meetup_at ? new Date(payload.meetup_at) : null
     }),
-    ...(payload.job_status !== undefined && { jobStatus: payload.job_status ?? null })
+    ...(isJob &&
+      payload.job_status !== undefined && {
+        jobStatus: payload.job_status ?? "OPEN"
+      }),
+    ...(isJob &&
+      payload.job_company !== undefined && {
+        jobCompany: payload.job_company?.trim() || null
+      }),
+    ...(isJob &&
+      payload.job_location !== undefined && {
+        jobLocation: payload.job_location?.trim() || null
+      }),
+    ...(isJob &&
+      payload.job_employment_type !== undefined && {
+        jobEmploymentType: payload.job_employment_type ?? null
+      }),
+    ...(isJob &&
+      payload.job_salary_min !== undefined && {
+        jobSalaryMin: payload.job_salary_min ?? null
+      }),
+    ...(isJob &&
+      payload.job_salary_max !== undefined && {
+        jobSalaryMax: payload.job_salary_max ?? null
+      }),
+    ...(isMarketplace &&
+      payload.marketplace_status === "SOLD" && {
+        marketplaceStatus: "SOLD" as MarketplaceStatus,
+        marketplaceFeatured: false,
+        marketplaceFeaturedAt: null
+      }),
+    ...(isMarketplace &&
+      payload.marketplace_status === "ARCHIVED" && {
+        marketplaceStatus: "ARCHIVED" as MarketplaceStatus,
+        marketplaceFeatured: false,
+        marketplaceFeaturedAt: null
+      }),
+    ...(isMarketplace &&
+      payload.marketplace_status === "PENDING_REVIEW" &&
+      post.marketplaceStatus === "EXPIRED" && {
+        marketplaceStatus: "PENDING_REVIEW" as MarketplaceStatus,
+        marketplaceAdminNote: null,
+        marketplaceExpiresAt: null,
+        marketplaceExpiryReminder: null
+      }),
+    ...(isMarketplace &&
+      payload.marketplace_intent !== undefined && {
+        marketplaceIntent: payload.marketplace_intent
+      }),
+    ...(isMarketplace &&
+      payload.marketplace_category !== undefined && {
+        marketplaceCategory: payload.marketplace_category?.trim() || null
+      }),
+    ...(isMarketplace &&
+      payload.marketplace_condition !== undefined && {
+        marketplaceCondition: payload.marketplace_condition
+      }),
+    ...(isMarketplace &&
+      payload.marketplace_price !== undefined && {
+        marketplacePrice: payload.marketplace_price ?? null
+      }),
+    ...(isMarketplace &&
+      payload.marketplace_negotiable !== undefined && {
+        marketplaceNegotiable: Boolean(payload.marketplace_negotiable)
+      }),
+    ...(isMarketplace &&
+      payload.marketplace_district !== undefined && {
+        marketplaceDistrict: payload.marketplace_district?.trim() || null
+      }),
+    ...((requeueForReview || resubmitFromChanges) && {
+      marketplaceStatus: "PENDING_REVIEW" as MarketplaceStatus,
+      marketplaceAdminNote: requeueForReview || resubmitFromChanges ? post.marketplaceAdminNote : null
+    }),
+    ...(requeueForReview &&
+      post.marketplaceStatus === "LIVE" && {
+        marketplaceAdminNote: null,
+        marketplaceExpiresAt: null,
+        marketplaceExpiryReminder: null
+      }),
+    ...(isHelp &&
+      payload.help_status !== undefined && {
+        helpStatus: payload.help_status
+      }),
+    ...(isHelp &&
+      payload.help_category !== undefined && {
+        helpCategory: payload.help_category?.trim() || null
+      }),
+    ...(isHelp &&
+      payload.help_urgency !== undefined && {
+        helpUrgency: payload.help_urgency,
+        urgent:
+          payload.help_urgency === "URGENT" || payload.help_urgency === "CRITICAL"
+      }),
+    ...(isHelp &&
+      payload.help_location !== undefined && {
+        helpLocation: payload.help_location?.trim() || null
+      }),
+    ...(isHelp &&
+      payload.help_contact_phone !== undefined && {
+        helpContactPhone: payload.help_contact_phone?.trim() || null
+      })
   });
+
+  if (nextMediaUrls) {
+    const { deleteRemovedMediaUrls } = await import("./Media.service");
+    await deleteRemovedMediaUrls(previousMediaUrls, nextMediaUrls).catch((err) => {
+      console.warn(
+        "[Post] Failed to delete removed R2 media:",
+        err instanceof Error ? err.message : err
+      );
+    });
+  }
+
   return getPost(userId, postId);
 }
 
@@ -215,8 +718,27 @@ export async function deletePost(userId: number, postId: number): Promise<void> 
     throw err;
   }
   const mediaUrl = post.mediaUrl;
+  const gallery =
+    post.postType === "MARKETPLACE"
+      ? parseMarketplaceGallery(post.marketplaceGallery, mediaUrl)
+      : post.postType === "HELP_REQUEST"
+        ? parseHelpGallery(post.helpGallery, mediaUrl)
+        : mediaUrl
+          ? [mediaUrl]
+          : [];
+  if (post.postType === "JOB") {
+    const { JobInterest } = await import("../models");
+    await JobInterest.destroy({ where: { postId } });
+  }
+  if (post.postType === "HELP_REQUEST") {
+    const { HelpOffer, HelpAppreciation } = await import("../models");
+    await HelpOffer.destroy({ where: { postId } });
+    await HelpAppreciation.destroy({ where: { postId } });
+  }
   await post.destroy();
-  await deleteR2ImageVariants(mediaUrl);
+  await Promise.all(
+    [...new Set(gallery)].map((u) => deleteR2ImageVariants(u))
+  );
 }
 
 export async function getPost(userId: number, postId: number): Promise<PostDetailDto> {
@@ -231,14 +753,70 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
   const author = (post as any).User as User;
   await ensureCommunityVisible(post, userId);
 
-  const [likeCount, commentCount, likedByMe, savedByMe, mediaUrl, authorDto] = await Promise.all([
-    PostLike.count({ where: { postId } }),
-    Comment.count({ where: { postId } }),
-    PostLike.findOne({ where: { postId, userId } }).then(r => !!r),
-    SavedPost.findOne({ where: { postId, userId } }).then(r => !!r),
-    toSignedUrlIfR2(post.mediaUrl ?? null),
-    toAuthorDtoSigned(author)
-  ]);
+  if (post.postType === "MARKETPLACE") {
+    const isOwner = post.userId === userId;
+    if (post.marketplaceStatus !== "LIVE" && !isOwner) {
+      const err = new Error("Post not found");
+      (err as any).status = 404;
+      throw err;
+    }
+  }
+
+  const isHelp = post.postType === "HELP_REQUEST";
+  const galleryRaw =
+    post.postType === "MARKETPLACE"
+      ? parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null)
+      : isHelp
+        ? parseHelpGallery(post.helpGallery, post.mediaUrl ?? null)
+        : [];
+  const [likeCount, commentCount, likedByMe, savedByMe, mediaUrl, authorDto, gallerySigned] =
+    await Promise.all([
+      PostLike.count({ where: { postId } }),
+      Comment.count({ where: { postId } }),
+      PostLike.findOne({ where: { postId, userId } }).then((r) => !!r),
+      SavedPost.findOne({ where: { postId, userId } }).then((r) => !!r),
+      toSignedUrlIfR2(post.mediaUrl ?? null),
+      toAuthorDtoSigned(author),
+      post.postType === "MARKETPLACE"
+        ? signMarketplaceGallery(galleryRaw)
+        : isHelp
+          ? signHelpGallery(galleryRaw)
+          : Promise.resolve([] as string[])
+    ]);
+
+  let jobExtra: {
+    job_interested_by_me?: boolean;
+    job_interest_count?: number;
+    job_can_message_poster?: boolean;
+  } = {};
+  if (post.postType === "JOB") {
+    const JobInterestService = await import("./JobInterest.service");
+    const [interestCount, myInterest] = await Promise.all([
+      JobInterestService.countJobInterests(postId),
+      JobInterestService.getMyJobInterest(userId, postId)
+    ]);
+    jobExtra = {
+      job_interest_count: interestCount,
+      job_interested_by_me: myInterest.interested,
+      job_can_message_poster: myInterest.canMessage
+    };
+  }
+
+  let helpExtra: {
+    help_helper_count?: number;
+    help_offered_by_me?: boolean;
+  } = {};
+  if (isHelp) {
+    const { HelpOffer } = await import("../models");
+    const [helperCount, myOffer] = await Promise.all([
+      HelpOffer.count({ where: { postId, status: "ACTIVE" } }),
+      HelpOffer.findOne({ where: { postId, fromUserId: userId, status: "ACTIVE" } })
+    ]);
+    helpExtra = {
+      help_helper_count: helperCount,
+      help_offered_by_me: !!myOffer
+    };
+  }
 
   return {
     id: post.id,
@@ -251,13 +829,21 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     urgent: post.urgent,
     meetup_at: post.meetupAt ? post.meetupAt.toISOString() : null,
     job_status: post.jobStatus ?? null,
+    ...jobFieldsFromPost(post),
+    ...marketplaceFieldsFromPost(
+      post,
+      post.postType === "MARKETPLACE" ? gallerySigned : undefined
+    ),
+    ...helpFieldsFromPost(post, isHelp ? gallerySigned : undefined),
     created_at: post.createdAt.toISOString(),
     updated_at: post.updatedAt.toISOString(),
     author: authorDto,
     like_count: likeCount,
     comment_count: commentCount,
     liked_by_me: likedByMe,
-    saved_by_me: savedByMe
+    saved_by_me: savedByMe,
+    ...jobExtra,
+    ...helpExtra
   };
 }
 
@@ -530,17 +1116,43 @@ export async function reportPost(userId: number, postId: number, reason: string)
   }
   await ensureCommunityVisible(post, userId);
 
+  if (post.userId === userId) {
+    const err = new Error("You cannot report your own listing");
+    (err as any).status = 400;
+    throw err;
+  }
+
   const existing = await PostReport.findOne({ where: { postId, reporterId: userId } });
   if (existing) {
-    const err = new Error("You have already reported this post");
-    (err as any).status = 409;
-    throw err;
+    await existing.update({ reason: reason.trim() });
+    return { id: existing.id };
   }
   const report = await PostReport.create({
     postId,
     reporterId: userId,
-    reason: reason.trim()
+    reason: reason.trim(),
+    status: "PENDING"
   } as any);
+
+  if (post.postType === "MARKETPLACE" && post.marketplaceStatus === "LIVE") {
+    const { MARKETPLACE_AUTO_HIDE_REPORT_THRESHOLD } = await import(
+      "../constants/marketplace.constants"
+    );
+    const pendingCount = await PostReport.count({
+      where: { postId, status: "PENDING" }
+    });
+    if (pendingCount >= MARKETPLACE_AUTO_HIDE_REPORT_THRESHOLD) {
+      await post.update({ marketplaceStatus: "HIDDEN" as MarketplaceStatus });
+      const Notifications = await import("./Notification.service");
+      void Notifications.notifyMarketplaceListingHidden(
+        post.userId,
+        post.id,
+        post.title,
+        "Multiple member reports"
+      ).catch(() => {});
+    }
+  }
+
   return { id: report.id };
 }
 

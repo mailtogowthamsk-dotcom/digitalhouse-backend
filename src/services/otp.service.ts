@@ -38,8 +38,8 @@ export async function createAndSendOtp(user: User): Promise<{ ok: true; message:
     createdAt: now
   } as any);
 
-  // Temporary: log OTP to server console when email is broken (set LOG_OTP_FOR_DEV=true)
-  if (process.env.LOG_OTP_FOR_DEV === "true") {
+  // Dev-only: never log OTPs in production
+  if (process.env.LOG_OTP_FOR_DEV === "true" && process.env.NODE_ENV !== "production") {
     console.log("[OTP] DEV — use this code for", email, "→", code);
   }
 

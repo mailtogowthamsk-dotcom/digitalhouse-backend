@@ -64,7 +64,7 @@ function toMessageDto(m: Message): MessageDto {
 
 export async function listThreads(
   userId: number,
-  opts?: { includeArchived?: boolean }
+  opts?: { includeArchived?: boolean; archivedOnly?: boolean }
 ): Promise<ThreadDto[]> {
   const rows = await sequelize.query<
     { otherUserId: number; lastMessageId: number; unreadCount: number }[]
@@ -106,6 +106,7 @@ export async function listThreads(
   const archivedIds = await getArchivedThreadUserIds(userId);
   const prefMap = await getThreadPreferencesMap(userId, otherUserIds);
   const includeArchived = opts?.includeArchived === true;
+  const archivedOnly = opts?.archivedOnly === true;
 
   const threads = await Promise.all(
     filteredRows.map(async (r) => {
@@ -113,7 +114,11 @@ export async function listThreads(
       if (leftIds.has(otherUserId)) return null;
       const pref = prefMap.get(otherUserId);
       const isArchived = pref?.archived ?? archivedIds.has(otherUserId);
-      if (isArchived && !includeArchived) return null;
+      if (archivedOnly) {
+        if (!isArchived) return null;
+      } else if (isArchived && !includeArchived) {
+        return null;
+      }
       const unreadCount = Number((r as any).unreadCount ?? 0);
       const u = usersById.get(otherUserId);
       const lm = lastById.get(Number((r as any).lastMessageId)) ?? null;

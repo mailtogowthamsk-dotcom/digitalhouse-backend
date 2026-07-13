@@ -1,7 +1,7 @@
 import { Response } from "express";
 import { mediaService } from "../services/Media.service";
 import { success, error } from "../utils/response";
-import { validateUploadUrlBody, validateFinalizeMediaBody } from "../validations/media.validation";
+import { validateUploadUrlBody, validateFinalizeMediaBody, validateDeleteMediaBody } from "../validations/media.validation";
 import { mediaProcessingService } from "../services/MediaProcessing.service";
 import type { User, MediaModule } from "../models";
 
@@ -46,6 +46,22 @@ export async function finalizeUpload(req: AuthRequest, res: Response) {
   } catch (e: any) {
     const status = e?.status ?? 500;
     if (status >= 400 && status < 500) return error(res, e.message, status);
+    throw e;
+  }
+}
+
+/**
+ * POST /api/media/delete
+ * Remove uploaded image(s) from R2 when the user clears / removes them.
+ */
+export async function deleteMedia(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  try {
+    const body = validateDeleteMediaBody(req.body);
+    const data = await mediaService.deleteUserMediaUrls(req.user.id, body.urls);
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
     throw e;
   }
 }

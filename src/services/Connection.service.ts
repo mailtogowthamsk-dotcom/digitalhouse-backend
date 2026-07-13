@@ -155,6 +155,26 @@ async function toUserDto(userId: number): Promise<ConnectionUserDto> {
   };
 }
 
+async function toUserDtoMap(userIds: number[]): Promise<Map<number, ConnectionUserDto>> {
+  const unique = [...new Set(userIds.filter((id) => Number.isFinite(id) && id > 0))];
+  const map = new Map<number, ConnectionUserDto>();
+  if (!unique.length) return map;
+  const users = await User.findAll({
+    where: { id: { [Op.in]: unique } },
+    attributes: ["id", "fullName", "username", "profilePhoto"]
+  });
+  for (const u of users) {
+    if (!u.username) continue;
+    map.set(u.id, {
+      id: u.id,
+      fullName: u.fullName,
+      username: u.username,
+      profileImage: u.profilePhoto ?? null
+    });
+  }
+  return map;
+}
+
 async function acceptRow(row: MemberConnection): Promise<MemberConnection> {
   await row.update({ status: "ACCEPTED", respondedAt: new Date() });
   return row;
@@ -319,13 +339,17 @@ export async function disconnect(
 export async function listIncomingRequests(userId: number): Promise<ConnectionRequestDto[]> {
   const rows = await MemberConnection.findAll({
     where: { recipientUserId: userId, status: "PENDING" },
-    order: [["createdAt", "DESC"]]
+    order: [["createdAt", "DESC"]],
+    limit: 100
   });
+  const users = await toUserDtoMap(rows.map((r) => r.requesterUserId));
   const result: ConnectionRequestDto[] = [];
   for (const row of rows) {
+    const user = users.get(row.requesterUserId);
+    if (!user) continue;
     result.push({
       id: row.id,
-      user: await toUserDto(row.requesterUserId),
+      user,
       createdAt: row.createdAt.toISOString()
     });
   }
@@ -338,15 +362,22 @@ export async function listConnections(userId: number): Promise<ConnectionRequest
       status: "ACCEPTED",
       [Op.or]: [{ requesterUserId: userId }, { recipientUserId: userId }]
     },
-    order: [["updatedAt", "DESC"]]
+    order: [["updatedAt", "DESC"]],
+    limit: 200
   });
+  const otherIds = rows.map((row) =>
+    row.requesterUserId === userId ? row.recipientUserId : row.requesterUserId
+  );
+  const users = await toUserDtoMap(otherIds);
   const result: ConnectionRequestDto[] = [];
   for (const row of rows) {
     const otherId =
       row.requesterUserId === userId ? row.recipientUserId : row.requesterUserId;
+    const user = users.get(otherId);
+    if (!user) continue;
     result.push({
       id: row.id,
-      user: await toUserDto(otherId),
+      user,
       createdAt: row.updatedAt.toISOString()
     });
   }
