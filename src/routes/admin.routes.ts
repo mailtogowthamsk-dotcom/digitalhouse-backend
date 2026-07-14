@@ -10,6 +10,7 @@ import * as AdminMarketplaceController from "../controllers/AdminMarketplace.con
 import * as AdminMasterDataController from "../controllers/AdminMasterData.controller";
 import * as AdminHelpingHandsController from "../controllers/AdminHelpingHands.controller";
 import * as AdminReportsController from "../controllers/AdminReports.controller";
+import * as AdminSupportController from "../controllers/AdminSupport.controller";
 import * as AdminSettingsController from "../controllers/AdminSettings.controller";
 import { requireAdminAction } from "../controllers/AdminSettings.controller";
 import * as PlatformController from "../controllers/Platform.controller";
@@ -198,6 +199,22 @@ adminRouter.delete(
   "/helping-hands/:id",
   asyncHandler(AdminHelpingHandsController.deleteHelpRequest)
 );
+
+// Help & Support
+adminRouter.get("/support/tickets", asyncHandler(AdminSupportController.listTickets));
+adminRouter.get("/support/tickets/:ticketId", asyncHandler(AdminSupportController.getTicket));
+adminRouter.patch("/support/tickets/:ticketId", asyncHandler(AdminSupportController.updateTicket));
+adminRouter.get("/support/faqs", asyncHandler(AdminSupportController.listFaqs));
+adminRouter.post("/support/faqs", asyncHandler(AdminSupportController.createFaq));
+adminRouter.put("/support/faqs/:faqId", asyncHandler(AdminSupportController.updateFaq));
+adminRouter.delete("/support/faqs/:faqId", asyncHandler(AdminSupportController.deleteFaq));
+adminRouter.get("/support/guides", asyncHandler(AdminSupportController.listGuides));
+adminRouter.post("/support/guides", asyncHandler(AdminSupportController.createGuide));
+adminRouter.put("/support/guides/:guideId", asyncHandler(AdminSupportController.upsertGuide));
+adminRouter.delete("/support/guides/:guideId", asyncHandler(AdminSupportController.deleteGuide));
+adminRouter.get("/support/contact", asyncHandler(AdminSupportController.getContact));
+adminRouter.put("/support/contact", asyncHandler(AdminSupportController.updateContact));
+
 
 // Master Data Management
 adminRouter.get("/master-data/types", asyncHandler(AdminMasterDataController.listTypes));

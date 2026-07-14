@@ -19,6 +19,8 @@ import type {
   FamilySection
 } from "../models/UserProfile.model";
 import { ensureUserProfile } from "./ensureUserProfile";
+import { computeMandatoryCompletion, isFilledValue } from "./profileCompletion";
+import { assertValidKulam } from "./kulamValidation.service";
 
 // ---------------------------------------------------------------------------
 // Masking – sensitive fields (no raw email/mobile in profile API)
@@ -247,57 +249,69 @@ export function normalizeJsonColumn(
   return Object.keys(out).length ? out : null;
 }
 
-/** Count non-empty fields in an object (strings, numbers; exclude null/undefined/empty string). */
-function countFilled(obj: Record<string, unknown> | null): number {
-  if (!obj || typeof obj !== "object") return 0;
-  return Object.values(obj).filter(
-    (v) => v != null && v !== "" && (typeof v !== "number" || !Number.isNaN(v))
-  ).length;
-}
-
-/** Build sections DTO and completion % from User + UserProfile. */
+/** Build sections DTO and completion % from User + UserProfile (mandatory fields only). */
 function buildSectionsAndCompletion(
   user: User,
   profile: UserProfile | null
 ): { sections: ProfileSectionsDto; completion_percentage: number; show_matrimony: boolean; show_business: boolean } {
+  const nativeDistrict = (user.district ?? user.location ?? null) || null;
   const basic: BasicSectionDto = {
     full_name: user.fullName,
     date_of_birth: user.dob ? String(user.dob) : null,
     email: user.email,
     mobile: user.mobile ?? null,
     gender: user.gender ?? null,
-    native_district: null,
+    native_district: nativeDistrict,
     role: null
   };
-  const community = (normalizeJsonColumn(profile?.community, SECTION_ALLOWED_KEYS.community) as CommunitySection) ?? null;
-  const personal = (normalizeJsonColumn(profile?.personal, SECTION_ALLOWED_KEYS.personal) as PersonalSection) ?? null;
-  const matrimony = (normalizeJsonColumn(profile?.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection) ?? null;
-  const business = (normalizeJsonColumn(profile?.business, SECTION_ALLOWED_KEYS.business) as BusinessSection) ?? null;
-  const family = (normalizeJsonColumn(profile?.family, SECTION_ALLOWED_KEYS.family) as FamilySection) ?? null;
+
+  const communityRaw =
+    (normalizeJsonColumn(profile?.community, SECTION_ALLOWED_KEYS.community) as CommunitySection | null) ??
+    ({} as CommunitySection);
+  // Legacy registrations stored kulam on users.kulam only — surface it in community for edit/completion.
+  if (!isFilledValue(communityRaw.kulam) && isFilledValue(user.kulam)) {
+    communityRaw.kulam = user.kulam;
+  }
+  const community: CommunitySection | null = Object.keys(communityRaw).length ? communityRaw : null;
+
+  const personalRaw =
+    (normalizeJsonColumn(profile?.personal, SECTION_ALLOWED_KEYS.personal) as PersonalSection | null) ??
+    ({} as PersonalSection);
+  if (!isFilledValue(personalRaw.occupation) && isFilledValue(user.occupation)) {
+    personalRaw.occupation = user.occupation;
+  }
+  if (!isFilledValue(personalRaw.currentLocation) && isFilledValue(user.city)) {
+    personalRaw.currentLocation = user.city;
+  }
+  const personal: PersonalSection | null = Object.keys(personalRaw).length ? personalRaw : null;
+  const matrimony =
+    (normalizeJsonColumn(profile?.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection) ?? null;
+  const business =
+    (normalizeJsonColumn(profile?.business, SECTION_ALLOWED_KEYS.business) as BusinessSection) ?? null;
+  const family =
+    (normalizeJsonColumn(profile?.family, SECTION_ALLOWED_KEYS.family) as FamilySection) ?? null;
 
   const show_matrimony = matrimony?.matrimonyProfileActive === true;
   const show_business = business?.businessProfileActive === true;
 
-  const basicFields = 7;
-  const communityFields = 4;
-  const personalFields = 7;
-  const familyFields = 5;
-  const matrimonyFields = show_matrimony ? 14 : 0;
-  const businessFields = show_business ? 7 : 0;
-  const totalFields = basicFields + communityFields + personalFields + familyFields + matrimonyFields + businessFields;
-
-  let filled = countFilled(basic as unknown as Record<string, unknown>);
-  filled += countFilled(community as unknown as Record<string, unknown>);
-  filled += countFilled(personal as unknown as Record<string, unknown>);
-  filled += countFilled(family as unknown as Record<string, unknown>);
-  if (show_matrimony) filled += countFilled(matrimony as unknown as Record<string, unknown>);
-  if (show_business) filled += countFilled(business as unknown as Record<string, unknown>);
-
-  const completion_percentage = totalFields > 0 ? Math.round(100 * filled / totalFields) : 0;
+  const { completion_percentage } = computeMandatoryCompletion({
+    fullName: user.fullName,
+    username: user.username,
+    email: user.email,
+    mobile: user.mobile,
+    gender: user.gender,
+    dob: user.dob,
+    profilePhoto: user.profilePhoto,
+    kulam: community?.kulam ?? user.kulam,
+    nativeDistrict,
+    occupation: personal?.occupation ?? user.occupation,
+    maritalStatus: personal?.maritalStatus ?? null,
+    currentLocation: personal?.currentLocation ?? user.city
+  });
 
   return {
     sections: { basic, community, personal, matrimony, business, family },
-    completion_percentage: Math.min(100, completion_percentage),
+    completion_percentage,
     show_matrimony,
     show_business
   };
@@ -664,6 +678,13 @@ export async function updateProfileSection(
     if (payload.date_of_birth !== undefined) updates.dob = payload.date_of_birth ? new Date(String(payload.date_of_birth)) : null;
     if (payload.mobile !== undefined) updates.mobile = payload.mobile != null ? String(payload.mobile).trim() : null;
     if (payload.gender !== undefined) updates.gender = payload.gender != null ? String(payload.gender).trim() : null;
+    if (payload.native_district !== undefined) {
+      const district =
+        payload.native_district != null ? String(payload.native_district).trim() || null : null;
+      updates.district = district;
+      // Keep location in sync for registration-era consumers of users.location
+      if (district) updates.location = district;
+    }
     if (Object.keys(updates).length > 0) {
       await user.update(updates as any);
     }
@@ -680,6 +701,16 @@ export async function updateProfileSection(
     Object.entries(merged)
       .filter(([k, v]) => v !== undefined && (!allowedKeys || allowedKeys.has(k)))
   ) as Record<string, unknown>;
+
+  if (section === "community" && cleaned.kulam !== undefined) {
+    if (cleaned.kulam == null || cleaned.kulam === "") {
+      cleaned.kulam = null;
+    } else {
+      cleaned.kulam = await assertValidKulam(String(cleaned.kulam));
+      await user.update({ kulam: cleaned.kulam } as any);
+    }
+  }
+
   await profile.update({ [section]: cleaned } as any);
   return getProfile(userId);
 }

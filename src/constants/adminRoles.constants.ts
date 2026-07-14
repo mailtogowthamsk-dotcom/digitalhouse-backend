@@ -24,6 +24,7 @@ export const ADMIN_MODULES = [
   "master_data",
   "community_content",
   "reports",
+  "support",
   "notifications",
   "platform",
   "settings"
@@ -45,6 +46,7 @@ export const ADMIN_MODULE_LABELS: Record<AdminModule, string> = {
   master_data: "Master Data",
   community_content: "Community Content",
   reports: "Reports & Complaints",
+  support: "Help & Support",
   notifications: "Notifications",
   platform: "Platform Management",
   settings: "Settings & Roles"
@@ -84,6 +86,7 @@ const MODERATOR_MODULES: AdminModule[] = [
   "marketplace",
   "helping_hands",
   "reports",
+  "support",
   "matrimony_reports",
   "community_content",
   "settings"

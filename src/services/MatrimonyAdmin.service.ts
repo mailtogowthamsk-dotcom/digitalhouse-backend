@@ -296,10 +296,47 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
   const sortBy = query.sortBy ?? "submittedAt";
   const sortDir = query.sortDir === "asc" ? "ASC" : "DESC";
 
+  const pendingWhere: WhereOptions = { section: "MATRIMONY" };
+  if (query.submittedFrom) {
+    const from = new Date(query.submittedFrom);
+    if (!Number.isNaN(from.getTime())) {
+      (pendingWhere as any).submittedAt = {
+        ...((pendingWhere as any).submittedAt ?? {}),
+        [Op.gte]: from
+      };
+    }
+  }
+  if (query.submittedTo) {
+    const to = new Date(query.submittedTo);
+    if (!Number.isNaN(to.getTime())) {
+      to.setHours(23, 59, 59, 999);
+      (pendingWhere as any).submittedAt = {
+        ...((pendingWhere as any).submittedAt ?? {}),
+        [Op.lte]: to
+      };
+    }
+  }
+
+  const userWhere: WhereOptions = {};
+  if (query.gender?.trim()) {
+    (userWhere as any).gender = { [Op.like]: `%${query.gender.trim()}%` };
+  }
+  if (query.district?.trim()) {
+    (userWhere as any).district = { [Op.like]: `%${query.district.trim()}%` };
+  }
+  const hasUserFilter = Object.keys(userWhere).length > 0;
+
   const rows = await PendingProfileUpdate.findAll({
-    where: { section: "MATRIMONY" },
+    where: pendingWhere,
     order: [[sortBy === "submittedAt" ? "submittedAt" : "updatedAt", sortDir]],
-    include: [{ model: User, as: "User", required: false }]
+    include: [
+      {
+        model: User,
+        as: "User",
+        required: hasUserFilter,
+        where: hasUserFilter ? userWhere : undefined
+      }
+    ]
   });
 
   const userIds = [...new Set(rows.map((r) => r.userId))];
@@ -312,7 +349,7 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
   const profileByUser = new Map(profiles.map((p) => [p.userId, p]));
 
   const search = query.search?.trim().toLowerCase();
-  const items: Array<Record<string, unknown>> = [];
+  const items: Array<Record<string, unknown> & { _candidateUrl?: string | null }> = [];
 
   for (const row of rows) {
     const user = (row as any).User as User | undefined;
@@ -380,7 +417,6 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     }
 
     const candidateUrl = resolveCandidatePhotoUrl(data as Record<string, unknown>);
-    const signedPhoto = candidateUrl ? await signUserPhoto(candidateUrl) : null;
 
     items.push({
       id: row.id,
@@ -399,14 +435,23 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
       rowStatus: row.status,
       assignedReviewer: meta?.assignedReviewer ?? null,
       verificationComplete: vComplete,
-      profilePhotoUrl: signedPhoto,
-      submittedForReview: rawData[SUBMITTED_FLAG] !== false
+      profilePhotoUrl: null,
+      submittedForReview: rawData[SUBMITTED_FLAG] !== false,
+      _candidateUrl: candidateUrl
     });
   }
 
   const total = items.length;
   const offset = (page - 1) * limit;
   const pageItems = items.slice(offset, offset + limit);
+
+  await Promise.all(
+    pageItems.map(async (item) => {
+      const url = item._candidateUrl;
+      item.profilePhotoUrl = url ? await signUserPhoto(url) : null;
+      delete item._candidateUrl;
+    })
+  );
 
   return { items: pageItems, total, page, limit, totalPages: Math.ceil(total / limit) || 1 };
 }

@@ -13,8 +13,14 @@ import {
   HELP_CATEGORIES,
   HELP_MAX_PHOTOS
 } from "../constants/helpingHands.constants";
+import {
+  expectedCreationSource,
+  isFeedPostType,
+  isModulePostType
+} from "../constants/postTypes.constants";
 
 const postTypeSchema = z.enum(POST_TYPES as unknown as [string, ...string[]]);
+const creationSourceSchema = z.enum(["feed", "jobs", "marketplace", "helping_hands"]);
 const jobStatusSchema = z.enum(JOB_STATUSES as unknown as [string, ...string[]]);
 const jobEmploymentTypeSchema = z.enum(
   JOB_EMPLOYMENT_TYPES as unknown as [string, ...string[]]
@@ -216,9 +222,60 @@ function refineHelpCreate(
   }
 }
 
+/** Block Home Feed from creating module-owned / matrimony post types. */
+function refineCreationSource(
+  data: { post_type: string; creation_source?: string },
+  ctx: z.RefinementCtx
+) {
+  if (data.post_type === "MATRIMONY") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Matrimony content must be created from the Matrimony module.",
+      path: ["post_type"]
+    });
+    return;
+  }
+
+  if (isModulePostType(data.post_type)) {
+    const expected = expectedCreationSource(data.post_type);
+    if (data.creation_source !== expected) {
+      const messages: Record<string, string> = {
+        JOB: "Job posts can only be created from the Jobs module.",
+        MARKETPLACE: "Marketplace listings can only be created from the Marketplace module.",
+        HELP_REQUEST: "Help requests can only be created from the Helping Hands module."
+      };
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: messages[data.post_type] ?? "This post type cannot be created from the Home Feed.",
+        path: ["post_type"]
+      });
+    }
+    return;
+  }
+
+  if (isFeedPostType(data.post_type)) {
+    if (
+      data.creation_source != null &&
+      data.creation_source !== "feed" &&
+      data.creation_source !== undefined
+    ) {
+      // Allow omitting creation_source for feed posts; reject mismatched module sources.
+      if (["jobs", "marketplace", "helping_hands"].includes(data.creation_source)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Invalid creation_source for a Home Feed post type.",
+          path: ["creation_source"]
+        });
+      }
+    }
+  }
+}
+
 export const createPostSchema = z
   .object({
     post_type: postTypeSchema,
+    /** Distinguishes Home Feed composer from Jobs / Marketplace / Helping Hands. */
+    creation_source: creationSourceSchema.optional(),
     title: z.string().trim().min(1).max(255),
     description: z.string().trim().max(5000).nullable().optional(),
     media_url: z.string().trim().url().max(500).nullable().optional(),
@@ -232,6 +289,7 @@ export const createPostSchema = z
   })
   .strict()
   .superRefine((data, ctx) => {
+    refineCreationSource(data, ctx);
     refineSalaryRange(data, ctx);
     refineMarketplaceCreate(data, ctx);
     refineHelpCreate(data, ctx);

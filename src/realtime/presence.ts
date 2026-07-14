@@ -8,9 +8,11 @@ const state: PresenceState = {
   counts: new Map()
 };
 
-export function presenceAdd(socketId: string, userId: number) {
+export function presenceAdd(socketId: string, userId: number): { becameOnline: boolean } {
+  const was = state.counts.get(userId) ?? 0;
   state.sockets.set(socketId, userId);
-  state.counts.set(userId, (state.counts.get(userId) ?? 0) + 1);
+  state.counts.set(userId, was + 1);
+  return { becameOnline: was === 0 };
 }
 
 export function presenceRemove(socketId: string) {
@@ -34,4 +36,3 @@ export function isOnline(userId: number): boolean {
 export function listOnlineUserIds(): number[] {
   return Array.from(state.counts.keys());
 }
-

@@ -3,14 +3,22 @@ import { Server } from "socket.io";
 import { verifyAccessToken } from "../utils/jwt.util";
 import { User } from "../models";
 import { Message } from "../models";
-import { presenceAdd, presenceRemove } from "./presence";
+import { presenceAdd, presenceRemove, listOnlineUserIds } from "./presence";
 import { setIo, communityRoom } from "./io";
 
 type AuthedSocketData = { userId: number };
 
+const isDev = process.env.NODE_ENV !== "production";
+
+function chatLog(...args: unknown[]) {
+  if (isDev) console.log("[socket]", ...args);
+}
+
 export function initSocket(httpServer: HttpServer) {
   const io = new Server(httpServer, {
-    cors: { origin: true, credentials: true }
+    cors: { origin: true, credentials: true },
+    pingInterval: 25_000,
+    pingTimeout: 20_000
   });
   setIo(io);
 
@@ -40,12 +48,18 @@ export function initSocket(httpServer: HttpServer) {
   io.on("connection", (socket) => {
     const userId = (socket.data as AuthedSocketData).userId;
 
-    presenceAdd(socket.id, userId);
+    const { becameOnline } = presenceAdd(socket.id, userId);
     socket.join(`user:${userId}`);
     const community = (socket.data as AuthedSocketData & { community?: string | null }).community ?? null;
     socket.join(communityRoom(community));
 
-    io.emit("presence:update", { userId, online: true });
+    // Snapshot so reconnecting clients sync presence without waiting for transitions.
+    socket.emit("presence:snapshot", { onlineUserIds: listOnlineUserIds() });
+
+    if (becameOnline) {
+      chatLog("user online", userId);
+      io.emit("presence:update", { userId, online: true });
+    }
 
     socket.on("typing", (payload: { toUserId: number; typing: boolean }) => {
       if (!payload?.toUserId || payload.toUserId === userId) return;
@@ -59,7 +73,12 @@ export function initSocket(httpServer: HttpServer) {
       "message:send",
       async (
         payload: { recipientId: number; body: string; clientId?: string },
-        cb?: (resp: { ok: boolean; messageId?: number; error?: string }) => void
+        cb?: (resp: {
+          ok: boolean;
+          messageId?: number;
+          message?: unknown;
+          error?: string;
+        }) => void
       ) => {
         try {
           const recipientId = Number(payload?.recipientId);
@@ -80,9 +99,11 @@ export function initSocket(httpServer: HttpServer) {
           }
           const { messagesService } = await import("../services/Messages.service");
           const dto = await messagesService.sendMessage(userId, recipientId, body, clientId ?? undefined);
-          cb?.({ ok: true, messageId: dto.id });
+          chatLog("message:send ok", dto.id, "→", recipientId);
+          cb?.({ ok: true, messageId: dto.id, message: dto });
         } catch (e: unknown) {
           const message = e instanceof Error ? e.message : "Failed to send";
+          chatLog("message:send fail", message);
           cb?.({ ok: false, error: message });
         }
       }
@@ -104,9 +125,11 @@ export function initSocket(httpServer: HttpServer) {
             await msg.save();
           }
 
+          const deliveredAt = (msg as any).deliveredAt.toISOString();
+          chatLog("message:delivered", messageId, "by", userId);
           io.to(`user:${msg.senderId}`).emit("message:delivered", {
             messageId: msg.id,
-            deliveredAt: (msg as any).deliveredAt.toISOString()
+            deliveredAt
           });
 
           cb?.({ ok: true });
@@ -126,18 +149,9 @@ export function initSocket(httpServer: HttpServer) {
           const withUserId = Number(payload?.withUserId);
           if (!withUserId || withUserId === userId) return cb?.({ ok: false });
 
-          const now = new Date();
-          await Message.update(
-            { readAt: now } as any,
-            { where: { senderId: withUserId, recipientId: userId, readAt: null } }
-          );
-
-          io.to(`user:${withUserId}`).emit("message:read", {
-            withUserId: userId,
-            readAt: now.toISOString()
-          });
-
-          cb?.({ ok: true, readAt: now.toISOString() });
+          const { messagesService } = await import("../services/Messages.service");
+          const { readAt } = await messagesService.markRead(userId, withUserId);
+          cb?.({ ok: true, readAt });
         } catch {
           cb?.({ ok: false });
         }
@@ -147,6 +161,7 @@ export function initSocket(httpServer: HttpServer) {
     socket.on("disconnect", () => {
       const { userId: removedUserId, becameOffline } = presenceRemove(socket.id);
       if (removedUserId && becameOffline) {
+        chatLog("user offline", removedUserId);
         io.emit("presence:update", { userId: removedUserId, online: false });
       }
     });
@@ -154,4 +169,3 @@ export function initSocket(httpServer: HttpServer) {
 
   return io;
 }
-

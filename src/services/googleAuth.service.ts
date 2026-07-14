@@ -210,18 +210,42 @@ export async function completeGoogleProfile(
     throw Object.assign(new Error("This username is already taken."), { status: 409 });
   }
 
+  const { assertValidKulam } = await import("./kulamValidation.service");
+  const kulam = await assertValidKulam(input.kulam);
+  const district = input.district.trim();
+  if (!district) {
+    throw Object.assign(new Error("Please select your district."), { status: 400 });
+  }
+
   await user.update({
     username,
     usernameChangedAt: new Date(),
     gender: input.gender.trim(),
     dob: input.dob,
-    district: input.district.trim(),
-    kulam: input.kulam.trim(),
+    district,
+    kulam,
     community: input.community?.trim() || null,
-    location: input.location?.trim() || input.district.trim(),
+    location: input.location?.trim() || district,
     mobile: input.mobile?.trim() || null,
     profilePhoto: input.profilePhoto?.trim() || user.profilePhoto,
     profileComplete: true
+  } as any);
+
+  const { ensureUserProfile } = await import("./ensureUserProfile");
+  const profile = await ensureUserProfile(userId);
+  const rawCommunity = profile.community as unknown;
+  let current: Record<string, unknown> = {};
+  if (typeof rawCommunity === "string") {
+    try {
+      current = JSON.parse(rawCommunity) as Record<string, unknown>;
+    } catch {
+      current = {};
+    }
+  } else if (rawCommunity && typeof rawCommunity === "object" && !Array.isArray(rawCommunity)) {
+    current = { ...(rawCommunity as Record<string, unknown>) };
+  }
+  await profile.update({
+    community: { ...current, kulam }
   } as any);
 
   await user.reload();

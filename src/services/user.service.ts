@@ -2,6 +2,8 @@ import { User } from "../models";
 import { AUTH_PROVIDERS } from "../constants/auth.constants";
 import { ensureLinkedProviders, resolveLoginSource } from "../utils/authProvider.util";
 import { usernameService } from "./Username.service";
+import { assertValidKulam } from "./kulamValidation.service";
+import { ensureUserProfile } from "./ensureUserProfile";
 
 export type RegisterInput = {
   fullName: string;
@@ -37,6 +39,12 @@ export async function register(data: RegisterInput): Promise<User> {
     throw new Error("This username is already taken.");
   }
 
+  const kulam = await assertValidKulam(data.kulam);
+  const location = (data.location ?? "").trim();
+  if (!location) {
+    throw Object.assign(new Error("Please select your location."), { status: 400 });
+  }
+
   const user = await User.create({
     fullName: data.fullName.trim(),
     username,
@@ -45,9 +53,10 @@ export async function register(data: RegisterInput): Promise<User> {
     email,
     mobile: data.mobile?.trim() || null,
     occupation: data.occupation?.trim() || null,
-    location: data.location?.trim() || null,
+    location,
+    district: location,
     community: data.community?.trim() || null,
-    kulam: data.kulam?.trim() || null,
+    kulam,
     profilePhoto: data.profilePhoto?.trim() || null,
     govtIdType: data.govtIdType?.trim() || null,
     govtIdFile: data.govtIdFile?.trim() || null,
@@ -57,8 +66,15 @@ export async function register(data: RegisterInput): Promise<User> {
     linkedProviders: [AUTH_PROVIDERS.EXISTING_LOGIN]
   } as any);
 
+  // Seed community profile so Edit Profile / completion see kulam immediately.
+  const profile = await ensureUserProfile(user.id);
+  await profile.update({
+    community: { kulam }
+  } as any);
+
   return user;
 }
+
 
 export async function findByEmail(email: string): Promise<User | null> {
   return User.findOne({ where: { email: email.toLowerCase().trim() } });

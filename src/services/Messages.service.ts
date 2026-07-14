@@ -3,7 +3,7 @@ import { sequelize } from "../config/db";
 import { Message, User } from "../models";
 import { toSignedUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
-import { emitMessageEvents } from "../realtime/messageEvents";
+import { emitMessageEvents, emitMessageRead } from "../realtime/messageEvents";
 import * as NotificationService from "./Notification.service";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
 import {
@@ -219,11 +219,16 @@ export async function sendMessage(
 
 export async function markRead(me: number, otherUserId: number): Promise<{ readAt: string }> {
   const now = new Date();
-  await Message.update(
+  const [updated] = await Message.update(
     { readAt: now } as any,
     { where: { senderId: otherUserId, recipientId: me, readAt: null } }
   );
-  return { readAt: now.toISOString() };
+  const readAt = now.toISOString();
+  // Notify sender even when client used REST (or when socket:read delegates here).
+  if (updated > 0) {
+    emitMessageRead(me, otherUserId, readAt);
+  }
+  return { readAt };
 }
 
 export async function unreadCount(me: number): Promise<number> {

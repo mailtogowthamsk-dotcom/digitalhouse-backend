@@ -42,6 +42,14 @@ import { MasterDataItem } from "./MasterDataItem.model";
 import { MasterDataAudit } from "./MasterDataAudit.model";
 import { ModerationAction } from "./ModerationAction.model";
 import {
+  SupportTicket,
+  SupportTicketMessage,
+  SupportFaq,
+  SupportGuide,
+  SupportGuideStep,
+  SupportContactConfig
+} from "./Support.models";
+import {
   PlatformAppVersion,
   PlatformMaintenance,
   PlatformNotification,
@@ -123,6 +131,13 @@ MasterDataItem.hasMany(MasterDataItem, { foreignKey: "parentId", as: "Children" 
 MasterDataItem.hasMany(MasterDataAudit, { foreignKey: "itemId" });
 MasterDataAudit.belongsTo(MasterDataItem, { foreignKey: "itemId" });
 
+User.hasMany(SupportTicket, { foreignKey: "userId" });
+SupportTicket.belongsTo(User, { foreignKey: "userId" });
+SupportTicket.hasMany(SupportTicketMessage, { foreignKey: "ticketId" });
+SupportTicketMessage.belongsTo(SupportTicket, { foreignKey: "ticketId" });
+SupportGuide.hasMany(SupportGuideStep, { foreignKey: "guideId" });
+SupportGuideStep.belongsTo(SupportGuide, { foreignKey: "guideId" });
+
 export type { UserStatus } from "./user.model";
 export type { PostType, JobStatus, JobEmploymentType } from "./Post.model";
 export { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES } from "./Post.model";
@@ -173,6 +188,12 @@ export {
   MasterDataItem,
   MasterDataAudit,
   ModerationAction,
+  SupportTicket,
+  SupportTicketMessage,
+  SupportFaq,
+  SupportGuide,
+  SupportGuideStep,
+  SupportContactConfig,
   PlatformAppVersion,
   PlatformMaintenance,
   PlatformNotification,

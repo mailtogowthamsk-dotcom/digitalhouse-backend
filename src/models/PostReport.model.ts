@@ -34,5 +34,5 @@ PostReport.init(
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }
   },
-  { sequelize, tableName: "post_reports", timestamps: true }
+  { sequelize, tableName: "post_reports", timestamps: true, indexes: [{ fields: ["status"] }, { fields: ["createdAt"] }, { fields: ["postId"] }] }
 );

@@ -14,6 +14,7 @@ import { notificationsRouter } from "./notifications.routes";
 import { connectionsRouter } from "./connections.routes";
 import { helpingHandsRouter } from "./helpingHands.routes";
 import { platformRouter } from "./platform.routes";
+import { supportRouter } from "./support.routes";
 
 export const apiRouter = Router();
 
@@ -31,4 +32,5 @@ apiRouter.use("/matrimony", matrimonyRouter);
 apiRouter.use("/notifications", notificationsRouter);
 apiRouter.use("/connections", connectionsRouter);
 apiRouter.use("/helping-hands", helpingHandsRouter);
+apiRouter.use("/support", supportRouter);
 apiRouter.use("/landing", landingRouter);

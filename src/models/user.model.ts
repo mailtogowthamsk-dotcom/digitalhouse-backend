@@ -121,5 +121,17 @@ User.init(
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }
   },
-  { sequelize, tableName: "users", timestamps: true }
+  {
+    sequelize,
+    tableName: "users",
+    timestamps: true,
+    indexes: [
+      { fields: ["status"] },
+      { fields: ["createdAt"] },
+      { fields: ["community"] },
+      { fields: ["gender"] },
+      { fields: ["email"] },
+      { fields: ["mobile"] }
+    ]
+  }
 );

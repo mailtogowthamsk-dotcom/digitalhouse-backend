@@ -49,6 +49,183 @@ async function loadUsers(ids: number[]): Promise<Map<number, User>> {
   return new Map(rows.map((u) => [u.id, u]));
 }
 
+function escapeLike(raw: string): string {
+  return raw.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
+async function findUserIdsMatchingSearch(q: string): Promise<number[]> {
+  const like = `%${escapeLike(q)}%`;
+  const rows = await User.findAll({
+    where: {
+      [Op.or]: [{ fullName: { [Op.like]: like } }, { email: { [Op.like]: like } }]
+    },
+    attributes: ["id"]
+  });
+  return rows.map((u) => u.id);
+}
+
+async function findPostIdsMatchingSearch(q: string, authorUserIds: number[]): Promise<number[]> {
+  const like = `%${escapeLike(q)}%`;
+  const or: Record<string, unknown>[] = [{ title: { [Op.like]: like } }];
+  if (authorUserIds.length > 0) {
+    or.push({ userId: { [Op.in]: authorUserIds } });
+  }
+  const rows = await Post.findAll({
+    where: { [Op.or]: or },
+    attributes: ["id"]
+  });
+  return rows.map((p) => p.id);
+}
+
+function statusWhere(status: AdminReportStatus | "all"): Record<string, unknown> {
+  if (status === "all") return {};
+  return { status };
+}
+
+async function buildPostReportSearchWhere(
+  base: Record<string, unknown>,
+  q: string
+): Promise<Record<string, unknown>> {
+  const like = `%${escapeLike(q)}%`;
+  const userIds = await findUserIdsMatchingSearch(q);
+  const postIds = await findPostIdsMatchingSearch(q, userIds);
+  const or: Record<string, unknown>[] = [{ reason: { [Op.like]: like } }];
+  if (userIds.length > 0) or.push({ reporterId: { [Op.in]: userIds } });
+  if (postIds.length > 0) or.push({ postId: { [Op.in]: postIds } });
+  return { ...base, [Op.or]: or };
+}
+
+async function buildProfileReportSearchWhere(
+  base: Record<string, unknown>,
+  q: string
+): Promise<Record<string, unknown>> {
+  const like = `%${escapeLike(q)}%`;
+  const userIds = await findUserIdsMatchingSearch(q);
+  const or: Record<string, unknown>[] = [
+    { reason: { [Op.like]: like } },
+    { details: { [Op.like]: like } }
+  ];
+  if (userIds.length > 0) {
+    or.push({ reporterId: { [Op.in]: userIds } }, { reportedUserId: { [Op.in]: userIds } });
+  }
+  return { ...base, [Op.or]: or };
+}
+
+async function hydratePostReports(rows: PostReport[]): Promise<AdminReportListItem[]> {
+  if (rows.length === 0) return [];
+  const postIds = rows.map((r) => r.postId);
+  const posts = await Post.findAll({
+    where: { id: { [Op.in]: postIds } },
+    attributes: ["id", "title", "postType", "mediaUrl", "userId", "description"]
+  });
+  const postById = new Map(posts.map((p) => [p.id, p]));
+  const userIds: number[] = [];
+  for (const r of rows) {
+    userIds.push(r.reporterId);
+    const p = postById.get(r.postId);
+    if (p) userIds.push(p.userId);
+  }
+  const userById = await loadUsers(userIds);
+  return rows.map((r) => {
+    const post = postById.get(r.postId);
+    const author = post ? userById.get(post.userId) : undefined;
+    const reporter = userById.get(r.reporterId);
+    return {
+      key: `POST:${r.id}`,
+      kind: "POST" as const,
+      id: r.id,
+      reason: r.reason,
+      details: null,
+      status: r.status,
+      adminRemarks: r.adminRemarks ?? null,
+      reviewedBy: r.reviewedBy ?? null,
+      reviewedAt: r.reviewedAt?.toISOString() ?? null,
+      createdAt: r.createdAt.toISOString(),
+      reporter: {
+        id: r.reporterId,
+        name: reporter?.fullName ?? "Unknown",
+        email: reporter?.email ?? null
+      },
+      targetUser: userBrief(author, post?.userId ?? 0),
+      post: post
+        ? {
+            id: post.id,
+            title: post.title,
+            postType: post.postType ?? null,
+            mediaUrl: post.mediaUrl ?? null
+          }
+        : null
+    };
+  });
+}
+
+async function hydrateProfileReports(rows: MatrimonyReport[]): Promise<AdminReportListItem[]> {
+  if (rows.length === 0) return [];
+  const userIds: number[] = [];
+  for (const r of rows) {
+    userIds.push(r.reporterId, r.reportedUserId);
+  }
+  const userById = await loadUsers(userIds);
+  return rows.map((r) => {
+    const reporter = userById.get(r.reporterId);
+    const target = userById.get(r.reportedUserId);
+    return {
+      key: `PROFILE:${r.id}`,
+      kind: "PROFILE" as const,
+      id: r.id,
+      reason: r.reason,
+      details: r.details ?? null,
+      status: r.status,
+      adminRemarks: r.adminRemarks ?? null,
+      reviewedBy: r.reviewedBy ?? null,
+      reviewedAt: r.reviewedAt?.toISOString() ?? null,
+      createdAt: r.createdAt.toISOString(),
+      reporter: {
+        id: r.reporterId,
+        name: reporter?.fullName ?? "Unknown",
+        email: reporter?.email ?? null
+      },
+      targetUser: userBrief(target, r.reportedUserId),
+      post: null
+    };
+  });
+}
+
+async function fetchAdminReportCounts() {
+  const [
+    pendingPost,
+    pendingProfile,
+    escPost,
+    escProfile,
+    resPost,
+    resProfile,
+    disPost,
+    disProfile,
+    allPost,
+    allProfile
+  ] = await Promise.all([
+    PostReport.count({ where: { status: "PENDING" } }),
+    MatrimonyReport.count({ where: { status: "PENDING" } }),
+    PostReport.count({ where: { status: "ESCALATED" } }),
+    MatrimonyReport.count({ where: { status: "ESCALATED" } }),
+    PostReport.count({ where: { status: "RESOLVED" } }),
+    MatrimonyReport.count({ where: { status: "RESOLVED" } }),
+    PostReport.count({ where: { status: "DISMISSED" } }),
+    MatrimonyReport.count({ where: { status: "DISMISSED" } }),
+    PostReport.count(),
+    MatrimonyReport.count()
+  ]);
+  return {
+    pending: pendingPost + pendingProfile,
+    escalated: escPost + escProfile,
+    resolved: resPost + resProfile,
+    dismissed: disPost + disProfile,
+    all: allPost + allProfile,
+    post: allPost,
+    profile: allProfile
+  };
+}
+
 async function logAction(input: {
   action: "WARN" | "SUSPEND" | "REACTIVATE" | "ESCALATE" | "RESOLVE" | "DISMISS";
   targetUserId?: number | null;
@@ -93,146 +270,107 @@ export async function listAdminReports(query: {
   const limit = Math.min(50, Math.max(1, query.limit ?? 20));
   const status = query.status ?? "PENDING";
   const kind = query.kind ?? "all";
-  const q = query.q?.trim().toLowerCase();
+  const q = query.q?.trim() || "";
+  const offset = (page - 1) * limit;
+  const baseWhere = statusWhere(status);
 
-  const postWhere: Record<string, unknown> = {};
-  const profileWhere: Record<string, unknown> = {};
-  if (status !== "all") {
-    postWhere.status = status;
-    profileWhere.status = status;
-  }
+  const countsPromise = fetchAdminReportCounts();
 
-  const [postRows, profileRows, pendingPost, pendingProfile, escPost, escProfile, resPost, resProfile, disPost, disProfile, allPost, allProfile] =
-    await Promise.all([
-      kind === "PROFILE" ? Promise.resolve([] as PostReport[]) : PostReport.findAll({ where: postWhere, order: [["createdAt", "DESC"]] }),
-      kind === "POST" ? Promise.resolve([] as MatrimonyReport[]) : MatrimonyReport.findAll({ where: profileWhere, order: [["createdAt", "DESC"]] }),
-      PostReport.count({ where: { status: "PENDING" } }),
-      MatrimonyReport.count({ where: { status: "PENDING" } }),
-      PostReport.count({ where: { status: "ESCALATED" } }),
-      MatrimonyReport.count({ where: { status: "ESCALATED" } }),
-      PostReport.count({ where: { status: "RESOLVED" } }),
-      MatrimonyReport.count({ where: { status: "RESOLVED" } }),
-      PostReport.count({ where: { status: "DISMISSED" } }),
-      MatrimonyReport.count({ where: { status: "DISMISSED" } }),
-      PostReport.count(),
-      MatrimonyReport.count()
+  if (kind === "POST") {
+    const where = q ? await buildPostReportSearchWhere(baseWhere, q) : baseWhere;
+    const [{ rows, count }, counts] = await Promise.all([
+      PostReport.findAndCountAll({
+        where,
+        order: [["createdAt", "DESC"]],
+        limit,
+        offset
+      }),
+      countsPromise
     ]);
-
-  const postIds = postRows.map((r) => r.postId);
-  const posts =
-    postIds.length === 0
-      ? []
-      : await Post.findAll({
-          where: { id: { [Op.in]: postIds } },
-          attributes: ["id", "title", "postType", "mediaUrl", "userId", "description"]
-        });
-  const postById = new Map(posts.map((p) => [p.id, p]));
-
-  const userIds: number[] = [];
-  for (const r of postRows) {
-    userIds.push(r.reporterId);
-    const p = postById.get(r.postId);
-    if (p) userIds.push(p.userId);
-  }
-  for (const r of profileRows) {
-    userIds.push(r.reporterId, r.reportedUserId);
-  }
-  const userById = await loadUsers(userIds);
-
-  let merged: AdminReportListItem[] = [];
-
-  for (const r of postRows) {
-    const post = postById.get(r.postId);
-    const author = post ? userById.get(post.userId) : undefined;
-    const reporter = userById.get(r.reporterId);
-    merged.push({
-      key: `POST:${r.id}`,
-      kind: "POST",
-      id: r.id,
-      reason: r.reason,
-      details: null,
-      status: r.status,
-      adminRemarks: r.adminRemarks ?? null,
-      reviewedBy: r.reviewedBy ?? null,
-      reviewedAt: r.reviewedAt?.toISOString() ?? null,
-      createdAt: r.createdAt.toISOString(),
-      reporter: {
-        id: r.reporterId,
-        name: reporter?.fullName ?? "Unknown",
-        email: reporter?.email ?? null
-      },
-      targetUser: userBrief(author, post?.userId ?? 0),
-      post: post
-        ? {
-            id: post.id,
-            title: post.title,
-            postType: post.postType ?? null,
-            mediaUrl: post.mediaUrl ?? null
-          }
-        : null
-    });
+    return {
+      reports: await hydratePostReports(rows),
+      total: count,
+      page,
+      limit,
+      counts
+    };
   }
 
-  for (const r of profileRows) {
-    const reporter = userById.get(r.reporterId);
-    const target = userById.get(r.reportedUserId);
-    merged.push({
-      key: `PROFILE:${r.id}`,
-      kind: "PROFILE",
-      id: r.id,
-      reason: r.reason,
-      details: r.details ?? null,
-      status: r.status,
-      adminRemarks: r.adminRemarks ?? null,
-      reviewedBy: r.reviewedBy ?? null,
-      reviewedAt: r.reviewedAt?.toISOString() ?? null,
-      createdAt: r.createdAt.toISOString(),
-      reporter: {
-        id: r.reporterId,
-        name: reporter?.fullName ?? "Unknown",
-        email: reporter?.email ?? null
-      },
-      targetUser: userBrief(target, r.reportedUserId),
-      post: null
-    });
+  if (kind === "PROFILE") {
+    const where = q ? await buildProfileReportSearchWhere(baseWhere, q) : baseWhere;
+    const [{ rows, count }, counts] = await Promise.all([
+      MatrimonyReport.findAndCountAll({
+        where,
+        order: [["createdAt", "DESC"]],
+        limit,
+        offset
+      }),
+      countsPromise
+    ]);
+    return {
+      reports: await hydrateProfileReports(rows),
+      total: count,
+      page,
+      limit,
+      counts
+    };
   }
 
-  if (q) {
-    merged = merged.filter((item) => {
-      const hay = [
-        item.reason,
-        item.details ?? "",
-        item.reporter.name,
-        item.reporter.email ?? "",
-        item.targetUser.name,
-        item.targetUser.email ?? "",
-        item.post?.title ?? ""
-      ]
-        .join(" ")
-        .toLowerCase();
-      return hay.includes(q);
-    });
-  }
+  // kind === "all": lightweight id merge, then hydrate page only
+  const [postWhere, profileWhere] = q
+    ? await Promise.all([
+        buildPostReportSearchWhere(baseWhere, q),
+        buildProfileReportSearchWhere(baseWhere, q)
+      ])
+    : [baseWhere, baseWhere];
 
-  merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const [postRefs, profileRefs, counts] = await Promise.all([
+    PostReport.findAll({
+      where: postWhere,
+      attributes: ["id", "createdAt"],
+      order: [["createdAt", "DESC"]]
+    }),
+    MatrimonyReport.findAll({
+      where: profileWhere,
+      attributes: ["id", "createdAt"],
+      order: [["createdAt", "DESC"]]
+    }),
+    countsPromise
+  ]);
+
+  type LightRef = { id: number; createdAt: Date; kind: ReportKind };
+  const merged: LightRef[] = [
+    ...postRefs.map((r) => ({ id: r.id, createdAt: r.createdAt, kind: "POST" as const })),
+    ...profileRefs.map((r) => ({ id: r.id, createdAt: r.createdAt, kind: "PROFILE" as const }))
+  ].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
   const total = merged.length;
-  const reports = merged.slice((page - 1) * limit, page * limit);
+  const pageRefs = merged.slice(offset, offset + limit);
+  const pagePostIds = pageRefs.filter((r) => r.kind === "POST").map((r) => r.id);
+  const pageProfileIds = pageRefs.filter((r) => r.kind === "PROFILE").map((r) => r.id);
 
-  return {
-    reports,
-    total,
-    page,
-    limit,
-    counts: {
-      pending: pendingPost + pendingProfile,
-      escalated: escPost + escProfile,
-      resolved: resPost + resProfile,
-      dismissed: disPost + disProfile,
-      all: allPost + allProfile,
-      post: allPost,
-      profile: allProfile
-    }
-  };
+  const [postRows, profileRows] = await Promise.all([
+    pagePostIds.length
+      ? PostReport.findAll({ where: { id: { [Op.in]: pagePostIds } } })
+      : Promise.resolve([] as PostReport[]),
+    pageProfileIds.length
+      ? MatrimonyReport.findAll({ where: { id: { [Op.in]: pageProfileIds } } })
+      : Promise.resolve([] as MatrimonyReport[])
+  ]);
+
+  const [postItems, profileItems] = await Promise.all([
+    hydratePostReports(postRows),
+    hydrateProfileReports(profileRows)
+  ]);
+  const byKey = new Map<string, AdminReportListItem>();
+  for (const item of postItems) byKey.set(item.key, item);
+  for (const item of profileItems) byKey.set(item.key, item);
+
+  const reports = pageRefs
+    .map((ref) => byKey.get(`${ref.kind}:${ref.id}`))
+    .filter((item): item is AdminReportListItem => item != null);
+
+  return { reports, total, page, limit, counts };
 }
 
 export async function getAdminReport(

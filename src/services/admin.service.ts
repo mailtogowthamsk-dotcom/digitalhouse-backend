@@ -74,25 +74,49 @@ export async function listPendingUsers(): Promise<User[]> {
   });
 }
 
+const USER_SORT_FIELDS = new Set([
+  "createdAt",
+  "updatedAt",
+  "fullName",
+  "email",
+  "status",
+  "id"
+]);
+
 /** List all users (paginated) for User Management */
 export async function listUsers(
   page: number = 1,
   limit: number = 20,
   status?: string,
   q?: string,
-  loginSource?: string
+  loginSource?: string,
+  filters?: {
+    community?: string;
+    gender?: string;
+    sortBy?: string;
+    sortDir?: "asc" | "desc";
+  }
 ) {
-  const offset = (page - 1) * limit;
+  const safeLimit = Math.min(Math.max(1, limit), 100);
+  const safePage = Math.max(1, page);
+  const offset = (safePage - 1) * safeLimit;
   const where: WhereOptions = status ? { status: status as any } : {};
   const term = q?.trim();
-  if (term && term.length >= 2) {
+  if (term && term.length >= 1) {
     Object.assign(where, {
       [Op.or]: [
         { fullName: { [Op.like]: `%${term}%` } },
+        { username: { [Op.like]: `%${term}%` } },
         { email: { [Op.like]: `%${term}%` } },
         { mobile: { [Op.like]: `%${term}%` } }
       ]
     });
+  }
+  if (filters?.community?.trim()) {
+    Object.assign(where, { community: { [Op.like]: `%${filters.community.trim()}%` } });
+  }
+  if (filters?.gender?.trim()) {
+    Object.assign(where, { gender: filters.gender.trim() });
   }
   if (loginSource === "google") {
     Object.assign(where, {
@@ -116,25 +140,31 @@ export async function listUsers(
       )
     });
   }
+  const sortBy = filters?.sortBy && USER_SORT_FIELDS.has(filters.sortBy) ? filters.sortBy : "createdAt";
+  const sortDir = filters?.sortDir === "asc" ? "ASC" : "DESC";
   const { count, rows } = await User.findAndCountAll({
     where,
-    order: [["createdAt", "DESC"]],
-    limit: Math.min(limit, 100),
+    order: [[sortBy, sortDir]],
+    limit: safeLimit,
     offset
   });
   return {
     users: rows.map((u) => ({
       id: u.id,
       fullName: u.fullName,
+      username: u.username ?? null,
       email: u.email,
       mobile: u.mobile ?? null,
+      community: u.community ?? null,
+      gender: u.gender ?? null,
       status: u.status,
       loginSource: resolveLoginSource(u),
-      createdAt: u.createdAt.toISOString()
+      createdAt: u.createdAt.toISOString(),
+      updatedAt: u.updatedAt.toISOString()
     })),
     total: count,
-    page,
-    limit
+    page: safePage,
+    limit: safeLimit
   };
 }
 
@@ -233,13 +263,61 @@ export type PendingProfileUpdateDto = {
   submittedForReview?: boolean;
 };
 
-/** List pending profile updates (Matrimony & Business) for admin review */
-export async function listPendingProfileUpdates(): Promise<PendingProfileUpdateDto[]> {
-  const list = await PendingProfileUpdate.findAll({
-    where: { status: "PENDING" },
+/** List pending profile updates (Matrimony & Business) for admin review.
+ * Supports optional section/page/limit/q for scalable browsing.
+ * When page/limit omitted, returns full list (backward compatible).
+ */
+export async function listPendingProfileUpdates(opts?: {
+  section?: "MATRIMONY" | "BUSINESS";
+  page?: number;
+  limit?: number;
+  q?: string;
+}): Promise<{
+  updates: PendingProfileUpdateDto[];
+  total: number;
+  page: number;
+  limit: number;
+}> {
+  const where: Record<string, unknown> = { status: "PENDING" };
+  if (opts?.section) where.section = opts.section;
+
+  const page = Math.max(1, opts?.page ?? 1);
+  const limit = Math.min(100, Math.max(1, opts?.limit ?? 20));
+  const paginate = opts?.page != null || opts?.limit != null || opts?.section != null || opts?.q != null;
+
+  const userWhere: WhereOptions | undefined = (() => {
+    const term = opts?.q?.trim();
+    if (!term) return undefined;
+    return {
+      [Op.or]: [
+        { fullName: { [Op.like]: `%${term}%` } },
+        { email: { [Op.like]: `%${term}%` } },
+        { mobile: { [Op.like]: `%${term}%` } }
+      ]
+    };
+  })();
+
+  const { count, rows: list } = await PendingProfileUpdate.findAndCountAll({
+    where,
     order: [["submittedAt", "ASC"]],
-    include: [{ model: User, as: "User", attributes: ["id", "fullName", "email"] }]
+    include: [
+      {
+        model: User,
+        as: "User",
+        attributes: ["id", "fullName", "email"],
+        required: Boolean(userWhere),
+        ...(userWhere ? { where: userWhere } : {})
+      }
+    ],
+    ...(paginate
+      ? {
+          limit,
+          offset: (page - 1) * limit,
+          distinct: true
+        }
+      : {})
   });
+
   const userIds = [...new Set(list.map((r) => r.userId))];
   const profiles = await UserProfile.findAll({ where: { userId: userIds } });
   const profileByUser = new Map(profiles.map((p) => [p.userId, p]));
@@ -249,15 +327,13 @@ export async function listPendingProfileUpdates(): Promise<PendingProfileUpdateD
     BUSINESS: SECTION_ALLOWED_KEYS.business
   };
 
-  return Promise.all(
+  const updates = await Promise.all(
     list.map(async (row) => {
       const user = (row as any).User as User;
       const profile = profileByUser.get(row.userId);
       const allowedKeys = allowedKeysBySection[row.section];
       const currentApprovedRaw =
-        row.section === "MATRIMONY"
-          ? profile?.matrimony
-          : profile?.business;
+        row.section === "MATRIMONY" ? profile?.matrimony : profile?.business;
       let currentApproved = normalizeJsonColumn(currentApprovedRaw, allowedKeys) as Record<
         string,
         unknown
@@ -289,6 +365,13 @@ export async function listPendingProfileUpdates(): Promise<PendingProfileUpdateD
       };
     })
   );
+
+  return {
+    updates,
+    total: paginate ? count : updates.length,
+    page: paginate ? page : 1,
+    limit: paginate ? limit : updates.length || limit
+  };
 }
 
 /** Approve pending profile update: copy data to user_profiles (clean JSON only), mark update as APPROVED */

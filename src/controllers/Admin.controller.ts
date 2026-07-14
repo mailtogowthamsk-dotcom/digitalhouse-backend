@@ -36,7 +36,19 @@ export async function listUsers(req: Request, res: Response) {
   const q = typeof req.query.q === "string" ? req.query.q : undefined;
   const loginSource =
     typeof req.query.loginSource === "string" ? req.query.loginSource : undefined;
-  const result = await adminService.listUsers(page, limit, status, q, loginSource);
+  const community = typeof req.query.community === "string" ? req.query.community : undefined;
+  const gender = typeof req.query.gender === "string" ? req.query.gender : undefined;
+  const sortBy = typeof req.query.sortBy === "string" ? req.query.sortBy : undefined;
+  const sortDir =
+    req.query.sortDir === "asc" || req.query.sortDir === "desc"
+      ? req.query.sortDir
+      : undefined;
+  const result = await adminService.listUsers(page, limit, status, q, loginSource, {
+    community,
+    gender,
+    sortBy,
+    sortDir
+  });
   return success(res, result);
 }
 
@@ -132,8 +144,24 @@ export async function getStats(req: Request, res: Response) {
 
 /** GET /admin/pending-updates – list pending Matrimony & Business profile updates */
 export async function listPendingUpdates(req: Request, res: Response) {
-  const list = await adminService.listPendingProfileUpdates();
-  return success(res, { updates: list });
+  const sectionRaw = typeof req.query.section === "string" ? req.query.section.toUpperCase() : undefined;
+  const section =
+    sectionRaw === "MATRIMONY" || sectionRaw === "BUSINESS" ? sectionRaw : undefined;
+  const page = req.query.page != null ? Math.max(1, Number(req.query.page) || 1) : undefined;
+  const limit = req.query.limit != null ? Math.min(100, Math.max(1, Number(req.query.limit) || 20)) : undefined;
+  const q = typeof req.query.q === "string" ? req.query.q : undefined;
+  const result = await adminService.listPendingProfileUpdates({
+    section,
+    page,
+    limit,
+    q
+  });
+  return success(res, {
+    updates: result.updates,
+    total: result.total,
+    page: result.page,
+    limit: result.limit
+  });
 }
 
 /** POST /admin/approve-update – approve pending profile update; move data to main profile */
