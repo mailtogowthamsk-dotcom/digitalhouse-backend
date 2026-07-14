@@ -12,6 +12,7 @@ import {
   Kulam,
   Location
 } from "../models";
+import { ensureUserProfile } from "./ensureUserProfile";
 import type { MatrimonyWorkflowStatus, MatrimonyVerificationState } from "../models/MatrimonyRequestMeta.model";
 import type { MatrimonyNoteType } from "../models/MatrimonyAdminNote.model";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
@@ -686,8 +687,7 @@ export async function updateCandidatePhotoStatus(
   await row.update({ data: synced, updatedAt: new Date() } as any);
 
   if (status === "APPROVED") {
-    let profile = await UserProfile.findOne({ where: { userId: row.userId } });
-    if (!profile) profile = await UserProfile.create({ userId: row.userId } as any);
+    let profile = await ensureUserProfile(row.userId);
     const approved = normalizeJsonColumn(profile.matrimony, SECTION_ALLOWED_KEYS.matrimony) ?? {};
     const merged = syncMatrimonyPhotoFields({
       ...approved,
@@ -808,8 +808,7 @@ export async function suspendMatrimonyProfile(updateId: number, adminEmail: stri
     await meta.update({ suspended: true, workflowStatus: "SUSPENDED", reviewedBy: adminEmail } as any);
   }
 
-  let profile = await UserProfile.findOne({ where: { userId: row.userId } });
-  if (!profile) profile = await UserProfile.create({ userId: row.userId } as any);
+  let profile = await ensureUserProfile(row.userId);
   const matrimony = normalizeJsonColumn(profile.matrimony, SECTION_ALLOWED_KEYS.matrimony) ?? {};
   await profile.update({
     matrimony: { ...matrimony, matrimonyProfileActive: false, matrimonySuspended: true }

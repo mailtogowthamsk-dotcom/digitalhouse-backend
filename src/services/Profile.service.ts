@@ -18,6 +18,7 @@ import type {
   BusinessSection,
   FamilySection
 } from "../models/UserProfile.model";
+import { ensureUserProfile } from "./ensureUserProfile";
 
 // ---------------------------------------------------------------------------
 // Masking – sensitive fields (no raw email/mobile in profile API)
@@ -311,7 +312,7 @@ const PENDING_SUBMITTED_FLAG = "_submittedForReview";
 export async function getProfile(userId: number): Promise<ProfileMeResponse> {
   const [user, profileRow, stats, pendingMatrimony, pendingBusiness] = await Promise.all([
     User.findByPk(userId),
-    UserProfile.findOne({ where: { userId } }).then((p) => p ?? UserProfile.create({ userId } as any)),
+    ensureUserProfile(userId),
     getProfileStats(userId),
     PendingProfileUpdate.findOne({
       where: { userId, section: "MATRIMONY", status: "PENDING" },
@@ -323,7 +324,7 @@ export async function getProfile(userId: number): Promise<ProfileMeResponse> {
     })
   ]);
   if (!user) throw new Error("User not found");
-  const profile = profileRow!;
+  const profile = profileRow;
 
   const member_since = user.createdAt ? new Date(user.createdAt).getFullYear().toString() : "—";
   const { sections, completion_percentage, show_matrimony, show_business } = buildSectionsAndCompletion(user, profile);
@@ -669,8 +670,7 @@ export async function updateProfileSection(
     return getProfile(userId);
   }
 
-  let profile = await UserProfile.findOne({ where: { userId } });
-  if (!profile) profile = await UserProfile.create({ userId } as any);
+  let profile = await ensureUserProfile(userId);
 
   const allowedKeys = SECTION_ALLOWED_KEYS[section];
   const current = normalizeJsonColumn(profile.get(section), allowedKeys) ?? {};

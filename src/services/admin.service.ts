@@ -1,6 +1,7 @@
 import { Op, type WhereOptions } from "sequelize";
 import { sequelize } from "../config/db";
 import { User, UserProfile, PendingProfileUpdate, AdminVerification } from "../models";
+import { ensureUserProfile } from "./ensureUserProfile";
 import { resolveLoginSource } from "../utils/authProvider.util";
 import { sendApprovalEmail, sendRejectionEmail } from "./mail.service";
 import type { MatrimonySection, BusinessSection } from "../models/UserProfile.model";
@@ -300,8 +301,7 @@ export async function approveProfileUpdate(
   if (!row) throw new Error("Pending update not found");
   if (row.status !== "PENDING") throw new Error("Update is not pending");
 
-  let profile = await UserProfile.findOne({ where: { userId: row.userId } });
-  if (!profile) profile = await UserProfile.create({ userId: row.userId } as any);
+  let profile = await ensureUserProfile(row.userId);
 
   const sectionKey = row.section === "MATRIMONY" ? "matrimony" : "business";
   const allowedKeys = SECTION_ALLOWED_KEYS[sectionKey];
