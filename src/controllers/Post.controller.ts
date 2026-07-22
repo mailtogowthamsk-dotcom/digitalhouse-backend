@@ -7,7 +7,9 @@ import {
   validateAddCommentBody,
   validateReportPostBody,
   validateCommentsQuery,
-  validateUpdateCommentBody
+  validateLikesQuery,
+  validateUpdateCommentBody,
+  validateSharePostBody
 } from "../validations/post.validation";
 import type { User, PostType, JobStatus, JobEmploymentType } from "../models";
 import type { MarketplaceIntent, MarketplaceCondition, MarketplaceStatus } from "../constants/marketplace.constants";
@@ -38,9 +40,15 @@ export async function createPost(req: AuthRequest, res: Response) {
   const body = validateCreatePostBody(req.body);
   const payload = {
     post_type: body.post_type as PostType,
+    visibility: body.visibility as import("../constants/postVisibility.constants").PostVisibility,
     title: body.title,
     description: body.description ?? null,
     media_url: body.media_url ?? null,
+    media_type: (body.media_type ?? null) as import("../constants/postMedia.constants").PostMediaType | null,
+    thumbnail_url: body.thumbnail_url ?? null,
+    video_duration: body.video_duration ?? null,
+    mime_type: body.mime_type ?? null,
+    file_size: body.file_size ?? null,
     pinned: body.pinned ?? false,
     urgent: body.urgent ?? false,
     meetup_at: body.meetup_at ?? null,
@@ -61,7 +69,8 @@ export async function createPost(req: AuthRequest, res: Response) {
     help_urgency: (body.help_urgency ?? null) as HelpUrgency | null,
     help_location: body.help_location ?? null,
     help_contact_phone: body.help_contact_phone ?? null,
-    help_gallery: body.help_gallery
+    help_gallery: body.help_gallery,
+    hashtags: body.hashtags
   };
   try {
     const data = await postService.createPost(req.user.id, payload);
@@ -93,8 +102,18 @@ export async function updatePost(req: AuthRequest, res: Response) {
   const body = validateUpdatePostBody(req.body);
   const payload = {
     ...(body.title !== undefined && { title: body.title }),
+    ...(body.visibility !== undefined && {
+      visibility: body.visibility as import("../constants/postVisibility.constants").PostVisibility
+    }),
     ...(body.description !== undefined && { description: body.description ?? null }),
     ...(body.media_url !== undefined && { media_url: body.media_url ?? null }),
+    ...(body.media_type !== undefined && {
+      media_type: body.media_type as import("../constants/postMedia.constants").PostMediaType
+    }),
+    ...(body.thumbnail_url !== undefined && { thumbnail_url: body.thumbnail_url ?? null }),
+    ...(body.video_duration !== undefined && { video_duration: body.video_duration ?? null }),
+    ...(body.mime_type !== undefined && { mime_type: body.mime_type ?? null }),
+    ...(body.file_size !== undefined && { file_size: body.file_size ?? null }),
     ...(body.pinned !== undefined && { pinned: body.pinned }),
     ...(body.urgent !== undefined && { urgent: body.urgent }),
     ...(body.meetup_at !== undefined && { meetup_at: body.meetup_at ?? null }),
@@ -131,7 +150,8 @@ export async function updatePost(req: AuthRequest, res: Response) {
     }),
     ...(body.help_location !== undefined && { help_location: body.help_location }),
     ...(body.help_contact_phone !== undefined && { help_contact_phone: body.help_contact_phone }),
-    ...(body.help_gallery !== undefined && { help_gallery: body.help_gallery })
+    ...(body.help_gallery !== undefined && { help_gallery: body.help_gallery }),
+    ...(body.hashtags !== undefined && { hashtags: body.hashtags })
   };
   try {
     const data = await postService.updatePost(req.user.id, postId, payload);
@@ -198,6 +218,25 @@ export async function getComments(req: AuthRequest, res: Response) {
       query.limit,
       req.user.id,
       query.sort
+    );
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status === 404) return error(res, "Post not found", 404);
+    throw e;
+  }
+}
+
+export async function getPostLikes(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  if (postId == null) return error(res, "Invalid post id", 400);
+  const query = validateLikesQuery(req.query ?? {});
+  try {
+    const data = await postService.getPostLikes(
+      postId,
+      req.user.id,
+      query.limit,
+      query.offset
     );
     return success(res, data);
   } catch (e: any) {
@@ -324,4 +363,38 @@ export async function trackEvent(req: AuthRequest, res: Response) {
   const body = trackEventSchema.parse(req.body ?? {});
   await postService.trackFeedEvent(req.user.id, body.event_type, body.post_id, body.meta);
   return success(res, { ok: true });
+}
+
+export async function sharePost(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  if (postId == null) return error(res, "Invalid post id", 400);
+  const body = validateSharePostBody(req.body);
+  try {
+    const { postShareService } = await import("../services/PostShare.service");
+    const data = await postShareService.sharePostToConnections(
+      req.user.id,
+      postId,
+      body.recipient_ids,
+      body.message
+    );
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function repostPost(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  if (postId == null) return error(res, "Invalid post id", 400);
+  try {
+    const { postShareService } = await import("../services/PostShare.service");
+    const data = await postShareService.repostPost(req.user.id, postId);
+    return success(res, data, 201);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
 }

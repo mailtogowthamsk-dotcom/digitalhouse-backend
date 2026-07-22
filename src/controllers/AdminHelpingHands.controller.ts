@@ -11,7 +11,9 @@ import {
 const listSchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(20),
-  status: z.enum(["open", "in_progress", "completed", "cancelled", "all"]).default("all"),
+  status: z
+    .enum(["open", "in_progress", "completed", "cancelled", "expired", "all"])
+    .default("all"),
   category: z.enum(HELP_CATEGORIES as unknown as [string, ...string[]]).optional(),
   q: z.string().trim().max(120).optional()
 });
@@ -83,6 +85,30 @@ export async function completeHelpRequest(req: Request, res: Response) {
   try {
     const request = await AdminHelpingHands.setAdminHelpStatus(id, "COMPLETED");
     return success(res, { request, message: "Request marked completed." });
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function expireHelpRequest(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return error(res, "Invalid request id", 400);
+  try {
+    const request = await AdminHelpingHands.expireAdminHelpRequest(id);
+    return success(res, { request, message: "Request expired." });
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function extendHelpRequest(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return error(res, "Invalid request id", 400);
+  try {
+    const request = await AdminHelpingHands.extendAdminHelpRequest(id);
+    return success(res, { request, message: "Request duration extended." });
   } catch (e: any) {
     if (e?.status) return error(res, e.message, e.status);
     throw e;

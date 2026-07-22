@@ -195,6 +195,14 @@ adminRouter.post(
   "/helping-hands/:id/complete",
   asyncHandler(AdminHelpingHandsController.completeHelpRequest)
 );
+adminRouter.post(
+  "/helping-hands/:id/expire",
+  asyncHandler(AdminHelpingHandsController.expireHelpRequest)
+);
+adminRouter.post(
+  "/helping-hands/:id/extend",
+  asyncHandler(AdminHelpingHandsController.extendHelpRequest)
+);
 adminRouter.delete(
   "/helping-hands/:id",
   asyncHandler(AdminHelpingHandsController.deleteHelpRequest)

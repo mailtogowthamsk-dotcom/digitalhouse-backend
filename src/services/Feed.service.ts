@@ -2,8 +2,10 @@ import { Op, literal, type WhereOptions } from "sequelize";
 import { User, Post, PostLike, Comment, SavedPost, HelpOffer } from "../models";
 import { toSignedUrlIfR2 } from "../utils/r2Client";
 import type { FeedAuthorDto, FeedItemDto, FeedResultDto } from "./Home.service";
+import { resolvePostMediaType } from "../constants/postMedia.constants";
 import { parseMarketplaceGallery, signMarketplaceGallery } from "../utils/marketplaceGallery";
 import { parseHelpGallery, signHelpGallery } from "../utils/helpGallery";
+import { audienceVisibilityWhere, andWhere } from "./PostVisibility.service";
 
 const APPROVED = "APPROVED";
 const TRENDING_SCORE_THRESHOLD = 8;
@@ -54,6 +56,8 @@ async function approvedUserIdsInCommunity(currentUserId: number): Promise<number
 
 function toFeedAuthor(user: User): FeedAuthorDto {
   return {
+    userId: user.id,
+    username: user.username ?? null,
     name: user.fullName,
     profileImage: user.profilePhoto ?? null,
     verified: user.status === APPROVED
@@ -106,16 +110,30 @@ function applyPostFilters(
       });
     }
 
-    // Active help requests only in public browse
+    // Active help requests only in public browse (exclude expired)
     if (params.postType === "HELP_REQUEST") {
       andParts.push({
-        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] }
+        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
+        [Op.or]: [
+          { helpExpiresAt: null },
+          { helpExpiresAt: { [Op.gt]: new Date() } }
+        ]
       });
     } else if (!params.postType) {
       andParts.push({
         [Op.or]: [
           { postType: { [Op.ne]: "HELP_REQUEST" } },
-          { helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] } },
+          {
+            [Op.and]: [
+              { helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] } },
+              {
+                [Op.or]: [
+                  { helpExpiresAt: null },
+                  { helpExpiresAt: { [Op.gt]: new Date() } }
+                ]
+              }
+            ]
+          },
           { helpStatus: null }
         ]
       });
@@ -247,6 +265,16 @@ export async function getFeed(
     communityWhere = { userId: currentUserId };
   } else {
     communityWhere = { userId: { [Op.in]: approvedUserIds } };
+    communityWhere = andWhere(
+      communityWhere,
+      await audienceVisibilityWhere(currentUserId, "feed")
+    );
+  }
+  if (params.saved) {
+    communityWhere = andWhere(
+      communityWhere,
+      await audienceVisibilityWhere(currentUserId, "feed")
+    );
   }
   const filteredWhere = applyPostFilters(communityWhere, params, currentUserId);
   const scoreSql = engagementScoreSql();
@@ -307,10 +335,20 @@ export async function getFeed(
       ? pagePosts[pagePosts.length - 1]?.id ?? null
       : null;
 
+  const items = await buildFeedItemsFromPosts(pagePosts, currentUserId);
+  return { items, page, limit, total, nextCursor, sort };
+}
+
+/**
+ * Hydrate Post rows (with User association) into feed DTOs.
+ * Reused by Home feed and Explore search.
+ */
+export async function buildFeedItemsFromPosts(
+  pagePosts: Post[],
+  currentUserId: number
+): Promise<FeedItemDto[]> {
   const postIds = pagePosts.map((p) => p.id);
-  if (postIds.length === 0) {
-    return { items: [], page, limit, total, nextCursor: null, sort };
-  }
+  if (postIds.length === 0) return [];
 
   const [likeCounts, commentCounts, myLikes, mySaves, helpOffers] = await Promise.all([
     PostLike.findAll({ where: { postId: { [Op.in]: postIds } }, attributes: ["postId"], raw: true }),
@@ -353,7 +391,29 @@ export async function getFeed(
   const likedSet = new Set(myLikes.map((r: { postId: number }) => r.postId));
   const savedSet = new Set(mySaves.map((r: { postId: number }) => r.postId));
 
-  const items: FeedItemDto[] = await Promise.all(
+  const originalIds = [
+    ...new Set(
+      pagePosts
+        .map((p) => p.originalPostId)
+        .filter((id): id is number => typeof id === "number" && id > 0)
+    )
+  ];
+  const originalPosts =
+    originalIds.length > 0
+      ? await Post.findAll({
+          where: { id: { [Op.in]: originalIds } },
+          include: [
+            {
+              association: "User",
+              attributes: ["id", "fullName", "profilePhoto", "status"],
+              required: true
+            }
+          ]
+        })
+      : [];
+  const originalById = new Map(originalPosts.map((op) => [op.id, op]));
+
+  return Promise.all(
     pagePosts.map(async (p) => {
       const author = (p as any).User as User;
       const rawScore = Number((p as any).get?.("engagementScore") ?? 0);
@@ -364,8 +424,9 @@ export async function getFeed(
           : p.postType === "HELP_REQUEST"
             ? parseHelpGallery(p.helpGallery, p.mediaUrl ?? null)
             : [];
-      const [mediaUrl, profileImage, gallery] = await Promise.all([
+      const [mediaUrl, thumbnailUrl, profileImage, gallery] = await Promise.all([
         toSignedUrlIfR2(p.mediaUrl ?? null),
+        toSignedUrlIfR2(p.thumbnailUrl ?? null),
         author ? toSignedUrlIfR2(author.profilePhoto ?? null) : Promise.resolve(null),
         galleryRaw.length
           ? p.postType === "MARKETPLACE"
@@ -373,16 +434,42 @@ export async function getFeed(
             : signHelpGallery(galleryRaw)
           : Promise.resolve([] as string[])
       ]);
+      const mediaType = resolvePostMediaType({
+        mediaUrl: p.mediaUrl,
+        mediaType: p.mediaType as any,
+        mimeType: p.mimeType
+      });
+      const original = p.originalPostId ? originalById.get(p.originalPostId) : null;
+      const originalUser = original ? ((original as any).User as User) : null;
+      const originalProfileImage = originalUser
+        ? (await toSignedUrlIfR2(originalUser.profilePhoto ?? null)) ??
+          originalUser.profilePhoto ??
+          null
+        : null;
       return {
         postId: p.id,
         postType: p.postType,
+        visibility: (p as any).visibility ?? "PUBLIC",
         title: p.title,
         description: p.description ?? null,
         mediaUrl,
+        mediaType,
+        thumbnailUrl,
+        videoDuration: p.videoDuration ?? null,
+        mimeType: p.mimeType ?? null,
+        fileSize: p.fileSize ?? null,
         createdAt: p.createdAt.toISOString(),
         author: author
           ? { ...toFeedAuthor(author), profileImage: profileImage ?? author.profilePhoto ?? null }
-          : { name: "Unknown", profileImage: null, verified: false },
+          : { userId: 0, username: null, name: "Unknown", profileImage: null, verified: false },
+        isRepost: Boolean(p.originalPostId),
+        originalPostId: p.originalPostId ?? null,
+        originalAuthor: originalUser
+          ? {
+              ...toFeedAuthor(originalUser),
+              profileImage: originalProfileImage
+            }
+          : null,
         counts: { likes: likeMap[p.id] ?? 0, comments: commentMap[p.id] ?? 0 },
         likedByMe: likedSet.has(p.id),
         savedByMe: savedSet.has(p.id),
@@ -417,8 +504,6 @@ export async function getFeed(
       };
     })
   );
-
-  return { items, page, limit, total, nextCursor, sort };
 }
 
-export const feedService = { getFeed };
+export const feedService = { getFeed, buildFeedItemsFromPosts };

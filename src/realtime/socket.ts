@@ -3,7 +3,7 @@ import { Server } from "socket.io";
 import { verifyAccessToken } from "../utils/jwt.util";
 import { User } from "../models";
 import { Message } from "../models";
-import { presenceAdd, presenceRemove, listOnlineUserIds } from "./presence";
+import { presenceAdd, presenceRemove, buildPresenceSnapshot } from "./presence";
 import { setIo, communityRoom } from "./io";
 
 type AuthedSocketData = { userId: number };
@@ -54,12 +54,17 @@ export function initSocket(httpServer: HttpServer) {
     socket.join(communityRoom(community));
 
     // Snapshot so reconnecting clients sync presence without waiting for transitions.
-    socket.emit("presence:snapshot", { onlineUserIds: listOnlineUserIds() });
+    socket.emit("presence:snapshot", buildPresenceSnapshot());
 
     if (becameOnline) {
       chatLog("user online", userId);
-      io.emit("presence:update", { userId, online: true });
+      io.emit("presence:update", { userId, online: true, lastSeenAt: null });
     }
+
+    /** Client re-requests after attaching listeners (fixes connect race). */
+    socket.on("presence:request", () => {
+      socket.emit("presence:snapshot", buildPresenceSnapshot());
+    });
 
     socket.on("typing", (payload: { toUserId: number; typing: boolean }) => {
       if (!payload?.toUserId || payload.toUserId === userId) return;
@@ -159,10 +164,14 @@ export function initSocket(httpServer: HttpServer) {
     );
 
     socket.on("disconnect", () => {
-      const { userId: removedUserId, becameOffline } = presenceRemove(socket.id);
+      const { userId: removedUserId, becameOffline, lastSeenAt } = presenceRemove(socket.id);
       if (removedUserId && becameOffline) {
         chatLog("user offline", removedUserId);
-        io.emit("presence:update", { userId: removedUserId, online: false });
+        io.emit("presence:update", {
+          userId: removedUserId,
+          online: false,
+          lastSeenAt
+        });
       }
     });
   });

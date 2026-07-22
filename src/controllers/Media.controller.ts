@@ -21,7 +21,8 @@ export async function getUploadUrl(req: AuthRequest, res: Response) {
       body.fileName,
       body.fileType,
       body.fileSize,
-      body.module as MediaModule
+      body.module as MediaModule,
+      body.purpose
     );
     return success(res, data, 201);
   } catch (e: any) {

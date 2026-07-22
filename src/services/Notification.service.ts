@@ -380,6 +380,25 @@ export async function notifyPostLike(
   });
 }
 
+export async function notifyPostShared(
+  recipientId: number,
+  senderId: number,
+  postId: number,
+  postTitle: string
+): Promise<void> {
+  if (recipientId === senderId) return;
+  const name = await senderName(senderId);
+  await Platform.dispatchNotification({
+    userId: recipientId,
+    type: NOTIFICATION_TYPES.POST_SHARE,
+    title: `${name} shared a post with you`,
+    body: postTitle.slice(0, 80),
+    actorUserId: senderId,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId
+  });
+}
+
 export async function notifyPostComment(
   postOwnerId: number,
   commenterId: number,
@@ -590,6 +609,56 @@ export async function notifyHelpRequestCompleted(
     actionType: NOTIFICATION_ACTIONS.OPEN_POST,
     actionTargetId: postId,
     groupKey: `help_completed:${postId}:${userId}`
+  });
+}
+
+export async function notifyHelpRequestResolved(
+  userId: number,
+  postId: number,
+  postTitle: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.HELP_REQUEST_RESOLVED,
+    title: "Request marked as resolved",
+    body: `"${postTitle.slice(0, 80)}" was successfully marked as resolved.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `help_resolved:${postId}`
+  });
+}
+
+export async function notifyHelpRequestExpiring(
+  userId: number,
+  postId: number,
+  postTitle: string,
+  hoursLeft: number
+): Promise<void> {
+  const hrs = Math.max(1, Math.round(hoursLeft));
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.HELP_REQUEST_EXPIRING,
+    title: hrs <= 1 ? "Request expires in 1 hour" : `Request expires in ${hrs} hours`,
+    body: `"${postTitle.slice(0, 80)}" — need more time? Open the request to extend.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `help_expiring:${postId}`
+  });
+}
+
+export async function notifyHelpRequestExpired(
+  userId: number,
+  postId: number,
+  postTitle: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.HELP_REQUEST_EXPIRED,
+    title: "Helping Hands request expired",
+    body: `"${postTitle.slice(0, 80)}" is no longer highlighted. You can still view it in your history.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `help_expired:${postId}`
   });
 }
 

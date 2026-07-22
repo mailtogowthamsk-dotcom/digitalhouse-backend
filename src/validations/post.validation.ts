@@ -18,8 +18,25 @@ import {
   isFeedPostType,
   isModulePostType
 } from "../constants/postTypes.constants";
+import {
+  POST_MEDIA_TYPES,
+  POST_VIDEO_MAX_DURATION_SEC,
+  POST_VIDEO_MAX_BYTES,
+  ALLOWED_POST_VIDEO_MIMES,
+  resolvePostMediaType
+} from "../constants/postMedia.constants";
+import { POST_VISIBILITIES } from "../constants/postVisibility.constants";
 
 const postTypeSchema = z.enum(POST_TYPES as unknown as [string, ...string[]]);
+const mediaTypeSchema = z.enum(POST_MEDIA_TYPES as unknown as [string, ...string[]]);
+
+const optionalMediaFieldsSchema = {
+  media_type: mediaTypeSchema.optional(),
+  thumbnail_url: z.string().trim().url().max(500).nullable().optional(),
+  video_duration: z.coerce.number().int().min(1).max(POST_VIDEO_MAX_DURATION_SEC).nullable().optional(),
+  mime_type: z.string().trim().max(64).nullable().optional(),
+  file_size: z.coerce.number().int().min(0).max(POST_VIDEO_MAX_BYTES).nullable().optional()
+};
 const creationSourceSchema = z.enum(["feed", "jobs", "marketplace", "helping_hands"]);
 const jobStatusSchema = z.enum(JOB_STATUSES as unknown as [string, ...string[]]);
 const jobEmploymentTypeSchema = z.enum(
@@ -271,14 +288,79 @@ function refineCreationSource(
   }
 }
 
+function refineMediaMeta(
+  data: {
+    media_url?: string | null;
+    media_type?: string;
+    video_duration?: number | null;
+    mime_type?: string | null;
+    file_size?: number | null;
+  },
+  ctx: z.RefinementCtx
+) {
+  const effectiveType = resolvePostMediaType({
+    mediaUrl: data.media_url,
+    mediaType: data.media_type as "image" | "video" | "none" | null | undefined,
+    mimeType: data.mime_type
+  });
+
+  if (effectiveType !== "video") return;
+
+  if (!data.media_url?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "media_url is required for video posts",
+      path: ["media_url"]
+    });
+  }
+  if (data.video_duration == null || data.video_duration <= 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "video_duration is required for video posts",
+      path: ["video_duration"]
+    });
+  } else if (data.video_duration > POST_VIDEO_MAX_DURATION_SEC) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Video must be ≤ ${POST_VIDEO_MAX_DURATION_SEC} seconds`,
+      path: ["video_duration"]
+    });
+  }
+  if (data.file_size != null && data.file_size > POST_VIDEO_MAX_BYTES) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Video must be ≤ ${Math.round(POST_VIDEO_MAX_BYTES / (1024 * 1024))} MB`,
+      path: ["file_size"]
+    });
+  }
+  if (data.mime_type?.trim()) {
+    const mime = data.mime_type.trim().toLowerCase();
+    const normalized = mime === "video/mov" ? "video/quicktime" : mime === "video/m4v" ? "video/x-m4v" : mime;
+    if (!(ALLOWED_POST_VIDEO_MIMES as readonly string[]).includes(normalized)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Only MP4, MOV, or M4V videos are allowed",
+        path: ["mime_type"]
+      });
+    }
+  }
+}
+
+const postVisibilitySchema = z.enum(POST_VISIBILITIES as unknown as [string, ...string[]]);
+
 export const createPostSchema = z
   .object({
     post_type: postTypeSchema,
     /** Distinguishes Home Feed composer from Jobs / Marketplace / Helping Hands. */
     creation_source: creationSourceSchema.optional(),
+    /** PUBLIC = Community (default); CONNECTIONS = Connections Only */
+    visibility: postVisibilitySchema.optional().default("PUBLIC"),
     title: z.string().trim().min(1).max(255),
     description: z.string().trim().max(5000).nullable().optional(),
+    /** Optional explicit hashtags; also parsed from title/description. */
+    hashtags: z.array(z.string().trim().min(1).max(65)).max(20).optional(),
     media_url: z.string().trim().url().max(500).nullable().optional(),
+    ...optionalMediaFieldsSchema,
     pinned: z.boolean().optional().default(false),
     urgent: z.boolean().optional().default(false),
     meetup_at: z.string().datetime().nullable().optional(),
@@ -293,6 +375,7 @@ export const createPostSchema = z
     refineSalaryRange(data, ctx);
     refineMarketplaceCreate(data, ctx);
     refineHelpCreate(data, ctx);
+    refineMediaMeta(data, ctx);
   });
 
 export type CreatePostBody = z.infer<typeof createPostSchema>;
@@ -304,8 +387,11 @@ export function validateCreatePostBody(body: unknown): CreatePostBody {
 export const updatePostSchema = z
   .object({
     title: z.string().trim().min(1).max(255).optional(),
+    visibility: postVisibilitySchema.optional(),
     description: z.string().trim().max(5000).nullable().optional(),
+    hashtags: z.array(z.string().trim().min(1).max(65)).max(20).optional(),
     media_url: z.string().trim().url().max(500).nullable().optional(),
+    ...optionalMediaFieldsSchema,
     pinned: z.boolean().optional(),
     urgent: z.boolean().optional(),
     meetup_at: z.string().datetime().nullable().optional(),
@@ -315,7 +401,10 @@ export const updatePostSchema = z
     ...helpFieldsSchema
   })
   .strict()
-  .superRefine(refineSalaryRange);
+  .superRefine((data, ctx) => {
+    refineSalaryRange(data, ctx);
+    refineMediaMeta(data, ctx);
+  });
 
 export type UpdatePostBody = z.infer<typeof updatePostSchema>;
 
@@ -360,6 +449,20 @@ export function validateCommentsQuery(query: unknown): CommentsQuery {
   return commentsPaginationSchema.parse(query);
 }
 
+/** Paginated likes list — offset/limit for large like counts. */
+const likesPaginationSchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(50).default(30),
+    offset: z.coerce.number().int().min(0).default(0)
+  })
+  .strict();
+
+export type LikesQuery = z.infer<typeof likesPaginationSchema>;
+
+export function validateLikesQuery(query: unknown): LikesQuery {
+  return likesPaginationSchema.parse(query);
+}
+
 export const updateCommentSchema = z
   .object({
     body: z.string().trim().min(1).max(2000)
@@ -368,4 +471,15 @@ export const updateCommentSchema = z
 
 export function validateUpdateCommentBody(body: unknown): z.infer<typeof updateCommentSchema> {
   return updateCommentSchema.parse(body);
+}
+
+const sharePostSchema = z
+  .object({
+    recipient_ids: z.array(z.coerce.number().int().positive()).min(1).max(20),
+    message: z.string().trim().max(500).optional()
+  })
+  .strict();
+
+export function validateSharePostBody(body: unknown) {
+  return sharePostSchema.parse(body);
 }

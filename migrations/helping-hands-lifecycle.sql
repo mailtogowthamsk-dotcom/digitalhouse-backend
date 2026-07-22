@@ -1,0 +1,2 @@
+-- Helping Hands lifecycle (reference SQL; prefer npm run db:run-helping-hands-lifecycle-sql)
+-- Columns: helpExpiresAt, helpExpiryReminder, helpExtendedCount, helpResolvedAt, helpResolvedBy

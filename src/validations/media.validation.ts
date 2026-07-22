@@ -1,16 +1,16 @@
 import { z } from "zod";
 import { MEDIA_MODULES } from "../models/MediaFile.model";
+import {
+  ALLOWED_POST_IMAGE_MIMES,
+  ALLOWED_POST_VIDEO_MIMES,
+  POST_IMAGE_UPLOAD_MAX_BYTES,
+  POST_VIDEO_MAX_BYTES
+} from "../constants/postMedia.constants";
 
-const ALLOWED_IMAGE_TYPES = [
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp"
-] as const;
-const ALLOWED_VIDEO_TYPES = ["video/mp4"] as const;
-/** Client should upload pre-compressed images; server allows up to 2 MB declared size. */
-const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
-const VIDEO_MAX_BYTES = 15 * 1024 * 1024; // 15 MB
+const ALLOWED_IMAGE_TYPES = ALLOWED_POST_IMAGE_MIMES;
+const ALLOWED_VIDEO_TYPES = ALLOWED_POST_VIDEO_MIMES;
+const IMAGE_MAX_BYTES = POST_IMAGE_UPLOAD_MAX_BYTES;
+const VIDEO_MAX_BYTES = POST_VIDEO_MAX_BYTES;
 
 const mediaModuleSchema = z.enum(MEDIA_MODULES as unknown as [string, ...string[]]);
 
@@ -26,19 +26,30 @@ export const uploadUrlSchema = z
       }),
     fileType: z.string().trim().min(1, "fileType required"),
     fileSize: z.number().int().positive("fileSize must be positive"),
-    module: mediaModuleSchema
+    module: mediaModuleSchema,
+    /**
+     * Optional storage purpose for R2 folder layout.
+     * video_thumbnail → videos/thumbnails/YYYY/MM/
+     * video → videos/posts/YYYY/MM/
+     * image (default) → images/posts/{module}/YYYY/MM/
+     */
+    purpose: z.enum(["image", "video", "video_thumbnail"]).optional()
   })
   .strict()
   .refine(
     (data) => {
       const t = data.fileType.toLowerCase();
-      if (ALLOWED_IMAGE_TYPES.includes(t as any)) return data.fileSize <= IMAGE_MAX_BYTES;
-      if (ALLOWED_VIDEO_TYPES.includes(t as any)) return data.fileSize <= VIDEO_MAX_BYTES;
+      if ((ALLOWED_IMAGE_TYPES as readonly string[]).includes(t)) {
+        return data.fileSize <= IMAGE_MAX_BYTES;
+      }
+      if ((ALLOWED_VIDEO_TYPES as readonly string[]).includes(t)) {
+        return data.fileSize <= VIDEO_MAX_BYTES;
+      }
       return false;
     },
     {
       message:
-        "Invalid fileType or fileSize: images ≤ 2 MB (jpeg, png, webp), videos ≤ 15 MB (mp4)"
+        "Invalid fileType or fileSize: images ≤ 2 MB (jpeg, png, webp), videos ≤ 50 MB (mp4, mov, m4v)"
     }
   );
 
@@ -68,6 +79,6 @@ export function validateDeleteMediaBody(body: unknown): { urls: string[] } {
   return deleteMediaSchema.parse(body);
 }
 
-export const ALLOWED_IMAGE_MIMES = new Set(ALLOWED_IMAGE_TYPES);
-export const ALLOWED_VIDEO_MIMES = new Set(ALLOWED_VIDEO_TYPES);
+export const ALLOWED_IMAGE_MIMES = new Set<string>(ALLOWED_IMAGE_TYPES);
+export const ALLOWED_VIDEO_MIMES = new Set<string>(ALLOWED_VIDEO_TYPES);
 export { IMAGE_MAX_BYTES, VIDEO_MAX_BYTES };

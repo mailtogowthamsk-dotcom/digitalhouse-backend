@@ -43,6 +43,7 @@ export type MessageDto = {
   senderId: number;
   recipientId: number;
   body: string;
+  sharedPostId: number | null;
   clientId: string | null;
   deliveredAt: string | null;
   readAt: string | null;
@@ -55,6 +56,7 @@ function toMessageDto(m: Message): MessageDto {
     senderId: m.senderId,
     recipientId: m.recipientId,
     body: m.body,
+    sharedPostId: (m as any).sharedPostId ?? null,
     clientId: (m as any).clientId ?? null,
     deliveredAt: (m as any).deliveredAt ? (m as any).deliveredAt.toISOString() : null,
     readAt: m.readAt ? m.readAt.toISOString() : null,

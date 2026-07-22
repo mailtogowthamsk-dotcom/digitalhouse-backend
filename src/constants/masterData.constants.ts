@@ -17,7 +17,8 @@ export const MDM_TYPE_CODES = [
   "MARITAL_STATUS",
   "LANGUAGE",
   "MARKETPLACE_CATEGORY",
-  "HELP_CATEGORY"
+  "HELP_CATEGORY",
+  "EXPERTISE"
 ] as const;
 
 export type MdmTypeCode = (typeof MDM_TYPE_CODES)[number];
@@ -142,6 +143,14 @@ export const MDM_TYPE_DEFINITIONS: MdmTypeDefinition[] = [
     code: "HELP_CATEGORY",
     name: "Helping Hands Categories",
     description: "Help request categories",
+    parentTypeCode: null,
+    parentOptional: true,
+    isSystem: true
+  },
+  {
+    code: "EXPERTISE",
+    name: "Community Expertise",
+    description: "Areas members can help with (community discovery)",
     parentTypeCode: null,
     parentOptional: true,
     isSystem: true

@@ -1,4 +1,5 @@
 import { Op } from "sequelize";
+import { sequelize } from "../config/db";
 import { User, Post, PostLike, Comment, Notification, PostReport, SavedPost } from "../models";
 import { toSignedUrlIfR2, deleteR2ImageVariants } from "../utils/r2Client";
 import type { PostType, JobStatus, JobEmploymentType } from "../models";
@@ -16,6 +17,42 @@ import {
   signMarketplaceGallery
 } from "../utils/marketplaceGallery";
 import { parseHelpGallery, resolveHelpMedia, signHelpGallery } from "../utils/helpGallery";
+import {
+  resolvePostMediaType,
+  type PostMediaType,
+  POST_VIDEO_MAX_DURATION_SEC
+} from "../constants/postMedia.constants";
+import { syncPostHashtags } from "./Hashtag.service";
+import {
+  computeHelpExpiresAt,
+  isHelpHighlightEligible
+} from "../constants/helpingHands.constants";
+import {
+  parsePostVisibility,
+  postVisibilityLabel,
+  type PostVisibility,
+  DEFAULT_POST_VISIBILITY
+} from "../constants/postVisibility.constants";
+import { assertCanViewPostAudience } from "./PostVisibility.service";
+import { mediaService } from "./Media.service";
+
+async function attachPostMediaFiles(
+  userId: number,
+  urls: Array<string | null | undefined | string[]>
+): Promise<void> {
+  const flat: string[] = [];
+  for (const u of urls) {
+    if (Array.isArray(u)) flat.push(...u.filter(Boolean));
+    else if (u) flat.push(u);
+  }
+  if (flat.length === 0) return;
+  await mediaService.markMediaUrlsAttached(userId, flat).catch((err) => {
+    console.warn(
+      "[Post] markMediaUrlsAttached failed:",
+      err instanceof Error ? err.message : err
+    );
+  });
+}
 
 const APPROVED = "APPROVED";
 
@@ -35,6 +72,11 @@ export type PostDetailDto = {
   title: string;
   description: string | null;
   media_url: string | null;
+  media_type: PostMediaType;
+  thumbnail_url: string | null;
+  video_duration: number | null;
+  mime_type: string | null;
+  file_size: number | null;
   pinned: boolean;
   urgent: boolean;
   meetup_at: string | null;
@@ -61,8 +103,13 @@ export type PostDetailDto = {
   help_location: string | null;
   help_contact_phone: string | null;
   help_gallery: string[];
+  help_expires_at?: string | null;
+  help_extended_count?: number;
+  help_resolved_at?: string | null;
   help_helper_count?: number;
   help_offered_by_me?: boolean;
+  visibility: PostVisibility;
+  visibility_label: string;
   created_at: string;
   updated_at: string;
   author: PostAuthorDto;
@@ -73,6 +120,10 @@ export type PostDetailDto = {
   job_interested_by_me?: boolean;
   job_interest_count?: number;
   job_can_message_poster?: boolean;
+  /** Present when this row is a community repost. */
+  is_repost?: boolean;
+  original_post_id?: number | null;
+  original_author?: PostAuthorDto | null;
 };
 
 export type CommentDto = {
@@ -96,11 +147,35 @@ export type CommentsResultDto = {
   total: number;
 };
 
+/** Public liker profile for likes lists (posts / reels / comments later). */
+export type PostLikerDto = {
+  userId: number;
+  fullName: string;
+  username: string | null;
+  profilePhoto: string | null;
+  isVerified: boolean;
+  likedAt: string;
+  isCurrentUser: boolean;
+};
+
+export type PostLikesResultDto = {
+  items: PostLikerDto[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+};
+
 export type CreatePostPayload = {
   post_type: PostType;
   title: string;
   description?: string | null;
   media_url?: string | null;
+  media_type?: PostMediaType | null;
+  thumbnail_url?: string | null;
+  video_duration?: number | null;
+  mime_type?: string | null;
+  file_size?: number | null;
   pinned?: boolean;
   urgent?: boolean;
   meetup_at?: string | null;
@@ -124,6 +199,10 @@ export type CreatePostPayload = {
   help_location?: string | null;
   help_contact_phone?: string | null;
   help_gallery?: string[];
+  /** Optional explicit hashtags (also parsed from title/description). */
+  hashtags?: string[];
+  /** PUBLIC = Community; CONNECTIONS = Connections Only */
+  visibility?: PostVisibility;
 };
 
 export type UpdatePostPayload = Partial<Omit<CreatePostPayload, "post_type">>;
@@ -168,7 +247,82 @@ function helpFieldsFromPost(post: Post, gallerySigned?: string[]) {
     help_urgency: post.helpUrgency ?? null,
     help_location: post.helpLocation ?? null,
     help_contact_phone: post.helpContactPhone ?? null,
-    help_gallery: gallery
+    help_gallery: gallery,
+    help_expires_at: post.helpExpiresAt ? post.helpExpiresAt.toISOString() : null,
+    help_extended_count: post.helpExtendedCount ?? 0,
+    help_resolved_at: post.helpResolvedAt ? post.helpResolvedAt.toISOString() : null
+  };
+}
+
+function mediaMetaFromPost(
+  post: Post,
+  signedMediaUrl?: string | null,
+  signedThumbUrl?: string | null
+) {
+  const mediaUrl = signedMediaUrl !== undefined ? signedMediaUrl : post.mediaUrl ?? null;
+  const mediaType = resolvePostMediaType({
+    mediaUrl: post.mediaUrl,
+    mediaType: (post.mediaType as PostMediaType) || undefined,
+    mimeType: post.mimeType
+  });
+  return {
+    media_url: mediaUrl,
+    media_type: mediaType,
+    thumbnail_url:
+      signedThumbUrl !== undefined ? signedThumbUrl : post.thumbnailUrl ?? null,
+    video_duration: post.videoDuration ?? null,
+    mime_type: post.mimeType ?? null,
+    file_size: post.fileSize ?? null
+  };
+}
+
+function buildMediaMetaForWrite(payload: {
+  media_url?: string | null;
+  media_type?: PostMediaType | null;
+  thumbnail_url?: string | null;
+  video_duration?: number | null;
+  mime_type?: string | null;
+  file_size?: number | null;
+}, forcedMediaUrl?: string | null) {
+  const mediaUrl =
+    forcedMediaUrl !== undefined
+      ? forcedMediaUrl?.trim() || null
+      : payload.media_url?.trim() || null;
+  const mediaType = resolvePostMediaType({
+    mediaUrl,
+    mediaType: payload.media_type,
+    mimeType: payload.mime_type
+  });
+  if (mediaType === "none") {
+    return {
+      mediaUrl: null,
+      mediaType: "none" as PostMediaType,
+      thumbnailUrl: null,
+      videoDuration: null,
+      mimeType: null,
+      fileSize: null
+    };
+  }
+  if (mediaType === "video") {
+    const raw = payload.video_duration;
+    if (raw == null || !Number.isFinite(raw) || raw <= 0) {
+      const err = new Error("video_duration is required for video posts");
+      (err as any).status = 400;
+      throw err;
+    }
+  }
+  const duration =
+    mediaType === "video" && payload.video_duration != null
+      ? Math.min(Math.max(1, Math.floor(payload.video_duration)), POST_VIDEO_MAX_DURATION_SEC)
+      : null;
+  return {
+    mediaUrl,
+    mediaType,
+    thumbnailUrl:
+      mediaType === "video" ? payload.thumbnail_url?.trim() || null : payload.thumbnail_url?.trim() || null,
+    videoDuration: duration,
+    mimeType: payload.mime_type?.trim() || null,
+    fileSize: payload.file_size ?? null
   };
 }
 
@@ -196,7 +350,12 @@ const emptyHelpFields = {
   helpUrgency: null as HelpUrgency | null,
   helpLocation: null as string | null,
   helpContactPhone: null as string | null,
-  helpGallery: null as string[] | null
+  helpGallery: null as string[] | null,
+  helpExpiresAt: null as Date | null,
+  helpExpiryReminder: null as string | null,
+  helpExtendedCount: 0,
+  helpResolvedAt: null as Date | null,
+  helpResolvedBy: null as number | null
 };
 
 function normalizeJobFields(payload: {
@@ -283,6 +442,15 @@ async function ensureCommunityVisible(post: Post, currentUserId: number): Promis
     (err as any).status = 404;
     throw err;
   }
+  await assertCanViewPostAudience(currentUserId, post);
+}
+
+function visibilityFieldsFromPost(post: Post): {
+  visibility: PostVisibility;
+  visibility_label: string;
+} {
+  const visibility = parsePostVisibility(post.visibility);
+  return { visibility, visibility_label: postVisibilityLabel(visibility) };
 }
 
 async function viewerCommunity(userId: number): Promise<string | null> {
@@ -371,13 +539,27 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
       }
     : emptyMarketplaceFields;
 
+  const helpNormalized = isHelp ? normalizeHelpFields(payload) : null;
   const helpFields = isHelp
     ? {
         helpStatus: "OPEN" as HelpStatus,
-        ...normalizeHelpFields(payload),
-        helpGallery: null as string[] | null
+        ...helpNormalized!,
+        helpGallery: null as string[] | null,
+        helpExpiresAt: computeHelpExpiresAt(helpNormalized!.helpCategory),
+        helpExpiryReminder: null as string | null,
+        helpExtendedCount: 0,
+        helpResolvedAt: null as Date | null,
+        helpResolvedBy: null as number | null
       }
     : emptyHelpFields;
+
+  const helpUrgent = isHelp
+    ? isHelpHighlightEligible({
+        helpCategory: helpNormalized!.helpCategory,
+        helpUrgency: helpNormalized!.helpUrgency,
+        urgent: Boolean(payload.urgent)
+      })
+    : false;
 
   const mediaResolved = isMarketplace
     ? resolveMarketplaceMedia(payload.media_url, payload.marketplace_gallery ?? null)
@@ -388,16 +570,27 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
         })()
       : { mediaUrl: payload.media_url?.trim() ?? null, marketplaceGallery: null, helpGallery: null };
 
+  const mediaMeta = isMarketplace || isHelp
+    ? buildMediaMetaForWrite(
+        { ...payload, media_type: payload.media_type ?? "image" },
+        mediaResolved.mediaUrl
+      )
+    : buildMediaMetaForWrite(payload, mediaResolved.mediaUrl);
+
   const post = await Post.create({
     userId,
     postType: payload.post_type,
+    visibility: parsePostVisibility(payload.visibility ?? DEFAULT_POST_VISIBILITY),
     title: payload.title.trim(),
     description: payload.description?.trim() ?? null,
-    mediaUrl: mediaResolved.mediaUrl,
+    mediaUrl: mediaMeta.mediaUrl,
+    mediaType: mediaMeta.mediaType,
+    thumbnailUrl: mediaMeta.thumbnailUrl,
+    videoDuration: mediaMeta.videoDuration,
+    mimeType: mediaMeta.mimeType,
+    fileSize: mediaMeta.fileSize,
     pinned: payload.pinned ?? false,
-    urgent: isHelp
-      ? Boolean(payload.urgent) || payload.help_urgency === "URGENT" || payload.help_urgency === "CRITICAL"
-      : payload.urgent ?? false,
+    urgent: isHelp ? helpUrgent : payload.urgent ?? false,
     meetupAt: payload.meetup_at ? new Date(payload.meetup_at) : null,
     jobStatus: resolvedJobStatus,
     ...jobFields,
@@ -406,6 +599,21 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     ...(isMarketplace ? { marketplaceGallery: mediaResolved.marketplaceGallery } : {}),
     ...(isHelp ? { helpGallery: (mediaResolved as any).helpGallery ?? helpFields.helpGallery } : {})
   } as any);
+
+  await syncPostHashtags({
+    postId: post.id,
+    title: post.title,
+    description: post.description,
+    explicitHashtags: payload.hashtags ?? []
+  });
+
+  await attachPostMediaFiles(userId, [
+    post.mediaUrl,
+    post.thumbnailUrl,
+    mediaResolved.marketplaceGallery ?? undefined,
+    (mediaResolved as { helpGallery?: string[] | null }).helpGallery ?? undefined
+  ]);
+
   const community = await viewerCommunity(userId);
   // Pending marketplace listings are not public — skip feed emit until approved
   if (!isMarketplace) {
@@ -420,7 +628,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     post_type: post.postType,
     title: post.title,
     description: post.description ?? null,
-    media_url: post.mediaUrl ?? null,
+    ...mediaMetaFromPost(post),
     pinned: post.pinned,
     urgent: post.urgent,
     meetup_at: post.meetupAt ? post.meetupAt.toISOString() : null,
@@ -428,6 +636,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     ...jobFieldsFromPost(post),
     ...marketplaceFieldsFromPost(post),
     ...helpFieldsFromPost(post),
+    ...visibilityFieldsFromPost(post),
     created_at: post.createdAt.toISOString(),
     updated_at: post.updatedAt.toISOString(),
     author: authorDto,
@@ -559,32 +768,85 @@ export async function updatePost(userId: number, postId: number, payload: Update
       : null;
 
   const previousMediaUrls = isMarketplace
-    ? parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null)
+    ? [
+        ...parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null),
+        ...(post.thumbnailUrl ? [post.thumbnailUrl] : [])
+      ]
     : isHelp
-      ? parseHelpGallery(post.helpGallery, post.mediaUrl ?? null)
-      : post.mediaUrl
-        ? [post.mediaUrl]
-        : [];
+      ? [
+          ...parseHelpGallery(post.helpGallery, post.mediaUrl ?? null),
+          ...(post.thumbnailUrl ? [post.thumbnailUrl] : [])
+        ]
+      : [
+          ...(post.mediaUrl ? [post.mediaUrl] : []),
+          ...(post.thumbnailUrl ? [post.thumbnailUrl] : [])
+        ];
   const nextMediaUrls = mediaUpdate
-    ? mediaUpdate.marketplaceGallery ?? (mediaUpdate.mediaUrl ? [mediaUpdate.mediaUrl] : [])
+    ? [
+        ...(mediaUpdate.marketplaceGallery ?? (mediaUpdate.mediaUrl ? [mediaUpdate.mediaUrl] : [])),
+        ...(payload.thumbnail_url?.trim() ? [payload.thumbnail_url.trim()] : [])
+      ]
     : helpMediaUpdate
-      ? helpMediaUpdate.helpGallery ?? (helpMediaUpdate.mediaUrl ? [helpMediaUpdate.mediaUrl] : [])
+      ? [
+          ...(helpMediaUpdate.helpGallery ?? (helpMediaUpdate.mediaUrl ? [helpMediaUpdate.mediaUrl] : [])),
+          ...(payload.thumbnail_url?.trim() ? [payload.thumbnail_url.trim()] : [])
+        ]
       : payload.media_url !== undefined && !isMarketplace && !isHelp
-        ? payload.media_url?.trim()
-          ? [payload.media_url.trim()]
-          : []
+        ? [
+            ...(payload.media_url?.trim() ? [payload.media_url.trim()] : []),
+            ...(payload.thumbnail_url?.trim() ? [payload.thumbnail_url.trim()] : [])
+          ]
         : null;
 
   await post.update({
     ...(payload.title !== undefined && { title: payload.title.trim() }),
+    ...(payload.visibility !== undefined && {
+      visibility: parsePostVisibility(payload.visibility)
+    }),
     ...(payload.description !== undefined && { description: payload.description?.trim() ?? null }),
     ...(mediaUpdate
-      ? { mediaUrl: mediaUpdate.mediaUrl, marketplaceGallery: mediaUpdate.marketplaceGallery }
+      ? {
+          marketplaceGallery: mediaUpdate.marketplaceGallery,
+          ...buildMediaMetaForWrite(
+            { ...payload, media_type: payload.media_type ?? "image" },
+            mediaUpdate.mediaUrl
+          )
+        }
       : helpMediaUpdate
-        ? { mediaUrl: helpMediaUpdate.mediaUrl, helpGallery: helpMediaUpdate.helpGallery }
+        ? {
+            helpGallery: helpMediaUpdate.helpGallery,
+            ...buildMediaMetaForWrite(
+              { ...payload, media_type: payload.media_type ?? "image" },
+              helpMediaUpdate.mediaUrl
+            )
+          }
         : payload.media_url !== undefined && !isMarketplace && !isHelp
-          ? { mediaUrl: payload.media_url?.trim() ?? null }
-          : {}),
+          ? buildMediaMetaForWrite(payload, payload.media_url)
+          : payload.media_type !== undefined ||
+              payload.thumbnail_url !== undefined ||
+              payload.video_duration !== undefined ||
+              payload.mime_type !== undefined ||
+              payload.file_size !== undefined
+            ? buildMediaMetaForWrite(
+                {
+                  media_url: post.mediaUrl,
+                  media_type: payload.media_type ?? (post.mediaType as PostMediaType),
+                  thumbnail_url:
+                    payload.thumbnail_url !== undefined
+                      ? payload.thumbnail_url
+                      : post.thumbnailUrl,
+                  video_duration:
+                    payload.video_duration !== undefined
+                      ? payload.video_duration
+                      : post.videoDuration,
+                  mime_type:
+                    payload.mime_type !== undefined ? payload.mime_type : post.mimeType,
+                  file_size:
+                    payload.file_size !== undefined ? payload.file_size : post.fileSize
+                },
+                post.mediaUrl
+              )
+            : {}),
     ...(payload.pinned !== undefined && { pinned: payload.pinned }),
     ...(payload.urgent !== undefined && { urgent: payload.urgent }),
     ...(payload.meetup_at !== undefined && {
@@ -702,6 +964,27 @@ export async function updatePost(userId: number, postId: number, payload: Update
     });
   }
 
+  if (
+    payload.title !== undefined ||
+    payload.description !== undefined ||
+    payload.hashtags !== undefined
+  ) {
+    await syncPostHashtags({
+      postId: post.id,
+      title: post.title,
+      description: post.description,
+      explicitHashtags: payload.hashtags ?? []
+    });
+  }
+
+  await post.reload();
+  await attachPostMediaFiles(userId, [
+    post.mediaUrl,
+    post.thumbnailUrl,
+    parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null),
+    Array.isArray(post.helpGallery) ? (post.helpGallery as string[]) : undefined
+  ]);
+
   return getPost(userId, postId);
 }
 
@@ -726,6 +1009,7 @@ export async function deletePost(userId: number, postId: number): Promise<void> 
         : mediaUrl
           ? [mediaUrl]
           : [];
+  if (post.thumbnailUrl) gallery.push(post.thumbnailUrl);
   if (post.postType === "JOB") {
     const { JobInterest } = await import("../models");
     await JobInterest.destroy({ where: { postId } });
@@ -769,13 +1053,14 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
       : isHelp
         ? parseHelpGallery(post.helpGallery, post.mediaUrl ?? null)
         : [];
-  const [likeCount, commentCount, likedByMe, savedByMe, mediaUrl, authorDto, gallerySigned] =
+  const [likeCount, commentCount, likedByMe, savedByMe, mediaUrl, thumbnailUrl, authorDto, gallerySigned] =
     await Promise.all([
       PostLike.count({ where: { postId } }),
       Comment.count({ where: { postId } }),
       PostLike.findOne({ where: { postId, userId } }).then((r) => !!r),
       SavedPost.findOne({ where: { postId, userId } }).then((r) => !!r),
       toSignedUrlIfR2(post.mediaUrl ?? null),
+      toSignedUrlIfR2(post.thumbnailUrl ?? null),
       toAuthorDtoSigned(author),
       post.postType === "MARKETPLACE"
         ? signMarketplaceGallery(galleryRaw)
@@ -818,13 +1103,32 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     };
   }
 
+  let repostExtra: {
+    is_repost?: boolean;
+    original_post_id?: number | null;
+    original_author?: PostAuthorDto | null;
+  } = {};
+  if (post.originalPostId) {
+    const original = await Post.findByPk(post.originalPostId, {
+      include: [
+        { association: "User", attributes: ["id", "fullName", "profilePhoto", "status"], required: true }
+      ]
+    });
+    const originalUser = original ? ((original as any).User as User) : null;
+    repostExtra = {
+      is_repost: true,
+      original_post_id: post.originalPostId,
+      original_author: originalUser ? await toAuthorDtoSigned(originalUser) : null
+    };
+  }
+
   return {
     id: post.id,
     user_id: post.userId,
     post_type: post.postType,
     title: post.title,
     description: post.description ?? null,
-    media_url: mediaUrl,
+    ...mediaMetaFromPost(post, mediaUrl, thumbnailUrl),
     pinned: post.pinned,
     urgent: post.urgent,
     meetup_at: post.meetupAt ? post.meetupAt.toISOString() : null,
@@ -834,7 +1138,11 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
       post,
       post.postType === "MARKETPLACE" ? gallerySigned : undefined
     ),
-    ...helpFieldsFromPost(post, isHelp ? gallerySigned : undefined),
+    ...helpFieldsFromPost(
+      post,
+      isHelp ? gallerySigned : undefined
+    ),
+    ...visibilityFieldsFromPost(post),
     created_at: post.createdAt.toISOString(),
     updated_at: post.updatedAt.toISOString(),
     author: authorDto,
@@ -843,7 +1151,8 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     liked_by_me: likedByMe,
     saved_by_me: savedByMe,
     ...jobExtra,
-    ...helpExtra
+    ...helpExtra,
+    ...repostExtra
   };
 }
 
@@ -1161,6 +1470,69 @@ export async function getApprovedUserIdsInCommunity(userId: number): Promise<num
   return approvedUserIdsInCommunity(userId);
 }
 
+/**
+ * Paginated likers for a post. Single JOIN (no N+1).
+ * Current user appears first when they liked; remaining ordered newest-first.
+ */
+export async function getPostLikes(
+  postId: number,
+  currentUserId: number,
+  limit: number,
+  offset: number
+): Promise<PostLikesResultDto> {
+  const post = await Post.findByPk(postId, { attributes: ["id", "userId"] });
+  if (!post) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
+  await ensureCommunityVisible(post, currentUserId);
+
+  const safeUserId = Number(currentUserId);
+  const { count, rows } = await PostLike.findAndCountAll({
+    where: { postId },
+    include: [
+      {
+        association: "User",
+        attributes: ["id", "fullName", "username", "profilePhoto", "status"],
+        required: true
+      }
+    ],
+    order: [
+      [sequelize.literal(`CASE WHEN \`PostLike\`.\`userId\` = ${safeUserId} THEN 0 ELSE 1 END`), "ASC"],
+      ["createdAt", "DESC"]
+    ],
+    limit,
+    offset,
+    distinct: true
+  });
+
+  const items: PostLikerDto[] = await Promise.all(
+    rows.map(async (row) => {
+      const u = (row as any).User as User;
+      const profilePhoto =
+        (await toSignedUrlIfR2(u.profilePhoto ?? null)) ?? u.profilePhoto ?? null;
+      return {
+        userId: u.id,
+        fullName: u.fullName,
+        username: u.username ?? null,
+        profilePhoto,
+        isVerified: u.status === APPROVED,
+        likedAt: row.createdAt.toISOString(),
+        isCurrentUser: u.id === currentUserId
+      };
+    })
+  );
+
+  return {
+    items,
+    total: count,
+    limit,
+    offset,
+    hasMore: offset + rows.length < count
+  };
+}
+
 export const postService = {
   createPost,
   updatePost,
@@ -1169,6 +1541,7 @@ export const postService = {
   likePost,
   addComment,
   getComments,
+  getPostLikes,
   updateComment,
   deleteComment,
   savePost,

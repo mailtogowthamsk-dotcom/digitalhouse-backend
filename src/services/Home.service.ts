@@ -27,6 +27,8 @@ export type QuickActionCountsDto = {
 };
 
 export type FeedAuthorDto = {
+  userId: number;
+  username: string | null;
   name: string;
   profileImage: string | null;
   verified: boolean;
@@ -35,9 +37,16 @@ export type FeedAuthorDto = {
 export type FeedItemDto = {
   postId: number;
   postType: string;
+  /** PUBLIC | CONNECTIONS */
+  visibility?: string;
   title: string;
   description: string | null;
   mediaUrl: string | null;
+  mediaType?: "image" | "video" | "none";
+  thumbnailUrl?: string | null;
+  videoDuration?: number | null;
+  mimeType?: string | null;
+  fileSize?: number | null;
   createdAt: string;
   author: FeedAuthorDto;
   counts: { likes: number; comments: number };
@@ -68,6 +77,10 @@ export type FeedItemDto = {
   helpLocation?: string | null;
   helpGallery?: string[];
   helpHelperCount?: number;
+  /** Community repost metadata */
+  isRepost?: boolean;
+  originalPostId?: number | null;
+  originalAuthor?: FeedAuthorDto | null;
 };
 
 export type FeedResultDto = {
@@ -110,6 +123,8 @@ function toHomeUserBasic(user: User): HomeUserBasic {
 
 function toFeedAuthor(user: User): FeedAuthorDto {
   return {
+    userId: user.id,
+    username: user.username ?? null,
     name: user.fullName,
     profileImage: user.profilePhoto ?? null,
     verified: user.status === APPROVED
@@ -182,7 +197,11 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
       where: {
         ...baseWhere,
         postType: "HELP_REQUEST",
-        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] }
+        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
+        [Op.or]: [
+          { helpExpiresAt: null },
+          { helpExpiresAt: { [Op.gt]: new Date() } }
+        ]
       }
     }),
     Post.count({ where: { ...baseWhere, postType: "ANNOUNCEMENT" } })
@@ -267,7 +286,10 @@ export async function getHighlights(): Promise<HighlightsDto> {
     };
   }
 
-  const baseWhere = { userId: { [Op.in]: approvedUserIds } };
+  const baseWhere = {
+    userId: { [Op.in]: approvedUserIds },
+    visibility: "PUBLIC" as const
+  };
   const toItem = (p: Post): HighlightItemDto => ({
     postId: p.id,
     postType: p.postType,
@@ -300,8 +322,11 @@ export async function getHighlights(): Promise<HighlightsDto> {
         ...baseWhere,
         postType: "HELP_REQUEST",
         urgent: true,
-        // Only active requests — completed/cancelled must leave Home highlights
-        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] }
+        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
+        [Op.or]: [
+          { helpExpiresAt: null },
+          { helpExpiresAt: { [Op.gt]: new Date() } }
+        ]
       },
       order: [["createdAt", "DESC"]],
       limit: 10

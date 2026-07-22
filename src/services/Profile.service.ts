@@ -21,6 +21,7 @@ import type {
 import { ensureUserProfile } from "./ensureUserProfile";
 import { computeMandatoryCompletion, isFilledValue } from "./profileCompletion";
 import { assertValidKulam } from "./kulamValidation.service";
+import { postVisibilityLabel, parsePostVisibility } from "../constants/postVisibility.constants";
 
 // ---------------------------------------------------------------------------
 // Masking – sensitive fields (no raw email/mobile in profile API)
@@ -435,8 +436,13 @@ export async function updateProfile(userId: number, payload: ProfileUpdatePayloa
   if (Object.keys(updates).length > 0) {
     await user.update(updates as any);
     if (payload.profile_image !== undefined) {
+      const photo = updates.profilePhoto as string | null;
+      if (photo) {
+        const { mediaService } = await import("./Media.service");
+        await mediaService.markMediaUrlsAttached(userId, [photo]).catch(() => undefined);
+      }
       const { onUserProfilePhotoUpdated } = await import("./Matrimony.service");
-      await onUserProfilePhotoUpdated(userId, updates.profilePhoto as string | null);
+      await onUserProfilePhotoUpdated(userId, photo);
     }
   }
 
@@ -602,7 +608,7 @@ export async function getProfilePosts(
         description: p.description ?? null,
         mediaUrl,
         createdAt: p.createdAt.toISOString(),
-        visibility: "Community",
+        visibility: postVisibilityLabel(parsePostVisibility(p.visibility)),
         status: p.postType === "JOB" && p.jobStatus === "CLOSED" ? "Closed" : "Active",
         counts: {
           likes: likesMap[p.id] ?? 0,

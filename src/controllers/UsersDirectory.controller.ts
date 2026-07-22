@@ -167,3 +167,23 @@ export async function getMemberProfile(req: AuthRequest, res: Response) {
     return handleServiceError(res, e);
   }
 }
+
+/** GET /api/users/:identifier/posts — member timeline (paginated) */
+export async function getMemberPosts(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const identifier = String(req.params.identifier ?? "").trim();
+  if (!identifier) return error(res, "Invalid member", 400);
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 12));
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  try {
+    const data = await memberProfileService.getMemberPosts(
+      req.user.id,
+      identifier,
+      limit,
+      offset
+    );
+    return success(res, data);
+  } catch (e) {
+    return handleServiceError(res, e);
+  }
+}

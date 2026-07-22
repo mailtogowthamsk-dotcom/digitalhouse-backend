@@ -99,6 +99,29 @@ function stripInternalKeys(data: Record<string, unknown>): MatrimonySection {
   return out as MatrimonySection;
 }
 
+/** Mark uploaded matrimony media as attached so orphan cleanup won't delete it. */
+async function markMatrimonyMediaAttached(
+  userId: number,
+  section: Record<string, unknown>
+): Promise<void> {
+  const urls: string[] = [];
+  for (const key of ["candidatePhotoUrl", "profilePhotoUrl", "horoscopeDocumentUrl"]) {
+    const v = section[key];
+    if (typeof v === "string" && v.trim()) urls.push(v.trim());
+  }
+  const photos = section.candidatePhotos;
+  if (Array.isArray(photos)) {
+    for (const p of photos) {
+      if (p && typeof p === "object" && typeof (p as { url?: string }).url === "string") {
+        urls.push((p as { url: string }).url.trim());
+      }
+    }
+  }
+  if (urls.length === 0) return;
+  const { mediaService } = await import("./Media.service");
+  await mediaService.markMediaUrlsAttached(userId, urls).catch(() => undefined);
+}
+
 async function signMatrimonySection(section: MatrimonySection | null): Promise<MatrimonySection | null> {
   if (!section) return null;
   const out = { ...section } as Record<string, unknown>;
@@ -510,6 +533,7 @@ export async function saveMatrimonyDraft(
     kulamSnapshot: payload.kulamSnapshot ?? ctx.kulam ?? null
   });
   await upsertMatrimonyPending(userId, merged, false);
+  await markMatrimonyMediaAttached(userId, merged);
   return getMatrimonyHub(userId);
 }
 
@@ -590,6 +614,7 @@ export async function submitMatrimonyProfile(
   }
 
   const row = await upsertMatrimonyPending(userId, merged, true);
+  await markMatrimonyMediaAttached(userId, merged);
 
   const rawFull = readRawPendingData(row.data);
   const profileData = stripInternalKeys(merged) as Record<string, unknown>;

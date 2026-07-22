@@ -8,6 +8,7 @@ import {
 } from "../constants/masterData.constants";
 import { MARKETPLACE_CATEGORIES } from "../constants/marketplace.constants";
 import { HELP_CATEGORIES, HELP_CATEGORY_LABELS } from "../constants/helpingHands.constants";
+import { EXPERTISE_SEED_ITEMS } from "../constants/expertise.constants";
 import { mdmCacheGet, mdmCacheSet, mdmCacheInvalidateAll, mdmCacheKey } from "../utils/mdmCache";
 
 export type MdmItemDto = {
@@ -324,6 +325,15 @@ export async function seedMasterDataIfNeeded(): Promise<void> {
     HELP_CATEGORIES.map((c) => ({
       label: HELP_CATEGORY_LABELS[c] ?? c.replace(/_/g, " "),
       code: c
+    }))
+  );
+
+  await seedFlat(
+    "EXPERTISE",
+    EXPERTISE_SEED_ITEMS.map((item) => ({
+      label: item.label,
+      code: item.code,
+      aliases: item.aliases
     }))
   );
 }

@@ -29,4 +29,5 @@ usersRouter.get("/me/blocks", asyncHandler(UsersDirectoryController.listBlockedU
 usersRouter.post("/:userId/block", asyncHandler(UsersDirectoryController.blockUser));
 usersRouter.delete("/:userId/block", asyncHandler(UsersDirectoryController.unblockUser));
 usersRouter.post("/:userId/report", asyncHandler(UsersDirectoryController.reportUser));
+usersRouter.get("/:identifier/posts", asyncHandler(UsersDirectoryController.getMemberPosts));
 usersRouter.get("/:identifier", asyncHandler(UsersDirectoryController.getMemberProfile));

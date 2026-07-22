@@ -83,3 +83,16 @@ export async function completeRequest(req: AuthRequest, res: Response) {
     throw e;
   }
 }
+
+export async function extendRequest(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  if (postId == null) return error(res, "Invalid request id", 400);
+  try {
+    const data = await helpingHandsService.extendHelpRequest(req.user.id, postId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}

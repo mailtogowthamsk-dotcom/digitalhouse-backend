@@ -11,6 +11,8 @@ import { NotificationPreference } from "./NotificationPreference.model";
 import { PushDeviceToken } from "./PushDeviceToken.model";
 import { Message } from "./Message.model";
 import { PostLike } from "./PostLike.model";
+import { Hashtag } from "./Hashtag.model";
+import { PostHashtag } from "./PostHashtag.model";
 import { Comment } from "./Comment.model";
 import { SavedPost } from "./SavedPost.model";
 import { PostReport } from "./PostReport.model";
@@ -37,6 +39,8 @@ import { JobInterest } from "./JobInterest.model";
 import { HelpOffer } from "./HelpOffer.model";
 import { HelpAppreciation } from "./HelpAppreciation.model";
 import { MemberConnection } from "./MemberConnection.model";
+import { MemberProfessionalIdentity } from "./MemberProfessionalIdentity.model";
+import { MemberExpertiseSelection } from "./MemberExpertiseSelection.model";
 import { MasterDataType } from "./MasterDataType.model";
 import { MasterDataItem } from "./MasterDataItem.model";
 import { MasterDataAudit } from "./MasterDataAudit.model";
@@ -103,10 +107,26 @@ User.hasMany(Message, { foreignKey: "senderId" });
 Message.belongsTo(User, { foreignKey: "senderId" });
 User.hasMany(Message, { foreignKey: "recipientId" });
 Message.belongsTo(User, { foreignKey: "recipientId" });
+
+// Community discovery: professional identity & expertise (member-scoped)
+User.hasOne(MemberProfessionalIdentity, { foreignKey: "userId", as: "ProfessionalIdentity" });
+MemberProfessionalIdentity.belongsTo(User, { foreignKey: "userId" });
+User.hasMany(MemberExpertiseSelection, { foreignKey: "userId", as: "ExpertiseSelections" });
+MemberExpertiseSelection.belongsTo(User, { foreignKey: "userId" });
+MemberExpertiseSelection.belongsTo(MasterDataItem, {
+  foreignKey: "expertiseItemId",
+  as: "ExpertiseItem"
+});
 Post.hasMany(PostLike, { foreignKey: "postId" });
 PostLike.belongsTo(Post, { foreignKey: "postId" });
 User.hasMany(PostLike, { foreignKey: "userId" });
 PostLike.belongsTo(User, { foreignKey: "userId" });
+Post.belongsToMany(Hashtag, { through: PostHashtag, foreignKey: "postId", otherKey: "hashtagId" });
+Hashtag.belongsToMany(Post, { through: PostHashtag, foreignKey: "hashtagId", otherKey: "postId" });
+Post.hasMany(PostHashtag, { foreignKey: "postId" });
+PostHashtag.belongsTo(Post, { foreignKey: "postId" });
+Hashtag.hasMany(PostHashtag, { foreignKey: "hashtagId" });
+PostHashtag.belongsTo(Hashtag, { foreignKey: "hashtagId" });
 Post.hasMany(Comment, { foreignKey: "postId" });
 Comment.belongsTo(Post, { foreignKey: "postId" });
 User.hasMany(Comment, { foreignKey: "userId" });
@@ -139,8 +159,8 @@ SupportGuide.hasMany(SupportGuideStep, { foreignKey: "guideId" });
 SupportGuideStep.belongsTo(SupportGuide, { foreignKey: "guideId" });
 
 export type { UserStatus } from "./user.model";
-export type { PostType, JobStatus, JobEmploymentType } from "./Post.model";
-export { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES } from "./Post.model";
+export type { PostType, JobStatus, JobEmploymentType, PostVisibility } from "./Post.model";
+export { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES, POST_VISIBILITIES } from "./Post.model";
 export type { ReportStatus } from "./PostReport.model";
 export type { MediaStatus, MediaFileType, MediaModule } from "./MediaFile.model";
 export { MEDIA_MODULES } from "./MediaFile.model";
@@ -158,6 +178,8 @@ export {
   PushDeviceToken,
   Message,
   PostLike,
+  Hashtag,
+  PostHashtag,
   Comment,
   SavedPost,
   PostReport,
@@ -180,6 +202,8 @@ export {
   AuthAnalyticsEvent,
   UsernameReservation,
   MemberConnection,
+  MemberProfessionalIdentity,
+  MemberExpertiseSelection,
   MessageThreadPreference,
   JobInterest,
   HelpOffer,

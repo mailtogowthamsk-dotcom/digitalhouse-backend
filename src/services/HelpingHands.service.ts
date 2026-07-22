@@ -3,6 +3,9 @@ import { Post, User, HelpOffer, HelpAppreciation } from "../models";
 import {
   HELP_APPRECIATION_MAX,
   HELP_CATEGORY_LABELS,
+  HELP_MAX_AUTHOR_EXTENDS,
+  isHelpActivelyOpen,
+  resolveHelpActiveHours,
   type HelpCategory
 } from "../constants/helpingHands.constants";
 import { toSignedUrlIfR2 } from "../utils/r2Client";
@@ -105,8 +108,15 @@ export async function offerHelp(
   if (post.userId === fromUserId) {
     throw Object.assign(new Error("You cannot offer help on your own request"), { status: 400 });
   }
-  if (post.helpStatus === "COMPLETED" || post.helpStatus === "CANCELLED") {
+  if (
+    post.helpStatus === "COMPLETED" ||
+    post.helpStatus === "CANCELLED" ||
+    post.helpStatus === "EXPIRED"
+  ) {
     throw Object.assign(new Error("This request is no longer open for help"), { status: 400 });
+  }
+  if (post.helpExpiresAt && post.helpExpiresAt.getTime() <= Date.now()) {
+    throw Object.assign(new Error("This request has expired"), { status: 400 });
   }
 
   const existing = await HelpOffer.findOne({ where: { postId, fromUserId } });
@@ -213,7 +223,14 @@ export async function completeHelpRequest(
     return { status: "COMPLETED", appreciationSaved: false };
   }
 
-  await post.update({ helpStatus: "COMPLETED" });
+  await post.update({
+    helpStatus: "COMPLETED",
+    urgent: false,
+    helpResolvedAt: new Date(),
+    helpResolvedBy: ownerUserId
+  });
+
+  void Notifications.notifyHelpRequestResolved(ownerUserId, post.id, post.title).catch(() => {});
 
   let appreciationSaved = false;
   const helperUserId = opts?.helperUserId;
@@ -257,7 +274,6 @@ export async function completeHelpRequest(
       () => {}
     );
   }
-  void Notifications.notifyHelpRequestCompleted(ownerUserId, post.id, post.title).catch(() => {});
 
   return { status: "COMPLETED", appreciationSaved };
 }
@@ -443,11 +459,62 @@ export async function getMyHelpingActivity(userId: number): Promise<{
   return { requests, contributions };
 }
 
+/**
+ * Author extends active duration (within HELP_MAX_AUTHOR_EXTENDS).
+ * Adds one category-duration window from now (or from current expiresAt if still future).
+ */
+export async function extendHelpRequest(
+  ownerUserId: number,
+  postId: number
+): Promise<{
+  status: string;
+  helpExpiresAt: string;
+  helpExtendedCount: number;
+  maxExtends: number;
+}> {
+  const post = await assertHelpPost(postId, ownerUserId);
+  if (post.userId !== ownerUserId) {
+    throw Object.assign(new Error("Only the requester can extend this request"), { status: 403 });
+  }
+  if (!isHelpActivelyOpen(post.helpStatus)) {
+    throw Object.assign(new Error("Only active requests can be extended"), { status: 400 });
+  }
+  const count = post.helpExtendedCount ?? 0;
+  if (count >= HELP_MAX_AUTHOR_EXTENDS) {
+    throw Object.assign(
+      new Error(`You can extend a request at most ${HELP_MAX_AUTHOR_EXTENDS} times`),
+      { status: 400 }
+    );
+  }
+
+  const now = new Date();
+  const base =
+    post.helpExpiresAt && post.helpExpiresAt.getTime() > now.getTime()
+      ? post.helpExpiresAt
+      : now;
+  const hours = resolveHelpActiveHours(post.helpCategory);
+  const nextExpiry = new Date(base.getTime() + hours * 60 * 60 * 1000);
+
+  await post.update({
+    helpExpiresAt: nextExpiry,
+    helpExtendedCount: count + 1,
+    helpExpiryReminder: null
+  });
+
+  return {
+    status: post.helpStatus ?? "OPEN",
+    helpExpiresAt: nextExpiry.toISOString(),
+    helpExtendedCount: count + 1,
+    maxExtends: HELP_MAX_AUTHOR_EXTENDS
+  };
+}
+
 export const helpingHandsService = {
   getHelpingHandsStats,
   offerHelp,
   listHelpersForPost,
   completeHelpRequest,
+  extendHelpRequest,
   getCommunityHeroes,
   getMyHelpingActivity
 };

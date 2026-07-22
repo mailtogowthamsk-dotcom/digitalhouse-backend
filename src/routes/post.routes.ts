@@ -22,6 +22,7 @@ postRouter.get("/:postId", authMiddleware, asyncHandler(PostController.getPost))
 postRouter.put("/:postId", authMiddleware, asyncHandler(PostController.updatePost));
 postRouter.delete("/:postId", authMiddleware, asyncHandler(PostController.deletePost));
 postRouter.post("/:postId/like", authMiddleware, asyncHandler(PostController.likePost));
+postRouter.get("/:postId/likes", authMiddleware, asyncHandler(PostController.getPostLikes));
 postRouter.post("/:postId/save", authMiddleware, asyncHandler(PostController.savePost));
 postRouter.delete("/:postId/save", authMiddleware, asyncHandler(PostController.unsavePost));
 postRouter.post("/:postId/comments", authMiddleware, asyncHandler(PostController.addComment));
@@ -36,6 +37,8 @@ postRouter.delete(
   authMiddleware,
   asyncHandler(PostController.deleteComment)
 );
+postRouter.post("/:postId/share", authMiddleware, asyncHandler(PostController.sharePost));
+postRouter.post("/:postId/repost", authMiddleware, asyncHandler(PostController.repostPost));
 postRouter.post("/:postId/report", authMiddleware, asyncHandler(PostController.reportPost));
 postRouter.post(
   "/:postId/job-interest",

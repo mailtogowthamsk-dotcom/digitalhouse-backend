@@ -5,6 +5,7 @@ export type MessageEventDto = {
   senderId: number;
   recipientId: number;
   body: string;
+  sharedPostId?: number | null;
   clientId: string | null;
   deliveredAt: string | null;
   readAt: string | null;

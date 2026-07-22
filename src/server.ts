@@ -10,7 +10,9 @@ import { setDbReady, setDbFailed } from "./state";
 import { initSocket } from "./realtime/socket";
 import { startMatrimonySubscriptionJobs } from "./services/MatrimonySubscriptionLifecycle.service";
 import { startMarketplaceExpiryJobs } from "./services/MarketplaceExpiry.service";
+import { startHelpingHandsExpiryJobs } from "./services/HelpingHandsExpiry.service";
 import { ensurePlatformDefaults, startPlatformNotificationJobs } from "./services/Platform.service";
+import { startOrphanMediaCleanupJobs } from "./services/OrphanMediaCleanup.service";
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -76,7 +78,9 @@ async function initDb() {
     console.log("Database ready.");
     startMatrimonySubscriptionJobs();
     startMarketplaceExpiryJobs();
+    startHelpingHandsExpiryJobs();
     startPlatformNotificationJobs();
+    startOrphanMediaCleanupJobs();
     if (!process.env.ADMIN_API_KEY) {
       console.warn("Warning: ADMIN_API_KEY is not set in .env — admin APIs will return 500.");
     }

@@ -32,3 +32,7 @@ helpingHandsRouter.post(
   "/requests/:postId/complete",
   asyncHandler(HelpingHandsController.completeRequest)
 );
+helpingHandsRouter.post(
+  "/requests/:postId/extend",
+  asyncHandler(HelpingHandsController.extendRequest)
+);
