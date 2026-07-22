@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { asyncHandler } from "../middlewares/asyncHandler";
-import { authMiddleware } from "../middlewares/auth.middleware";
+import { jwtAuthMiddleware } from "../middlewares/auth.middleware";
 import * as NotificationsController from "../controllers/Notifications.controller";
 
 export const notificationsRouter = Router();
 
-notificationsRouter.use(authMiddleware);
+// JWT-only so waiting / correction users can receive registration status notifications.
+notificationsRouter.use(jwtAuthMiddleware);
 
 notificationsRouter.get("/counts", asyncHandler(NotificationsController.counts));
 notificationsRouter.get("/preferences", asyncHandler(NotificationsController.getPrefs));

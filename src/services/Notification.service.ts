@@ -41,6 +41,47 @@ export async function createUserNotification(
   });
 }
 
+export async function notifyAccountApproved(userId: number): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ACCOUNT_VERIFIED,
+    title: "Registration approved",
+    body: "Your Digital House account is approved. You can use the app now.",
+    actionType: NOTIFICATION_ACTIONS.OPEN_NOTIFICATIONS,
+    force: true
+  });
+}
+
+export async function notifyAccountRejected(
+  userId: number,
+  remarks?: string | null
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ACCOUNT_REJECTED,
+    title: "Registration not approved",
+    body: remarks?.trim() || "Your registration was not approved. Contact support if you have questions.",
+    actionType: NOTIFICATION_ACTIONS.NONE,
+    force: true
+  });
+}
+
+export async function notifyAccountChangesRequested(
+  userId: number,
+  remarks?: string | null
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ACCOUNT_REVIEW,
+    title: "Registration requires changes",
+    body:
+      remarks?.trim() ||
+      "Please update the requested information and submit again.",
+    actionType: NOTIFICATION_ACTIONS.OPEN_REGISTRATION_CORRECTION,
+    force: true
+  });
+}
+
 export async function notifyConnectionRequestReceived(
   toUserId: number,
   fromUserId: number

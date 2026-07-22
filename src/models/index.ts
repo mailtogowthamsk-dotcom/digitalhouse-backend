@@ -66,6 +66,12 @@ import {
   PlatformAd,
   PlatformAuditLog
 } from "./Platform.models";
+import {
+  ProminentCategory,
+  ProminentPerson,
+  ProminentGalleryItem,
+  ProminentTimelineEntry
+} from "./ProminentPeople.models";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
@@ -158,6 +164,13 @@ SupportTicketMessage.belongsTo(SupportTicket, { foreignKey: "ticketId" });
 SupportGuide.hasMany(SupportGuideStep, { foreignKey: "guideId" });
 SupportGuideStep.belongsTo(SupportGuide, { foreignKey: "guideId" });
 
+ProminentPerson.belongsTo(ProminentCategory, { foreignKey: "categoryId", as: "Category" });
+ProminentCategory.hasMany(ProminentPerson, { foreignKey: "categoryId", as: "People" });
+ProminentPerson.hasMany(ProminentGalleryItem, { foreignKey: "personId", as: "Gallery" });
+ProminentGalleryItem.belongsTo(ProminentPerson, { foreignKey: "personId", as: "Person" });
+ProminentPerson.hasMany(ProminentTimelineEntry, { foreignKey: "personId", as: "Timeline" });
+ProminentTimelineEntry.belongsTo(ProminentPerson, { foreignKey: "personId", as: "Person" });
+
 export type { UserStatus } from "./user.model";
 export type { PostType, JobStatus, JobEmploymentType, PostVisibility } from "./Post.model";
 export { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES, POST_VISIBILITIES } from "./Post.model";
@@ -228,5 +241,9 @@ export {
   PlatformFeatureFlag,
   PlatformMenuItem,
   PlatformAd,
-  PlatformAuditLog
+  PlatformAuditLog,
+  ProminentCategory,
+  ProminentPerson,
+  ProminentGalleryItem,
+  ProminentTimelineEntry
 };

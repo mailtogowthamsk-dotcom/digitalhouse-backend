@@ -42,6 +42,7 @@ export const DEFAULT_FEATURE_FLAGS: Array<{ code: string; label: string; enabled
   { code: "community_feed", label: "Community Feed", enabled: true },
   { code: "notifications", label: "Notifications", enabled: true },
   { code: "helping_hands", label: "Helping Hands", enabled: true },
+  { code: "prominent_people", label: "Prominent People", enabled: true },
   { code: "members", label: "Members Directory", enabled: true },
   { code: "business", label: "Business", enabled: true }
 ];
@@ -57,6 +58,13 @@ export const DEFAULT_MENU_ITEMS: Array<{
   { code: "marketplace", label: "Marketplace", enabled: true, sortOrder: 20, featureFlag: "marketplace" },
   { code: "matrimony", label: "Matrimony", enabled: true, sortOrder: 30, featureFlag: "matrimony" },
   { code: "helping_hands", label: "Helping Hand", enabled: true, sortOrder: 40, featureFlag: "helping_hands" },
+  {
+    code: "prominent_people",
+    label: "Prominent People",
+    enabled: true,
+    sortOrder: 45,
+    featureFlag: "prominent_people"
+  },
   { code: "events", label: "Events", enabled: false, sortOrder: 50, featureFlag: "events" },
   { code: "community_feed", label: "Community Updates", enabled: true, sortOrder: 55, featureFlag: "community_feed" },
   { code: "members", label: "Members", enabled: true, sortOrder: 60, featureFlag: "members" },

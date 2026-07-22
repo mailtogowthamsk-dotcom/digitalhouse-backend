@@ -40,6 +40,8 @@
     "db:run-production-hardening-sql": "node scripts/run-production-hardening-sql.js",
     "db:run-explore-hashtags-sql": "node scripts/run-explore-hashtags-migration.js",
     "db:run-post-visibility-sql": "node scripts/run-post-visibility-migration.js",
+    "db:run-registration-status-sql": "node scripts/run-registration-status-migration.js",
+    "db:run-prominent-people-sql": "node scripts/run-prominent-people-sql.js",
     "db:seed-master-data": "node scripts/seed-master-data.cjs",
     "db:backfill-master-data-users": "node scripts/backfill-master-data-users.cjs",
     "test:e2e-marketplace": "node scripts/run-e2e-marketplace.cjs",

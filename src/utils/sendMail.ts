@@ -67,6 +67,12 @@ export async function sendMail(options: SendMailOptions): Promise<SendMailResult
 
     const smtpInfo = info as SMTPTransport.SentMessageInfo;
     const messageId = smtpInfo.messageId;
+    console.log("[SMTP] Accepted", {
+      to,
+      subject: options.subject,
+      messageId: messageId ?? null,
+      response: smtpInfo.response ?? null
+    });
     return { success: true, messageId };
   } catch (err) {
     const error = formatSmtpError(err);

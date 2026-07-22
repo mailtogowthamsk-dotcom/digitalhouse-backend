@@ -12,8 +12,9 @@ import * as AdminHelpingHandsController from "../controllers/AdminHelpingHands.c
 import * as AdminReportsController from "../controllers/AdminReports.controller";
 import * as AdminSupportController from "../controllers/AdminSupport.controller";
 import * as AdminSettingsController from "../controllers/AdminSettings.controller";
-import { requireAdminAction } from "../controllers/AdminSettings.controller";
+import { requireAdminAction, requireAdminModule } from "../controllers/AdminSettings.controller";
 import * as PlatformController from "../controllers/Platform.controller";
+import * as ProminentPeopleController from "../controllers/ProminentPeople.controller";
 
 export const adminRouter = Router();
 
@@ -44,6 +45,11 @@ adminRouter.post(
   "/users/:id/reject",
   requireAdminAction("users.approve"),
   asyncHandler(AdminController.rejectUser)
+);
+adminRouter.post(
+  "/users/:id/request-changes",
+  requireAdminAction("users.approve"),
+  asyncHandler(AdminController.requestRegistrationChanges)
 );
 adminRouter.post(
   "/users/:id/warn",
@@ -299,3 +305,62 @@ adminRouter.get("/platform/ads/analytics", asyncHandler(PlatformController.adAna
 adminRouter.get("/platform/ads", asyncHandler(PlatformController.listAds));
 adminRouter.post("/platform/ads", asyncHandler(PlatformController.saveAd));
 adminRouter.get("/platform/audits", asyncHandler(PlatformController.listAudits));
+
+// Prominent People CMS
+adminRouter.get(
+  "/prominent-people/categories",
+  requireAdminModule("prominent_people"),
+  asyncHandler(ProminentPeopleController.adminCategories)
+);
+adminRouter.post(
+  "/prominent-people/upload-url",
+  requireAdminModule("prominent_people"),
+  requireAdminAction("prominent_people.write"),
+  asyncHandler(ProminentPeopleController.adminUploadUrl)
+);
+adminRouter.post(
+  "/prominent-people/upload",
+  requireAdminModule("prominent_people"),
+  requireAdminAction("prominent_people.write"),
+  asyncHandler(ProminentPeopleController.adminUploadProxy)
+);
+adminRouter.get(
+  "/prominent-people",
+  requireAdminModule("prominent_people"),
+  asyncHandler(ProminentPeopleController.adminList)
+);
+adminRouter.get(
+  "/prominent-people/:id",
+  requireAdminModule("prominent_people"),
+  asyncHandler(ProminentPeopleController.adminGet)
+);
+adminRouter.post(
+  "/prominent-people",
+  requireAdminModule("prominent_people"),
+  requireAdminAction("prominent_people.write"),
+  asyncHandler(ProminentPeopleController.adminCreate)
+);
+adminRouter.patch(
+  "/prominent-people/:id",
+  requireAdminModule("prominent_people"),
+  requireAdminAction("prominent_people.write"),
+  asyncHandler(ProminentPeopleController.adminUpdate)
+);
+adminRouter.delete(
+  "/prominent-people/:id",
+  requireAdminModule("prominent_people"),
+  requireAdminAction("prominent_people.write"),
+  asyncHandler(ProminentPeopleController.adminDelete)
+);
+adminRouter.post(
+  "/prominent-people/:id/publish",
+  requireAdminModule("prominent_people"),
+  requireAdminAction("prominent_people.write"),
+  asyncHandler(ProminentPeopleController.adminSetPublished)
+);
+adminRouter.post(
+  "/prominent-people/:id/feature",
+  requireAdminModule("prominent_people"),
+  requireAdminAction("prominent_people.write"),
+  asyncHandler(ProminentPeopleController.adminSetFeatured)
+);

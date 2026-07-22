@@ -51,3 +51,20 @@ export async function sendRejectionEmail(
     `Hi${name},\n\nAfter review, your Digital House account was not approved at this time.${remarkLine}\n\n— Digital House`
   );
 }
+
+/** Notify user that admin requested registration corrections. */
+export async function sendRegistrationChangesEmail(
+  to: string,
+  fullName?: string | null,
+  remarks?: string | null
+): Promise<void> {
+  const name = fullName ? ` ${fullName}` : "";
+  const remarkLine = remarks?.trim()
+    ? `\n\nWhat to update:\n${remarks.trim()}`
+    : "\n\nPlease update the requested information and submit again.";
+  await sendOrThrow(
+    to,
+    "Your Digital House registration requires changes",
+    `Hi${name},\n\nYour registration requires changes. Please update the requested information and submit again.${remarkLine}\n\nSign in to Digital House to make corrections.\n\n— Digital House`
+  );
+}

@@ -91,11 +91,15 @@ export function toSafeUser(user: User) {
 
 /** Auth/session user payload for mobile */
 export function toAuthUser(user: User) {
+  const requested = Array.isArray(user.registrationRequestedFields)
+    ? user.registrationRequestedFields.filter((f) => typeof f === "string")
+    : [];
   return {
     id: user.id,
     fullName: user.fullName,
     username: user.username ?? null,
     email: user.email,
+    mobile: user.mobile ?? null,
     status: user.status,
     createdAt: user.createdAt,
     profileComplete: user.profileComplete !== false,
@@ -105,7 +109,11 @@ export function toAuthUser(user: User) {
     signupProvider: user.signupProvider ?? AUTH_PROVIDERS.EXISTING_LOGIN,
     linkedProviders: ensureLinkedProviders(user),
     emailVerified: !!user.emailVerified,
-    profilePhoto: user.profilePhoto ?? null
+    profilePhoto: user.profilePhoto ?? null,
+    registrationAdminRemarks: user.registrationAdminRemarks ?? null,
+    registrationRequestedFields: requested,
+    pendingMobile: user.pendingMobile ?? null,
+    pendingProfilePhoto: user.pendingProfilePhoto ?? null
   };
 }
 
@@ -133,6 +141,18 @@ export function toAdminUser(user: User) {
     profileComplete: user.profileComplete !== false,
     linkedProviders: ensureLinkedProviders(user),
     loginSource: resolveLoginSource(user),
+    registrationAdminRemarks: user.registrationAdminRemarks ?? null,
+    registrationRequestedFields: Array.isArray(user.registrationRequestedFields)
+      ? user.registrationRequestedFields
+      : [],
+    pendingMobile: user.pendingMobile ?? null,
+    pendingProfilePhoto: user.pendingProfilePhoto ?? null,
+    registrationResubmittedAt: user.registrationResubmittedAt
+      ? user.registrationResubmittedAt.toISOString()
+      : null,
+    registrationReviewedAt: user.registrationReviewedAt
+      ? user.registrationReviewedAt.toISOString()
+      : null,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt
   };

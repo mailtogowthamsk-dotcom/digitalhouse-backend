@@ -15,8 +15,17 @@ export const rejectUserSchema = z.object({
   remarks: z.string().min(1).max(500).trim()
 });
 
+export const requestRegistrationChangesSchema = z.object({
+  remarks: z.string().min(1).max(500).trim(),
+  requestedFields: z
+    .array(z.enum(["mobile", "profilePhoto"]))
+    .min(1)
+    .max(2)
+});
+
 export type ApproveUserBody = z.infer<typeof approveUserSchema>;
 export type RejectUserBody = z.infer<typeof rejectUserSchema>;
+export type RequestRegistrationChangesBody = z.infer<typeof requestRegistrationChangesSchema>;
 
 // Pending profile update (Matrimony / Business)
 export const approveProfileUpdateSchema = z.object({

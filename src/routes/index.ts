@@ -16,6 +16,7 @@ import { connectionsRouter } from "./connections.routes";
 import { helpingHandsRouter } from "./helpingHands.routes";
 import { platformRouter } from "./platform.routes";
 import { supportRouter } from "./support.routes";
+import { prominentPeopleRouter } from "./prominentPeople.routes";
 
 export const apiRouter = Router();
 
@@ -35,4 +36,5 @@ apiRouter.use("/notifications", notificationsRouter);
 apiRouter.use("/connections", connectionsRouter);
 apiRouter.use("/helping-hands", helpingHandsRouter);
 apiRouter.use("/support", supportRouter);
+apiRouter.use("/prominent-people", prominentPeopleRouter);
 apiRouter.use("/landing", landingRouter);

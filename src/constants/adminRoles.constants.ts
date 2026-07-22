@@ -23,6 +23,7 @@ export const ADMIN_MODULES = [
   "helping_hands",
   "master_data",
   "community_content",
+  "prominent_people",
   "reports",
   "support",
   "notifications",
@@ -45,6 +46,7 @@ export const ADMIN_MODULE_LABELS: Record<AdminModule, string> = {
   helping_hands: "Helping Hand",
   master_data: "Master Data",
   community_content: "Community Content",
+  prominent_people: "Prominent People",
   reports: "Reports & Complaints",
   support: "Help & Support",
   notifications: "Notifications",
@@ -61,6 +63,7 @@ export const ADMIN_ACTIONS = [
   "reports.escalate",
   "settings.manage_roles",
   "master_data.write",
+  "prominent_people.write",
   "notifications.broadcast"
 ] as const;
 
@@ -74,6 +77,7 @@ export const ADMIN_ACTION_LABELS: Record<AdminAction, string> = {
   "reports.escalate": "Escalate reports",
   "settings.manage_roles": "Assign admin roles",
   "master_data.write": "Create / edit master data",
+  "prominent_people.write": "Create / edit Prominent People",
   "notifications.broadcast": "Broadcast notifications"
 };
 
@@ -107,6 +111,7 @@ export const ROLE_ACTION_ACCESS: Record<AdminRole, readonly AdminAction[]> = {
     "reports.suspend",
     "reports.escalate",
     "master_data.write",
+    "prominent_people.write",
     "notifications.broadcast"
   ],
   MODERATOR: ["reports.warn"]

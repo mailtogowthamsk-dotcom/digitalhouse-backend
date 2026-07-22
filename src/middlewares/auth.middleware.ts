@@ -47,6 +47,33 @@ export async function authMiddleware(req: Request & { user?: User }, res: Respon
   next();
 }
 
+/**
+ * Media uploads during registration (Google incomplete profile / correction).
+ * APPROVED users always allowed; review-path users may upload profile media only.
+ */
+export async function registrationMediaAuthMiddleware(
+  req: Request & { user?: User },
+  res: Response,
+  next: NextFunction
+) {
+  const user = await loadUserFromBearer(req, res);
+  if (!user) return;
+  if (user.status === "APPROVED") {
+    req.user = user;
+    return next();
+  }
+  // Registration path: waiting review, corrections, or incomplete Google profile
+  if (
+    user.status === "CHANGES_REQUESTED" ||
+    user.status === "PENDING" ||
+    user.status === "PENDING_REVIEW"
+  ) {
+    req.user = user;
+    return next();
+  }
+  return error(res, "Account not approved", 403);
+}
+
 /** Attach req.user when Bearer token is present; never fail the request. */
 export async function optionalAuth(
   req: Request & { user?: User },

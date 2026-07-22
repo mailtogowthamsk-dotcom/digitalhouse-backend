@@ -13,5 +13,15 @@ authRouter.post("/login-request", otpRequestLimiter, asyncHandler(AuthController
 authRouter.post("/verify-otp", asyncHandler(AuthController.verifyOtp));
 authRouter.post("/google", asyncHandler(AuthController.googleAuth));
 authRouter.post("/complete-google-profile", jwtAuthMiddleware, asyncHandler(AuthController.completeGoogleProfile));
+authRouter.post(
+  "/registration-correction",
+  jwtAuthMiddleware,
+  asyncHandler(AuthController.submitRegistrationCorrection)
+);
+authRouter.post(
+  "/registration-photo",
+  jwtAuthMiddleware,
+  asyncHandler(AuthController.setRegistrationPhoto)
+);
 authRouter.get("/me", jwtAuthMiddleware, asyncHandler(AuthController.getMe));
 authRouter.get("/linked-accounts", authMiddleware, asyncHandler(AuthController.linkedAccounts));

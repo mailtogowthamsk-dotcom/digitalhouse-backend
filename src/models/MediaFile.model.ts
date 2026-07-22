@@ -9,7 +9,15 @@ export const MEDIA_FILE_TYPES = ["image", "video"] as const;
 export type MediaFileType = (typeof MEDIA_FILE_TYPES)[number];
 
 /** Allowed upload modules for folder structure */
-export const MEDIA_MODULES = ["profile", "posts", "jobs", "marketplace", "matrimony", "help"] as const;
+export const MEDIA_MODULES = [
+  "profile",
+  "posts",
+  "jobs",
+  "marketplace",
+  "matrimony",
+  "help",
+  "prominent"
+] as const;
 export type MediaModule = (typeof MEDIA_MODULES)[number];
 
 export const MEDIA_PROCESSING_STATUSES = [

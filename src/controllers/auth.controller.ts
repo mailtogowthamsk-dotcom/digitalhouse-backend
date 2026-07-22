@@ -8,35 +8,39 @@ import {
   loginRequestSchema,
   verifyOtpSchema,
   googleAuthSchema,
-  completeGoogleProfileSchema
+  completeGoogleProfileSchema,
+  submitRegistrationCorrectionSchema,
+  registrationPhotoSchema
 } from "../validations/auth.validation";
 import * as GoogleAuth from "../services/googleAuth.service";
 import { AUTH_PROVIDERS, AUTH_ANALYTICS_EVENTS } from "../constants/auth.constants";
 import { trackAuthEvent } from "../services/authAnalytics.service";
 import { mergeLinkedProvider, ensureLinkedProviders } from "../utils/authProvider.util";
+import { registrationStatusService } from "../services/RegistrationStatus.service";
 
 /**
  * REGISTRATION: Accept full details, save user with status PENDING.
- * Return friendly message that admin verification takes 1–2 days.
+ * Returns a session so the client can optionally upload a profile photo.
  */
 export async function register(req: Request, res: Response) {
   const body = registerSchema.parse(req.body);
   const user = await userService.register(body);
+  const accessToken = signAccessToken({ userId: user.id });
   return success(
     res,
     {
       message:
         "Your registration is under admin verification (1–2 days). You will be notified once approved.",
-      user: userService.toSafeUser(user)
+      accessToken,
+      user: userService.toAuthUser(user)
     },
     201
   );
 }
 
 /**
- * LOGIN REQUEST: User submits email.
- * If user does not exist or status != APPROVED → block and return verification pending message.
- * If APPROVED → generate OTP, save, send email.
+ * LOGIN REQUEST: Identity step only — issue OTP when the account may receive a session.
+ * App access is decided after verify via registration status (not here).
  */
 export async function loginRequest(req: Request, res: Response) {
   const { email } = loginRequestSchema.parse(req.body);
@@ -44,14 +48,10 @@ export async function loginRequest(req: Request, res: Response) {
   if (!user) {
     return error(res, "No account found with this email. Please register first.", 404);
   }
-  if (user.status === "PENDING") {
-    return error(res, "Your account is under verification. You will be able to login once an admin approves (1–2 days).", 403);
-  }
-  if (user.status === "REJECTED") {
-    return error(res, "Your account was not approved. Please contact support.", 403);
-  }
-  if (user.status === "SUSPENDED") {
-    return error(res, "Your account has been suspended. Please contact support.", 403);
+  try {
+    registrationStatusService.assertCanIssueSession(user);
+  } catch (e: any) {
+    return error(res, e?.message ?? "Unable to sign in.", e?.status ?? 403);
   }
   const result = await otpService.createAndSendOtp(user);
   if (!result.ok) {
@@ -65,12 +65,17 @@ export async function loginRequest(req: Request, res: Response) {
 }
 
 /**
- * OTP VERIFY: Validate OTP, mark as used, return JWT and user.
+ * OTP VERIFY: Validate identity, issue JWT. Client routes by registration status.
  */
 export async function verifyOtp(req: Request, res: Response) {
   const { email, otp } = verifyOtpSchema.parse(req.body);
   const user = await userService.findByEmail(email);
   if (!user) return error(res, "User not found.", 404);
+  try {
+    registrationStatusService.assertCanIssueSession(user);
+  } catch (e: any) {
+    return error(res, e?.message ?? "Unable to sign in.", e?.status ?? 403);
+  }
   const result = await otpService.verifyOtpForUser(user.id, email, otp);
   if (!result.valid) return error(res, result.message, 400);
   const linked = mergeLinkedProvider(ensureLinkedProviders(result.user), AUTH_PROVIDERS.EXISTING_LOGIN);
@@ -119,6 +124,58 @@ export async function completeGoogleProfile(req: Request & { user?: import("../m
   } catch (e: any) {
     return error(res, e?.message ?? "Failed to complete profile", e?.status ?? 400);
   }
+}
+
+/** POST /auth/registration-correction — resubmit mobile / pending photo when CHANGES_REQUESTED */
+export async function submitRegistrationCorrection(
+  req: Request & { user?: import("../models").User },
+  res: Response
+) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const body = submitRegistrationCorrectionSchema.parse(req.body);
+  try {
+    const user = await registrationStatusService.submitRegistrationCorrection(req.user.id, body);
+    return success(res, {
+      message: "Your updates were submitted for admin review.",
+      user: userService.toAuthUser(user)
+    });
+  } catch (e: any) {
+    const status = e?.status ?? 400;
+    console.warn("[registration-correction]", {
+      userId: req.user.id,
+      status,
+      message: e?.message,
+      mobile: body.mobile ? String(body.mobile).replace(/\d(?=\d{4})/g, "*") : undefined,
+      hasPhoto: Boolean(body.profilePhoto)
+    });
+    return error(res, e?.message ?? "Failed to submit corrections", status);
+  }
+}
+
+/** POST /auth/registration-photo — set optional profile photo after register (PENDING). */
+export async function setRegistrationPhoto(
+  req: Request & { user?: import("../models").User },
+  res: Response
+) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const body = registrationPhotoSchema.parse(req.body);
+  const status = req.user.status;
+  if (status !== "PENDING" && status !== "PENDING_REVIEW" && status !== "CHANGES_REQUESTED") {
+    return error(res, "Profile photo can only be set during registration review.", 403);
+  }
+  const photo = body.profilePhoto.trim();
+  await req.user.update({ profilePhoto: photo } as any);
+  try {
+    const { mediaService } = await import("../services/Media.service");
+    await mediaService.markMediaUrlsAttached(req.user.id, [photo]);
+  } catch {
+    /* best-effort */
+  }
+  const user = await req.user.reload();
+  return success(res, {
+    message: "Profile photo saved.",
+    user: userService.toAuthUser(user)
+  });
 }
 
 /** GET /auth/linked-accounts — account security section */

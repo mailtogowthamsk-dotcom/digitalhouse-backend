@@ -3,7 +3,6 @@ import { sequelize } from "../config/db";
 import { User, UserProfile, PendingProfileUpdate, AdminVerification } from "../models";
 import { ensureUserProfile } from "./ensureUserProfile";
 import { resolveLoginSource } from "../utils/authProvider.util";
-import { sendApprovalEmail, sendRejectionEmail } from "./mail.service";
 import type { MatrimonySection, BusinessSection } from "../models/UserProfile.model";
 import { signAdminToken } from "../utils/jwt.util";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
@@ -11,6 +10,7 @@ import { toSignedUrlIfR2 } from "../utils/r2Client";
 import { getPendingReportCount } from "./AdminReports.service";
 import { resolveAdminRole } from "./AdminRoles.service";
 import { ADMIN_ROLE_LABELS } from "../constants/adminRoles.constants";
+import { registrationStatusService } from "./RegistrationStatus.service";
 
 const MATRIMONY_MEDIA_URL_KEYS = ["candidatePhotoUrl", "profilePhotoUrl", "horoscopeDocumentUrl"] as const;
 
@@ -30,8 +30,6 @@ async function signMatrimonyMediaUrls(
   );
   return out;
 }
-
-const PENDING = "PENDING";
 
 /** Whitelist: comma-separated ADMIN_EMAILS; single ADMIN_PASSWORD for all admins */
 function getAdminWhitelist(): { emails: Set<string>; password: string } {
@@ -66,10 +64,12 @@ export async function adminLogin(
   };
 }
 
-/** List users with status PENDING (awaiting admin verification) */
+/** List users awaiting registration review (PENDING / PENDING_REVIEW / CHANGES_REQUESTED) */
 export async function listPendingUsers(): Promise<User[]> {
   return User.findAll({
-    where: { status: PENDING },
+    where: {
+      status: { [Op.in]: ["PENDING", "PENDING_REVIEW", "CHANGES_REQUESTED"] }
+    },
     order: [["createdAt", "ASC"]]
   });
 }
@@ -182,26 +182,7 @@ export async function approveUser(
   verifiedBy: string,
   remarks?: string | null
 ): Promise<User> {
-  const user = await User.findByPk(userId);
-  if (!user) throw new Error("User not found.");
-  if (user.status !== PENDING) throw new Error("User is not pending approval.");
-
-  await user.update({ status: "APPROVED" });
-  await AdminVerification.create({
-    userId: user.id,
-    verifiedBy,
-    verifiedAt: new Date(),
-    remarks: remarks || null,
-    createdAt: new Date()
-  } as any);
-
-  try {
-    await sendApprovalEmail(user.email, user.fullName, remarks ?? undefined);
-  } catch (e) {
-    console.error("Failed to send approval email to", user.email, e);
-  }
-
-  return user;
+  return registrationStatusService.approveRegistration(userId, verifiedBy, remarks);
 }
 
 /**
@@ -212,26 +193,22 @@ export async function rejectUser(
   verifiedBy: string,
   remarks: string
 ): Promise<User> {
-  const user = await User.findByPk(userId);
-  if (!user) throw new Error("User not found.");
-  if (user.status !== PENDING) throw new Error("User is not pending approval.");
+  return registrationStatusService.rejectRegistration(userId, verifiedBy, remarks);
+}
 
-  await user.update({ status: "REJECTED" });
-  await AdminVerification.create({
-    userId: user.id,
+/** Ask the registrant to correct mobile and/or profile photo. */
+export async function requestRegistrationChanges(
+  userId: number,
+  verifiedBy: string,
+  remarks: string,
+  requestedFields: Array<"mobile" | "profilePhoto">
+): Promise<User> {
+  return registrationStatusService.requestRegistrationChanges(
+    userId,
     verifiedBy,
-    verifiedAt: new Date(),
-    remarks: remarks.trim() || "Rejected by admin",
-    createdAt: new Date()
-  } as any);
-
-  try {
-    await sendRejectionEmail(user.email, user.fullName, remarks.trim() || undefined);
-  } catch (e) {
-    console.error("Failed to send rejection email to", user.email, e);
-  }
-
-  return user;
+    remarks,
+    requestedFields
+  );
 }
 
 /** Audit log: list verifications for a user */
@@ -427,7 +404,9 @@ export async function getDashboardStats(): Promise<{
 }> {
   const [totalUsers, pendingUserApprovals, pendingMatrimony, pendingBusiness, reportedPosts] = await Promise.all([
     User.count(),
-    User.count({ where: { status: "PENDING" } }),
+    User.count({
+      where: { status: { [Op.in]: ["PENDING", "PENDING_REVIEW", "CHANGES_REQUESTED"] } }
+    }),
     PendingProfileUpdate.count({ where: { section: "MATRIMONY", status: "PENDING" } }),
     PendingProfileUpdate.count({ where: { section: "BUSINESS", status: "PENDING" } }),
     getPendingReportCount()

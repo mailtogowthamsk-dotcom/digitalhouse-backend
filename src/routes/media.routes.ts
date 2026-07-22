@@ -1,6 +1,6 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import { authMiddleware } from "../middlewares/auth.middleware";
+import { registrationMediaAuthMiddleware } from "../middlewares/auth.middleware";
 import { asyncHandler } from "../middlewares/asyncHandler";
 import * as MediaController from "../controllers/Media.controller";
 
@@ -16,7 +16,8 @@ const mediaLimiter = rateLimit({
 });
 
 mediaRouter.use(mediaLimiter);
-mediaRouter.use(authMiddleware);
+// Allow APPROVED + registration correction / Google profile-completion uploads.
+mediaRouter.use(registrationMediaAuthMiddleware);
 
 mediaRouter.post("/upload-url", asyncHandler(MediaController.getUploadUrl));
 mediaRouter.post("/finalize", asyncHandler(MediaController.finalizeUpload));

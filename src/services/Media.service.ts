@@ -27,7 +27,7 @@ function inferFileType(mime: string): MediaFileType {
   throw new Error("Unsupported file type");
 }
 
-export type MediaUploadPurpose = "image" | "video" | "video_thumbnail";
+export type MediaUploadPurpose = "image" | "video" | "video_thumbnail" | "profile" | "hero" | "gallery";
 
 /** Build R2 object key from module and user; prevents path traversal. */
 function buildKey(
@@ -47,6 +47,12 @@ function buildKey(
   const now = new Date();
   const yyyy = String(now.getUTCFullYear());
   const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+
+  if (module === "prominent") {
+    const kind =
+      purpose === "hero" || purpose === "gallery" || purpose === "profile" ? purpose : "profile";
+    return `${R2_PREFIX}/images/prominent/${kind}/${yyyy}/${mm}/${safeName}`;
+  }
 
   const resolvedPurpose: MediaUploadPurpose =
     purpose ??
@@ -200,10 +206,16 @@ async function userReferencesMediaKey(userId: number, key: string): Promise<bool
   const baseName = path.basename(key).split(".")[0];
   if (!baseName) return false;
 
-  // Profile photo
-  const user = await User.findByPk(userId, { attributes: ["profilePhoto"] });
+  // Profile photo (live + pending replacement for registration corrections)
+  const user = await User.findByPk(userId, {
+    attributes: ["profilePhoto", "pendingProfilePhoto"]
+  });
   if (user?.profilePhoto && extractR2KeyFromUrl(user.profilePhoto) === key) return true;
   if (user?.profilePhoto && user.profilePhoto.includes(baseName)) return true;
+  if (user?.pendingProfilePhoto && extractR2KeyFromUrl(user.pendingProfilePhoto) === key) {
+    return true;
+  }
+  if (user?.pendingProfilePhoto && user.pendingProfilePhoto.includes(baseName)) return true;
 
   // Matrimony media lives in user_profiles.matrimony JSON
   const profileRow = await UserProfile.findOne({

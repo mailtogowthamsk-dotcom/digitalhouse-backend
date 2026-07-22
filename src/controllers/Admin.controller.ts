@@ -8,11 +8,13 @@ import {
   adminLoginSchema,
   approveUserSchema,
   rejectUserSchema,
+  requestRegistrationChangesSchema,
   approveProfileUpdateSchema,
   rejectProfileUpdateSchema
 } from "../validations/admin.validation";
 import { adminBroadcastSchema } from "../validations/notifications.validation";
 import { adminBroadcast, getNotificationAudienceStats } from "../services/Notification.service";
+import { registrationStatusService } from "../services/RegistrationStatus.service";
 
 const ADMIN_ID = process.env.ADMIN_API_KEY || "admin";
 
@@ -72,9 +74,11 @@ export async function getUser(req: Request, res: Response) {
   const user = await adminService.getUserById(id);
   if (!user) return error(res, "User not found", 404);
   const history = await adminService.getVerificationHistory(user.id);
+  const registrationReview = await registrationStatusService.toAdminRegistrationReview(user);
   return success(res, {
     user: userService.toAdminUser(user),
-    verificationHistory: history
+    verificationHistory: history,
+    registrationReview
   });
 }
 
@@ -84,8 +88,12 @@ export async function approveUser(req: Request, res: Response) {
   if (!id) return error(res, "Invalid user id", 400);
   const body = approveUserSchema.parse(req.body || {});
   const adminId = (req as any).adminEmail ?? ADMIN_ID;
-  await adminService.approveUser(id, adminId, body.remarks ?? null);
-  return success(res, { message: "User approved." });
+  try {
+    await adminService.approveUser(id, adminId, body.remarks ?? null);
+    return success(res, { message: "User approved." });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to approve", e?.status ?? 400);
+  }
 }
 
 /** Reject user; remarks required (reason) */
@@ -94,8 +102,26 @@ export async function rejectUser(req: Request, res: Response) {
   if (!id) return error(res, "Invalid user id", 400);
   const body = rejectUserSchema.parse(req.body);
   const adminId = (req as any).adminEmail ?? ADMIN_ID;
-  await adminService.rejectUser(id, adminId, body.remarks);
-  return success(res, { message: "User rejected." });
+  try {
+    await adminService.rejectUser(id, adminId, body.remarks);
+    return success(res, { message: "User rejected." });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to reject", e?.status ?? 400);
+  }
+}
+
+/** Request registration corrections (mobile / profile photo). */
+export async function requestRegistrationChanges(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!id) return error(res, "Invalid user id", 400);
+  const body = requestRegistrationChangesSchema.parse(req.body);
+  const adminId = (req as any).adminEmail ?? ADMIN_ID;
+  try {
+    await adminService.requestRegistrationChanges(id, adminId, body.remarks, body.requestedFields);
+    return success(res, { message: "Changes requested." });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to request changes", e?.status ?? 400);
+  }
 }
 
 /** List pending media (awaiting admin approval) */

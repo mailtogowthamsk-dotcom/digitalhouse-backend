@@ -2,8 +2,14 @@ import { DataTypes, InferAttributes, InferCreationAttributes, Model } from "sequ
 import { sequelize } from "../config/db";
 import type { AuthProviderCode } from "../constants/auth.constants";
 
-/** User status: PENDING = awaiting approval; APPROVED = can login; REJECTED = denied; PENDING_REVIEW = profile updated, needs re-approval; SUSPENDED = blocked by moderation */
-export type UserStatus = "PENDING" | "APPROVED" | "REJECTED" | "PENDING_REVIEW" | "SUSPENDED";
+/** User status: PENDING/PENDING_REVIEW = awaiting approval; CHANGES_REQUESTED = admin asked for corrections; APPROVED = app access; REJECTED = denied; SUSPENDED = moderation block */
+export type UserStatus =
+  | "PENDING"
+  | "APPROVED"
+  | "REJECTED"
+  | "PENDING_REVIEW"
+  | "SUSPENDED"
+  | "CHANGES_REQUESTED";
 export type ProfileVisibility = "PUBLIC" | "PRIVATE";
 
 export class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
@@ -41,6 +47,16 @@ export class User extends Model<InferAttributes<User>, InferCreationAttributes<U
   declare city: string | null;
   declare district: string | null;
   declare communityRole: string | null;
+  /** Admin remarks when requesting registration corrections / rejection copy for client. */
+  declare registrationAdminRemarks: string | null;
+  /** JSON array of requested correction fields: mobile | profilePhoto */
+  declare registrationRequestedFields: string[] | null;
+  /** Pending mobile submitted for correction — not live until admin approves. */
+  declare pendingMobile: string | null;
+  /** Pending profile photo URL — not live until admin approves. */
+  declare pendingProfilePhoto: string | null;
+  declare registrationResubmittedAt: Date | null;
+  declare registrationReviewedAt: Date | null;
   declare createdAt: Date;
   declare updatedAt: Date;
 }
@@ -79,7 +95,14 @@ User.init(
     govtIdType: { type: DataTypes.STRING(40), allowNull: true },
     govtIdFile: { type: DataTypes.STRING(500), allowNull: true },
     status: {
-      type: DataTypes.ENUM("PENDING", "APPROVED", "REJECTED", "PENDING_REVIEW", "SUSPENDED"),
+      type: DataTypes.ENUM(
+        "PENDING",
+        "APPROVED",
+        "REJECTED",
+        "PENDING_REVIEW",
+        "SUSPENDED",
+        "CHANGES_REQUESTED"
+      ),
       allowNull: false,
       defaultValue: "PENDING"
     },
@@ -118,6 +141,32 @@ User.init(
     city: { type: DataTypes.STRING(80), allowNull: true },
     district: { type: DataTypes.STRING(80), allowNull: true },
     communityRole: { type: DataTypes.STRING(80), allowNull: true },
+    registrationAdminRemarks: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "registration_admin_remarks"
+    },
+    registrationRequestedFields: {
+      type: DataTypes.JSON,
+      allowNull: true,
+      field: "registration_requested_fields"
+    },
+    pendingMobile: { type: DataTypes.STRING(20), allowNull: true, field: "pending_mobile" },
+    pendingProfilePhoto: {
+      type: DataTypes.STRING(500),
+      allowNull: true,
+      field: "pending_profile_photo"
+    },
+    registrationResubmittedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "registration_resubmitted_at"
+    },
+    registrationReviewedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "registration_reviewed_at"
+    },
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }
   },

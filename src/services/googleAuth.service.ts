@@ -8,7 +8,8 @@ import {
 } from "../constants/auth.constants";
 import { trackAuthEvent } from "./authAnalytics.service";
 import { mergeLinkedProvider, ensureLinkedProviders } from "../utils/authProvider.util";
-import { toSafeUser, toAuthUser } from "./user.service";
+import { toAuthUser } from "./user.service";
+import { registrationStatusService } from "./RegistrationStatus.service";
 
 export type GoogleTokenPayload = {
   sub: string;
@@ -145,18 +146,17 @@ export async function authenticateWithGoogle(idToken: string): Promise<GoogleAut
     });
   }
 
-  if (user.status === "REJECTED") {
-    throw Object.assign(new Error("Your account was not approved. Please contact support."), {
-      status: 403,
-      code: "ACCOUNT_REJECTED"
-    });
-  }
   if (user.status === "SUSPENDED") {
     throw Object.assign(new Error("Your account has been suspended. Please contact support."), {
       status: 403,
       code: "ACCOUNT_SUSPENDED"
     });
   }
+
+  registrationStatusService.assertCanIssueSession(user);
+
+  // REJECTED / PENDING / CHANGES_REQUESTED still get a session so the client can
+  // route to Rejected / Waiting / Correction screens. App APIs remain APPROVED-only.
 
   const accessToken = signAccessToken({ userId: user.id });
   const needsProfileCompletion = !user.profileComplete;

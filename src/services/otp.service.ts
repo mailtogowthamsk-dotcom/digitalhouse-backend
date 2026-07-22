@@ -44,20 +44,15 @@ export async function createAndSendOtp(user: User): Promise<CreateOtpResult> {
   const otpHash = hashEmailOtp(email, code);
   const expiresAt = new Date(now.getTime() + OTP_EXPIRES_MIN * 60 * 1000);
 
-  await Otp.create({
-    userId: user.id,
-    otpHash,
-    expiresAt,
-    isUsed: false,
-    createdAt: now
-  } as any);
-
   // Dev-only: never log OTPs in production
-  if (process.env.LOG_OTP_FOR_DEV === "true" && process.env.NODE_ENV !== "production") {
+  const logOtpDev =
+    process.env.LOG_OTP_FOR_DEV === "true" && process.env.NODE_ENV !== "production";
+  if (logOtpDev) {
     console.log("[OTP] DEV — use this code for", email, "→", code);
   }
 
-  // Await email so we can tell the client if sending failed (e.g. SMTP misconfigured).
+  // Send first so a failed SMTP attempt does not leave an unused OTP that blocks resend
+  // (cooldown would tell the client "already sent" even though nothing arrived).
   try {
     await sendOtpEmail(email, code, OTP_EXPIRES_MIN);
   } catch (err: unknown) {
@@ -70,15 +65,31 @@ export async function createAndSendOtp(user: User): Promise<CreateOtpResult> {
       msg.includes("EAUTH")
     ) {
       console.error(
-        "[OTP] Check SMTP: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_ENCRYPTION (tls|ssl|none)."
+        "[OTP] Check SMTP: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM / MAIL_FROM, SMTP_ENCRYPTION (tls|ssl|none)."
       );
     }
-    return {
-      ok: false,
-      message: "Could not send verification email. Please try again or contact support."
-    };
+    // Still persist when logging OTP in dev so verify works without inbox delivery.
+    if (!logOtpDev) {
+      return {
+        ok: false,
+        message: "Could not send verification email. Please try again or contact support."
+      };
+    }
+    console.warn("[OTP] Persisting OTP anyway because LOG_OTP_FOR_DEV=true (email failed).");
   }
 
+  // Invalidate any prior unused codes so verify always uses the latest.
+  await Otp.update({ isUsed: true }, { where: { userId: user.id, isUsed: false } });
+
+  await Otp.create({
+    userId: user.id,
+    otpHash,
+    expiresAt,
+    isUsed: false,
+    createdAt: now
+  } as any);
+
+  console.log("[OTP] Sent verification code to", email);
   return { ok: true, sent: true, message: "OTP sent to your email." };
 }
 

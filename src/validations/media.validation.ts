@@ -33,7 +33,9 @@ export const uploadUrlSchema = z
      * video → videos/posts/YYYY/MM/
      * image (default) → images/posts/{module}/YYYY/MM/
      */
-    purpose: z.enum(["image", "video", "video_thumbnail"]).optional()
+    purpose: z
+      .enum(["image", "video", "video_thumbnail", "profile", "hero", "gallery"])
+      .optional()
   })
   .strict()
   .refine(
@@ -51,6 +53,19 @@ export const uploadUrlSchema = z
       message:
         "Invalid fileType or fileSize: images ≤ 2 MB (jpeg, png, webp), videos ≤ 50 MB (mp4, mov, m4v)"
     }
+  )
+  .refine(
+    (data) => {
+      if (data.module !== "prominent") return true;
+      return (
+        !data.purpose ||
+        data.purpose === "profile" ||
+        data.purpose === "hero" ||
+        data.purpose === "gallery" ||
+        data.purpose === "image"
+      );
+    },
+    { message: "Prominent uploads require purpose profile|hero|gallery" }
   );
 
 export type UploadUrlBody = z.infer<typeof uploadUrlSchema>;
