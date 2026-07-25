@@ -21,6 +21,7 @@ import {
 import {
   POST_MEDIA_TYPES,
   POST_VIDEO_MAX_DURATION_SEC,
+  POST_VIDEO_MIN_DURATION_SEC,
   POST_VIDEO_MAX_BYTES,
   ALLOWED_POST_VIDEO_MIMES,
   resolvePostMediaType
@@ -33,7 +34,13 @@ const mediaTypeSchema = z.enum(POST_MEDIA_TYPES as unknown as [string, ...string
 const optionalMediaFieldsSchema = {
   media_type: mediaTypeSchema.optional(),
   thumbnail_url: z.string().trim().url().max(500).nullable().optional(),
-  video_duration: z.coerce.number().int().min(1).max(POST_VIDEO_MAX_DURATION_SEC).nullable().optional(),
+  video_duration: z.coerce
+    .number()
+    .int()
+    .min(POST_VIDEO_MIN_DURATION_SEC)
+    .max(POST_VIDEO_MAX_DURATION_SEC)
+    .nullable()
+    .optional(),
   mime_type: z.string().trim().max(64).nullable().optional(),
   file_size: z.coerce.number().int().min(0).max(POST_VIDEO_MAX_BYTES).nullable().optional()
 };
@@ -317,6 +324,12 @@ function refineMediaMeta(
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message: "video_duration is required for video posts",
+      path: ["video_duration"]
+    });
+  } else if (data.video_duration < POST_VIDEO_MIN_DURATION_SEC) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Video must be at least ${POST_VIDEO_MIN_DURATION_SEC} seconds long`,
       path: ["video_duration"]
     });
   } else if (data.video_duration > POST_VIDEO_MAX_DURATION_SEC) {

@@ -20,7 +20,8 @@ import { parseHelpGallery, resolveHelpMedia, signHelpGallery } from "../utils/he
 import {
   resolvePostMediaType,
   type PostMediaType,
-  POST_VIDEO_MAX_DURATION_SEC
+  POST_VIDEO_MAX_DURATION_SEC,
+  POST_VIDEO_MIN_DURATION_SEC
 } from "../constants/postMedia.constants";
 import { syncPostHashtags } from "./Hashtag.service";
 import {
@@ -310,10 +311,21 @@ function buildMediaMetaForWrite(payload: {
       (err as any).status = 400;
       throw err;
     }
+    const floored = Math.floor(raw);
+    if (floored < POST_VIDEO_MIN_DURATION_SEC) {
+      const err = new Error(`Video must be at least ${POST_VIDEO_MIN_DURATION_SEC} seconds long`);
+      (err as any).status = 400;
+      throw err;
+    }
+    if (floored > POST_VIDEO_MAX_DURATION_SEC) {
+      const err = new Error(`Video must be ≤ ${POST_VIDEO_MAX_DURATION_SEC} seconds`);
+      (err as any).status = 400;
+      throw err;
+    }
   }
   const duration =
     mediaType === "video" && payload.video_duration != null
-      ? Math.min(Math.max(1, Math.floor(payload.video_duration)), POST_VIDEO_MAX_DURATION_SEC)
+      ? Math.floor(payload.video_duration)
       : null;
   return {
     mediaUrl,

@@ -14,7 +14,6 @@ export type RelationshipStatus =
   | "rejected";
 
 const REJECTION_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
-const DISCONNECT_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_REQUEST_ATTEMPTS = 2;
 
 export type ConnectionUserDto = {
@@ -241,15 +240,8 @@ export async function sendRequest(
     return { status: "pending_sent", autoAccepted: false };
   }
 
+  // CANCELLED covers disconnect + withdrawn request — allow immediate reconnect / re-send.
   if (outgoing?.status === "CANCELLED") {
-    const elapsed = Date.now() - (outgoing.respondedAt?.getTime() ?? 0);
-    if (elapsed < DISCONNECT_COOLDOWN_MS) {
-      serviceError(
-        "Please wait 7 days after disconnecting before sending a new request.",
-        403,
-        "DISCONNECT_COOLDOWN"
-      );
-    }
     await outgoing.update({
       status: "PENDING",
       attemptCount: 1,
@@ -263,12 +255,31 @@ export async function sendRequest(
     serviceError("Connection request already sent.", 400, "REQUEST_PENDING");
   }
 
-  await MemberConnection.create({
-    requesterUserId: requesterId,
-    recipientUserId: recipientId,
-    status: "PENDING",
-    attemptCount: 1
-  } as any);
+  // Prior connection may have been the other direction (they requested, then disconnected).
+  try {
+    await MemberConnection.create({
+      requesterUserId: requesterId,
+      recipientUserId: recipientId,
+      status: "PENDING",
+      attemptCount: 1
+    } as any);
+  } catch (e: unknown) {
+    // Race / leftover directed row: reactivate CANCELLED instead of failing.
+    const existing = await MemberConnection.findOne({
+      where: directedWhere(requesterId, recipientId)
+    });
+    if (existing?.status === "CANCELLED") {
+      await existing.update({
+        status: "PENDING",
+        attemptCount: 1,
+        respondedAt: null
+      });
+    } else if (existing?.status === "PENDING") {
+      serviceError("Connection request already sent.", 400, "REQUEST_PENDING");
+    } else {
+      throw e;
+    }
+  }
   void notifyConnectionRequestReceived(recipientId, requesterId).catch(() => {});
   return { status: "pending_sent", autoAccepted: false };
 }

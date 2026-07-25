@@ -23,8 +23,11 @@ export const POST_IMAGE_UPLOAD_MAX_BYTES = 2 * 1024 * 1024;
 /** Max video size after client compression (must match mobile VIDEO_MAX_BYTES). */
 export const POST_VIDEO_MAX_BYTES = 50 * 1024 * 1024;
 
-/** Max video duration in seconds (2 minutes). */
-export const POST_VIDEO_MAX_DURATION_SEC = 120;
+/** Max video duration in seconds (1 minute short-form). */
+export const POST_VIDEO_MAX_DURATION_SEC = 60;
+
+/** Minimum video duration in seconds. */
+export const POST_VIDEO_MIN_DURATION_SEC = 3;
 
 const VIDEO_EXT = /\.(mp4|mov|m4v)(\?|$)/i;
 

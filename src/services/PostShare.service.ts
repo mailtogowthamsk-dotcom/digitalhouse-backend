@@ -1,6 +1,5 @@
 import { Op } from "sequelize";
 import { Post, User, Message } from "../models";
-import { getRelationshipStatus } from "./Connection.service";
 import { assertCanSendMessage } from "./MessagePermission.service";
 import { isOnline } from "../realtime/presence";
 import { emitMessageEvents } from "../realtime/messageEvents";
@@ -47,10 +46,10 @@ export async function sharePostToConnections(
 ): Promise<SharePostResult> {
   const uniqueRecipients = [...new Set(recipientIds.map(Number).filter((id) => id > 0 && id !== senderId))];
   if (uniqueRecipients.length === 0) {
-    serviceError("Select at least one connection", 400, "NO_RECIPIENTS");
+    serviceError("Select at least one person from your chats", 400, "NO_RECIPIENTS");
   }
   if (uniqueRecipients.length > 20) {
-    serviceError("You can share with up to 20 connections at a time", 400, "TOO_MANY_RECIPIENTS");
+    serviceError("You can share with up to 20 people at a time", 400, "TOO_MANY_RECIPIENTS");
   }
 
   const post = await loadShareablePost(senderId, postId);
@@ -63,11 +62,7 @@ export async function sharePostToConnections(
 
   for (const recipientId of uniqueRecipients) {
     try {
-      const status = await getRelationshipStatus(senderId, recipientId);
-      if (status !== "connected") {
-        failed.push({ recipientId, reason: "Not connected" });
-        continue;
-      }
+      // Anyone you can message (community connection OR matrimony match chat) can receive shares.
       await assertCanSendMessage(senderId, recipientId);
 
       const msg = await Message.create({

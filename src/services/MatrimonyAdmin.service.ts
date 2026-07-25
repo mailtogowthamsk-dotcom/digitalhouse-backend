@@ -258,9 +258,20 @@ export async function getMatrimonyAdminStats(): Promise<{
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
 
-  const [pendingRequests, approvedProfiles, rejectedProfiles, underReview, newToday, totalInterests, mutualMatches, pendingReports] =
-    await Promise.all([
-    PendingProfileUpdate.count({ where: { section: "MATRIMONY", status: "PENDING" } }),
+  const [
+    pendingRows,
+    approvedProfiles,
+    rejectedProfiles,
+    underReview,
+    newToday,
+    totalInterests,
+    mutualMatches,
+    pendingReports
+  ] = await Promise.all([
+    PendingProfileUpdate.findAll({
+      where: { section: "MATRIMONY", status: "PENDING" },
+      attributes: ["id", "data"]
+    }),
     PendingProfileUpdate.count({ where: { section: "MATRIMONY", status: "APPROVED" } }),
     PendingProfileUpdate.count({ where: { section: "MATRIMONY", status: "REJECTED" } }),
     MatrimonyRequestMeta.count({
@@ -277,6 +288,12 @@ export async function getMatrimonyAdminStats(): Promise<{
     MatrimonyMatch.count().catch(() => 0),
     MatrimonyReport.count({ where: { status: "PENDING" } }).catch(() => 0)
   ]);
+
+  // Align with Needs-review queue: exclude unsubmitted drafts.
+  const pendingRequests = pendingRows.filter((row) => {
+    const raw = readRawPendingData(row.data);
+    return raw[SUBMITTED_FLAG] !== false;
+  }).length;
 
   return {
     pendingRequests,
@@ -360,10 +377,13 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     const meta = metaByPending.get(row.id) ?? null;
     const workflowStatus = deriveWorkflow(row.status, rawData, meta);
     if (!query.includeDrafts && workflowStatus === "DRAFT") continue;
-    if (query.pendingReviewOnly) {
+    // Explicit status filter wins; otherwise optional pending-review queue.
+    if (query.workflowStatus) {
+      if (workflowStatus !== query.workflowStatus) continue;
+    } else if (query.pendingReviewOnly) {
       const pending = new Set(["SUBMITTED", "UNDER_REVIEW", "RESUBMITTED"]);
       if (!pending.has(workflowStatus)) continue;
-    } else if (query.workflowStatus && workflowStatus !== query.workflowStatus) continue;
+    }
     if (
       query.gender &&
       !(user?.gender ?? "").toLowerCase().includes(query.gender.toLowerCase())
