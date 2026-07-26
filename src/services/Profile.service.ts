@@ -203,6 +203,7 @@ export const SECTION_ALLOWED_KEYS: Record<string, Set<string>> = {
     "familyType",
     "familyStatus",
     "motherName",
+    "fatherName",
     "fatherOccupation",
     "numberOfSiblings",
     "brothersCount",

@@ -23,19 +23,25 @@ import { registrationStatusService } from "../services/RegistrationStatus.servic
  * Returns a session so the client can optionally upload a profile photo.
  */
 export async function register(req: Request, res: Response) {
-  const body = registerSchema.parse(req.body);
-  const user = await userService.register(body);
-  const accessToken = signAccessToken({ userId: user.id });
-  return success(
-    res,
-    {
-      message:
-        "Your registration is under admin verification (1–2 days). You will be notified once approved.",
-      accessToken,
-      user: userService.toAuthUser(user)
-    },
-    201
-  );
+  try {
+    const body = registerSchema.parse(req.body);
+    const user = await userService.register(body);
+    const accessToken = signAccessToken({ userId: user.id });
+    return success(
+      res,
+      {
+        message:
+          "Your registration is under admin verification (1–2 days). You will be notified once approved.",
+        accessToken,
+        user: userService.toAuthUser(user)
+      },
+      201
+    );
+  } catch (e: any) {
+    if (e?.status === 409) return error(res, e.message, 409);
+    if (e?.status === 400) return error(res, e.message, 400);
+    throw e;
+  }
 }
 
 /**

@@ -8,6 +8,10 @@ export type HomeUserBasic = {
   name: string;
   profileImage: string | null;
   verified: boolean;
+  /** User community label from DB — omit / null when unset. */
+  community: string | null;
+  /** Kulam from DB — used as header subtitle fallback when community is empty. */
+  kulam: string | null;
 };
 
 export type HomeSummaryDto = {
@@ -114,10 +118,18 @@ const APPROVED = "APPROVED";
 const approvedUserScope = { status: APPROVED };
 
 function toHomeUserBasic(user: User): HomeUserBasic {
+  const community =
+    typeof user.community === "string" && user.community.trim()
+      ? user.community.trim()
+      : null;
+  const kulam =
+    typeof user.kulam === "string" && user.kulam.trim() ? user.kulam.trim() : null;
   return {
     name: user.fullName,
     profileImage: user.profilePhoto ?? null,
-    verified: user.status === APPROVED
+    verified: user.status === APPROVED,
+    community,
+    kulam
   };
 }
 

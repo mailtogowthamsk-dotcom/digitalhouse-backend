@@ -65,12 +65,34 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     console.warn("[API] Unique constraint:", message, sequelizeDetail(err));
   }
 
+  const uniqueMessage = (() => {
+    if (!isUniqueConflict) return null;
+    const sql = String(
+      (err as { parent?: { sqlMessage?: string }; original?: { sqlMessage?: string } })?.parent
+        ?.sqlMessage ||
+        (err as { original?: { sqlMessage?: string } })?.original?.sqlMessage ||
+        message
+    ).toLowerCase();
+    const fields = (err as { fields?: Record<string, unknown> })?.fields;
+    const fieldKeys = fields && typeof fields === "object" ? Object.keys(fields) : [];
+    if (fieldKeys.includes("email") || sql.includes("email")) {
+      return "This email is already registered.";
+    }
+    if (fieldKeys.includes("mobile") || sql.includes("mobile")) {
+      return "This mobile number is already registered.";
+    }
+    if (fieldKeys.includes("username") || sql.includes("username")) {
+      return "This username is already taken.";
+    }
+    return "This mobile number/email is already registered.";
+  })();
+
   return res.status(statusCode).json({
     ok: false,
     message: isDbTimeout
       ? "Database is slow or unreachable right now. Please retry in a few seconds."
-      : isUniqueConflict
-        ? "This record already exists. Please retry."
+      : uniqueMessage
+        ? uniqueMessage
         : statusCode >= 500
           ? "Server error"
           : message

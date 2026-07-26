@@ -45,6 +45,7 @@ export const MATRIMONY_REQUIRED_KEYS = [
   "nakshatram",
   "dosham",
   "motherName",
+  "fatherName",
   "fatherOccupation",
   "brothersCount",
   "sistersCount",

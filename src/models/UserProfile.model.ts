@@ -65,6 +65,8 @@ export type MatrimonySection = {
   familyType?: string | null;
   familyStatus?: string | null;
   motherName?: string | null;
+  /** Bride/groom father's name (matrimony family details) */
+  fatherName?: string | null;
   fatherOccupation?: string | null;
   numberOfSiblings?: number | null;
   brothersCount?: number | null;

@@ -26,17 +26,30 @@ export async function register(data: RegisterInput): Promise<User> {
   const email = data.email.toLowerCase().trim();
 
   const existingEmail = await User.findOne({ where: { email } });
-  if (existingEmail) throw new Error("An account with this email already exists.");
+  if (existingEmail) {
+    throw Object.assign(new Error("This email is already registered."), {
+      status: 409,
+      code: "EMAIL_ALREADY_REGISTERED"
+    });
+  }
 
   if (data.mobile && data.mobile.trim()) {
     const existingMobile = await User.findOne({ where: { mobile: data.mobile.trim() } });
-    if (existingMobile) throw new Error("An account with this mobile number already exists.");
+    if (existingMobile) {
+      throw Object.assign(new Error("This mobile number is already registered."), {
+        status: 409,
+        code: "MOBILE_ALREADY_REGISTERED"
+      });
+    }
   }
 
   const username = usernameService.normalizeUsername(data.username);
   usernameService.validateUsernameFormat(username);
   if (!(await usernameService.isUsernameAvailable(username))) {
-    throw new Error("This username is already taken.");
+    throw Object.assign(new Error("This username is already taken."), {
+      status: 409,
+      code: "USERNAME_TAKEN"
+    });
   }
 
   const kulam = await assertValidKulam(data.kulam);
@@ -45,34 +58,66 @@ export async function register(data: RegisterInput): Promise<User> {
     throw Object.assign(new Error("Please select your location."), { status: 400 });
   }
 
-  const user = await User.create({
-    fullName: data.fullName.trim(),
-    username,
-    gender: data.gender?.trim() || null,
-    dob: data.dob ? (data.dob as any) : null,
-    email,
-    mobile: data.mobile?.trim() || null,
-    occupation: data.occupation?.trim() || null,
-    location,
-    district: location,
-    community: data.community?.trim() || null,
-    kulam,
-    profilePhoto: data.profilePhoto?.trim() || null,
-    govtIdType: data.govtIdType?.trim() || null,
-    govtIdFile: data.govtIdFile?.trim() || null,
-    status: "PENDING",
-    signupProvider: AUTH_PROVIDERS.EXISTING_LOGIN,
-    profileComplete: true,
-    linkedProviders: [AUTH_PROVIDERS.EXISTING_LOGIN]
-  } as any);
+  try {
+    const user = await User.create({
+      fullName: data.fullName.trim(),
+      username,
+      gender: data.gender?.trim() || null,
+      dob: data.dob ? (data.dob as any) : null,
+      email,
+      mobile: data.mobile?.trim() || null,
+      occupation: data.occupation?.trim() || null,
+      location,
+      district: location,
+      community: data.community?.trim() || null,
+      kulam,
+      profilePhoto: data.profilePhoto?.trim() || null,
+      govtIdType: data.govtIdType?.trim() || null,
+      govtIdFile: data.govtIdFile?.trim() || null,
+      status: "PENDING",
+      signupProvider: AUTH_PROVIDERS.EXISTING_LOGIN,
+      profileComplete: true,
+      linkedProviders: [AUTH_PROVIDERS.EXISTING_LOGIN]
+    } as any);
 
-  // Seed community profile so Edit Profile / completion see kulam immediately.
-  const profile = await ensureUserProfile(user.id);
-  await profile.update({
-    community: { kulam }
-  } as any);
+    // Seed community profile so Edit Profile / completion see kulam immediately.
+    const profile = await ensureUserProfile(user.id);
+    await profile.update({
+      community: { kulam }
+    } as any);
 
-  return user;
+    return user;
+  } catch (e: any) {
+    const isDup =
+      e?.name === "SequelizeUniqueConstraintError" || e?.parent?.code === "ER_DUP_ENTRY";
+    if (isDup) {
+      const fields = (e?.fields && typeof e.fields === "object" ? Object.keys(e.fields) : []) as string[];
+      const sql = String(e?.parent?.sqlMessage ?? e?.message ?? "").toLowerCase();
+      if (fields.includes("email") || sql.includes("email")) {
+        throw Object.assign(new Error("This email is already registered."), {
+          status: 409,
+          code: "EMAIL_ALREADY_REGISTERED"
+        });
+      }
+      if (fields.includes("mobile") || sql.includes("mobile")) {
+        throw Object.assign(new Error("This mobile number is already registered."), {
+          status: 409,
+          code: "MOBILE_ALREADY_REGISTERED"
+        });
+      }
+      if (fields.includes("username") || sql.includes("username")) {
+        throw Object.assign(new Error("This username is already taken."), {
+          status: 409,
+          code: "USERNAME_TAKEN"
+        });
+      }
+      throw Object.assign(
+        new Error("This mobile number/email is already registered."),
+        { status: 409, code: "ACCOUNT_ALREADY_EXISTS" }
+      );
+    }
+    throw e;
+  }
 }
 
 
@@ -113,7 +158,13 @@ export function toAuthUser(user: User) {
     registrationAdminRemarks: user.registrationAdminRemarks ?? null,
     registrationRequestedFields: requested,
     pendingMobile: user.pendingMobile ?? null,
-    pendingProfilePhoto: user.pendingProfilePhoto ?? null
+    pendingProfilePhoto: user.pendingProfilePhoto ?? null,
+    community:
+      typeof user.community === "string" && user.community.trim()
+        ? user.community.trim()
+        : null,
+    kulam:
+      typeof user.kulam === "string" && user.kulam.trim() ? user.kulam.trim() : null
   };
 }
 

@@ -40,6 +40,7 @@ matrimonyRouter.post("/interests/:id/respond", asyncHandler(MatrimonyController.
 matrimonyRouter.post("/interests/:id/withdraw", asyncHandler(MatrimonyController.withdrawInterest));
 matrimonyRouter.get("/chat-access/:userId", asyncHandler(MatrimonyController.getChatAccess));
 matrimonyRouter.get("/matches", asyncHandler(MatrimonyController.listMatches));
+matrimonyRouter.post("/matches/:userId/unmatch", asyncHandler(MatrimonyController.removeMatch));
 matrimonyRouter.post(
   "/matches/:userId/horoscope/request",
   asyncHandler(MatrimonyController.requestHoroscope)

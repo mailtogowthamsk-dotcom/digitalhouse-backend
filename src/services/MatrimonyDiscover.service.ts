@@ -58,11 +58,23 @@ export type DiscoverDetailDto = MatrimonyCandidatePublic & {
   nakshatram: string | null;
   maritalStatus: string | null;
   dosham: string | null;
+  motherTongue: string | null;
+  gotra: string | null;
+  employer: string | null;
+  annualIncome: string | null;
+  motherName: string | null;
+  fatherName: string | null;
+  fatherOccupation: string | null;
+  familyType: string | null;
+  familyStatus: string | null;
+  brothersCount: number | null;
+  sistersCount: number | null;
   kulamLabel: string | null;
   interestStatus: "NONE" | "SENT_PENDING" | "SENT_ACCEPTED" | "RECEIVED_PENDING" | "MATCHED";
   canSendInterest: boolean;
   canRespondInterest: boolean;
   pendingInterestId: number | null;
+  sentInterestId: number | null;
   mutualMatch: boolean;
   chatEnabled: boolean;
   contactVisible: boolean;
@@ -500,22 +512,29 @@ async function candidateHasFullAccess(
   return Entitlement.viewerHasProfileUnlock(viewerId, candidateUserId, false);
 }
 
-/** Validates candidate is approved, active, and discoverable before interest/save actions. */
+/** Validates candidate is approved and discoverable before interest (and optional save) actions. */
 export async function assertEligibleMatrimonyCandidate(
   viewerId: number,
-  candidateUserId: number
+  candidateUserId: number,
+  opts?: { allowMatched?: boolean }
 ): Promise<void> {
+  if (!Number.isFinite(candidateUserId) || candidateUserId <= 0) {
+    throw Object.assign(new Error("Invalid profile"), { status: 400 });
+  }
   if (candidateUserId === viewerId) {
     throw Object.assign(new Error("Invalid profile"), { status: 400 });
   }
   await MatrimonySafety.assertNotBlocked(viewerId, candidateUserId);
 
-  const existingMatch = await getActiveMatrimonyMatch(viewerId, candidateUserId);
-  if (existingMatch) {
-    throw Object.assign(new Error("You are already matched with this profile."), {
-      status: 400,
-      code: "ALREADY_MATCHED"
-    });
+  // Interest must not target an existing match; bookmark/save is allowed for matches.
+  if (!opts?.allowMatched) {
+    const existingMatch = await getActiveMatrimonyMatch(viewerId, candidateUserId);
+    if (existingMatch) {
+      throw Object.assign(new Error("You are already matched with this profile."), {
+        status: 400,
+        code: "ALREADY_MATCHED"
+      });
+    }
   }
 
   const candidateUser = await User.findOne({
@@ -530,6 +549,12 @@ export async function assertEligibleMatrimonyCandidate(
     SECTION_ALLOWED_KEYS.matrimony
   ) as MatrimonySection | null;
   if (!isDiscoverableMatrimony(m)) {
+    // Allow save/view paths for profiles already in the relationship graph (they viewed me).
+    if (opts?.allowMatched) {
+      const theyViewedMe = await Monetization.viewedProfileRecently(candidateUserId, viewerId);
+      const activeMatch = await getActiveMatrimonyMatch(viewerId, candidateUserId);
+      if (theyViewedMe || activeMatch) return;
+    }
     throw Object.assign(new Error("Matrimony profile not available"), { status: 404 });
   }
 }
@@ -741,6 +766,31 @@ export async function getCandidateDetail(
     nakshatram: m!.nakshatram ?? null,
     maritalStatus: m!.maritalStatus ?? null,
     dosham: m!.dosham ?? null,
+    motherTongue: m!.motherTongue ?? null,
+    gotra: m!.gotra ?? null,
+    employer: m!.employer ?? null,
+    annualIncome: m!.annualIncome ?? null,
+    motherName: m!.motherName ?? null,
+    fatherName: (() => {
+      const fromMatrimony =
+        typeof m!.fatherName === "string" && m!.fatherName.trim() ? m!.fatherName.trim() : null;
+      if (fromMatrimony) return fromMatrimony;
+      // Legacy / SELF profiles may only have father name on personal section
+      if (m!.lookingFor === "SELF" || !m!.lookingFor) {
+        const personal = normalizeJsonColumn(
+          candidateProfile?.personal,
+          SECTION_ALLOWED_KEYS.personal
+        ) as { fatherName?: string | null } | null;
+        const fromPersonal = personal?.fatherName?.trim();
+        return fromPersonal || null;
+      }
+      return null;
+    })(),
+    fatherOccupation: m!.fatherOccupation ?? null,
+    familyType: m!.familyType ?? null,
+    familyStatus: m!.familyStatus ?? null,
+    brothersCount: m!.brothersCount ?? null,
+    sistersCount: m!.sistersCount ?? null,
     kulamLabel,
     interestStatus,
     canSendInterest: (() => {
@@ -754,6 +804,10 @@ export async function getCandidateDetail(
     })(),
     canRespondInterest: recvInterest?.status === "PENDING",
     pendingInterestId: recvInterest?.status === "PENDING" ? recvInterest.id : null,
+    sentInterestId:
+      sentInterest?.status === "PENDING" || sentInterest?.status === "ACCEPTED"
+        ? sentInterest.id
+        : null,
     mutualMatch,
     chatEnabled: mutualMatch && (match?.chatEnabled ?? false),
     contactVisible,
@@ -1143,6 +1197,40 @@ export async function closeMatrimonyMatchBetween(userA: number, userB: number): 
   if (match) {
     await match.update({ status: "UNMATCHED", chatEnabled: false } as any);
   }
+}
+
+/**
+ * Explicit Remove Match: close ACTIVE match, withdraw ACCEPTED interests both ways,
+ * disable chat, notify the other user. Community connection is unaffected.
+ */
+export async function removeMatch(viewerId: number, otherUserId: number): Promise<void> {
+  if (!Number.isFinite(otherUserId) || otherUserId === viewerId) {
+    throw Object.assign(new Error("Invalid match"), { status: 400 });
+  }
+  const hub = await getMatrimonyHub(viewerId);
+  assertCanBrowse(hub);
+
+  const match = await getActiveMatrimonyMatch(viewerId, otherUserId);
+  if (!match) {
+    throw Object.assign(new Error("No active match found"), { status: 404 });
+  }
+
+  await closeMatrimonyMatchBetween(viewerId, otherUserId);
+
+  const accepted = await MatrimonyInterest.findAll({
+    where: {
+      status: "ACCEPTED",
+      [Op.or]: [
+        { fromUserId: viewerId, toUserId: otherUserId },
+        { fromUserId: otherUserId, toUserId: viewerId }
+      ]
+    }
+  });
+  for (const row of accepted) {
+    await row.update({ status: "WITHDRAWN", respondedAt: new Date() } as any);
+  }
+
+  void NotificationService.notifyMatrimonyMatchRemoved(otherUserId, viewerId).catch(() => {});
 }
 
 /** User leaves matrimony module — close pending interests and active matches. */

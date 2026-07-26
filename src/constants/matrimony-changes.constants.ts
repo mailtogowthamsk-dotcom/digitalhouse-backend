@@ -20,6 +20,7 @@ export const MATRIMONY_CHANGE_SECTIONS = {
     label: "Family details",
     fields: [
       "motherName",
+      "fatherName",
       "fatherOccupation",
       "brothersCount",
       "sistersCount",

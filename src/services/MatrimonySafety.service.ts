@@ -70,7 +70,10 @@ export async function getCandidateSafetyFlags(
 
 export async function saveProfile(viewerId: number, candidateUserId: number): Promise<{ saved: true }> {
   const Discover = await import("./MatrimonyDiscover.service");
-  await Discover.assertEligibleMatrimonyCandidate(viewerId, candidateUserId);
+  // Bookmark is allowed even when already matched (interest path still blocks matches).
+  await Discover.assertEligibleMatrimonyCandidate(viewerId, candidateUserId, {
+    allowMatched: true
+  });
   await MatrimonySavedProfile.findOrCreate({
     where: { userId: viewerId, savedUserId: candidateUserId },
     defaults: { userId: viewerId, savedUserId: candidateUserId, createdAt: new Date() } as any

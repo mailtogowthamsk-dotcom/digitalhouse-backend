@@ -134,6 +134,7 @@ const matrimonySectionSchema = z.object({
   familyType: z.string().trim().max(40).nullable().optional(),
   familyStatus: z.string().trim().max(40).nullable().optional(),
   motherName: z.string().trim().max(120).nullable().optional(),
+  fatherName: z.string().trim().max(120).nullable().optional(),
   fatherOccupation: z.string().trim().max(80).nullable().optional(),
   numberOfSiblings: z.number().int().min(0).nullable().optional(),
   brothersCount: z.number().int().min(0).nullable().optional(),

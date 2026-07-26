@@ -179,6 +179,22 @@ export async function notifyMatrimonyMatch(userId: number, otherUserId: number):
   });
 }
 
+export async function notifyMatrimonyMatchRemoved(
+  userId: number,
+  otherUserId: number
+): Promise<void> {
+  const name = await senderName(otherUserId);
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.MATRIMONY_MATCH_REMOVED,
+    title: "Match removed",
+    body: `${name} removed the match. Chat is no longer available.`,
+    actorUserId: otherUserId,
+    actionType: NOTIFICATION_ACTIONS.OPEN_MATRIMONY_MATCHES,
+    actionTargetId: otherUserId
+  });
+}
+
 export async function notifyMatrimonyApplicationSubmitted(userId: number): Promise<void> {
   await Platform.dispatchNotification({
     userId,

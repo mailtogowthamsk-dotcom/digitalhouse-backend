@@ -284,6 +284,18 @@ export async function listMatches(req: Request, res: Response) {
   return success(res, { items });
 }
 
+export async function removeMatch(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const otherUserId = Number(req.params.userId);
+  try {
+    await Discover.removeMatch(userId, otherUserId);
+    return success(res, { removed: true });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
 export async function requestHoroscope(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   const otherUserId = Number(req.params.userId);
@@ -347,6 +359,9 @@ export async function listSaved(req: Request, res: Response) {
 export async function saveProfile(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   const candidateUserId = Number(req.params.userId);
+  if (!Number.isFinite(candidateUserId) || candidateUserId <= 0) {
+    return error(res, "Invalid profile", 400);
+  }
   try {
     await assertMatrimonyBrowseAllowed(userId);
     const data = await MatrimonySafety.saveProfile(userId, candidateUserId);

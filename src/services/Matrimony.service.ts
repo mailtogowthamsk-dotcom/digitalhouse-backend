@@ -527,10 +527,21 @@ export async function saveMatrimonyDraft(
   }
 
   const ctx = await getUserContext(userId);
+  // Prefer draft over approved so in-progress edits are the merge base.
+  const base: Record<string, unknown> = {
+    ...((hub.approved ?? {}) as Record<string, unknown>),
+    ...((hub.draft ?? {}) as Record<string, unknown>)
+  };
+  // Null in a partial draft save must not wipe values already stored (e.g. fatherName).
+  const incoming: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(payload)) {
+    if (v === null && base[k] != null && base[k] !== "") continue;
+    incoming[k] = v;
+  }
   const merged = syncMatrimonyPhotoFields({
-    ...(hub.draft ?? {}),
-    ...payload,
-    kulamSnapshot: payload.kulamSnapshot ?? ctx.kulam ?? null
+    ...base,
+    ...incoming,
+    kulamSnapshot: (payload.kulamSnapshot as string | null | undefined) ?? (base.kulamSnapshot as string | null | undefined) ?? ctx.kulam ?? null
   });
   await upsertMatrimonyPending(userId, merged, false);
   await markMatrimonyMediaAttached(userId, merged);
