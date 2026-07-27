@@ -153,31 +153,53 @@ export async function blockUser(viewerId: number, candidateUserId: number): Prom
     where: { userId: viewerId, savedUserId: candidateUserId }
   });
 
-  const { severConnectionWorkflow } = await import("./Connection.service");
-  const { closeMatrimonyMatchBetween } = await import("./MatrimonyDiscover.service");
-  const { MatrimonyInterest } = await import("../models");
-  await severConnectionWorkflow(viewerId, candidateUserId).catch(() => {});
-  await closeMatrimonyMatchBetween(viewerId, candidateUserId).catch(() => {});
-  await MatrimonyInterest.update(
-    { status: "WITHDRAWN", respondedAt: new Date() } as any,
-    {
-      where: {
-        status: { [Op.in]: ["PENDING", "ACCEPTED"] },
-        [Op.or]: [
-          { fromUserId: viewerId, toUserId: candidateUserId },
-          { fromUserId: candidateUserId, toUserId: viewerId }
-        ]
-      }
-    }
-  ).catch(() => {});
+  // Do not sever connections / matches here. The block row already hides the
+  // member and locks messaging; destroying relationships made Unblock useless
+  // (users could not message again without reconnecting / rematching).
 
   return { blocked: true };
 }
 
+/**
+ * Remove my block of the other user, and restore messaging relationships that
+ * older block flows may have cancelled (connection CANCELLED, match UNMATCHED).
+ */
 export async function unblockUser(viewerId: number, candidateUserId: number): Promise<void> {
   await MatrimonyBlock.destroy({
     where: { userId: viewerId, blockedUserId: candidateUserId }
   });
+  await restoreMessagingAfterUnblock(viewerId, candidateUserId);
+}
+
+async function restoreMessagingAfterUnblock(userA: number, userB: number): Promise<void> {
+  const { MemberConnection, MatrimonyMatch } = await import("../models");
+  const now = new Date();
+
+  const connections = await MemberConnection.findAll({
+    where: {
+      status: "CANCELLED",
+      [Op.or]: [
+        { requesterUserId: userA, recipientUserId: userB },
+        { requesterUserId: userB, recipientUserId: userA }
+      ]
+    }
+  });
+  for (const row of connections) {
+    await row.update({ status: "ACCEPTED", respondedAt: now });
+  }
+
+  const low = Math.min(userA, userB);
+  const high = Math.max(userA, userB);
+  const match = await MatrimonyMatch.findOne({
+    where: {
+      userLowId: low,
+      userHighId: high,
+      status: { [Op.in]: ["UNMATCHED", "BLOCKED"] }
+    }
+  });
+  if (match) {
+    await match.update({ status: "ACTIVE", chatEnabled: true } as any);
+  }
 }
 
 export async function reportProfile(
