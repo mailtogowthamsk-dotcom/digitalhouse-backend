@@ -1,11 +1,15 @@
-import { Op } from "sequelize";
-import { Message } from "../models";
+import { Op, QueryTypes } from "sequelize";
+import { Message, MatrimonyMatch, UserProfile, MemberConnection } from "../models";
+import { sequelize } from "../config/db";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
 import {
   bothUsersHaveActiveMatrimony,
-  getActiveMatrimonyMatch
+  getActiveMatrimonyMatch,
+  isDiscoverableMatrimony
 } from "./MatrimonyDiscover.service";
 import { hasAcceptedConnection } from "./Connection.service";
+import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
+import type { MatrimonySection } from "../models/UserProfile.model";
 
 export type MessageAccessReason =
   | "matrimony_match"
@@ -50,8 +54,7 @@ async function hasMessageHistory(userA: number, userB: number): Promise<boolean>
   return row != null;
 }
 
-async function getCommunityLane(viewerId: number, otherUserId: number): Promise<LaneAccess> {
-  const connected = await hasAcceptedConnection(viewerId, otherUserId);
+function communityLaneFromConnected(connected: boolean): LaneAccess {
   if (connected) {
     return { applicable: true, allowed: true, readOnly: false };
   }
@@ -64,19 +67,18 @@ async function getCommunityLane(viewerId: number, otherUserId: number): Promise<
   };
 }
 
-async function getMatrimonyLane(viewerId: number, otherUserId: number): Promise<LaneAccess> {
-  const matrimonyContext = await bothUsersHaveActiveMatrimony(viewerId, otherUserId);
-  if (!matrimonyContext) {
+function matrimonyLaneFromState(opts: {
+  matrimonyContext: boolean;
+  matchChatEnabled: boolean;
+  legacy: boolean;
+}): LaneAccess {
+  if (!opts.matrimonyContext) {
     return { applicable: false, allowed: false, readOnly: false };
   }
-
-  const match = await getActiveMatrimonyMatch(viewerId, otherUserId);
-  if (match?.chatEnabled) {
+  if (opts.matchChatEnabled) {
     return { applicable: true, allowed: true, readOnly: false };
   }
-
-  const legacy = await hasMessageHistory(viewerId, otherUserId);
-  if (legacy) {
+  if (opts.legacy) {
     return {
       applicable: true,
       allowed: false,
@@ -86,7 +88,6 @@ async function getMatrimonyLane(viewerId: number, otherUserId: number): Promise<
         "Matrimony chat is closed. Community chat may still be available if you are connected."
     };
   }
-
   return {
     applicable: true,
     allowed: false,
@@ -95,6 +96,30 @@ async function getMatrimonyLane(viewerId: number, otherUserId: number): Promise<
     message:
       "Matrimony chat is available only after both parties accept interest and become a mutual match."
   };
+}
+
+async function getCommunityLane(viewerId: number, otherUserId: number): Promise<LaneAccess> {
+  const connected = await hasAcceptedConnection(viewerId, otherUserId);
+  return communityLaneFromConnected(connected);
+}
+
+async function getMatrimonyLane(viewerId: number, otherUserId: number): Promise<LaneAccess> {
+  const matrimonyContext = await bothUsersHaveActiveMatrimony(viewerId, otherUserId);
+  if (!matrimonyContext) {
+    return matrimonyLaneFromState({
+      matrimonyContext: false,
+      matchChatEnabled: false,
+      legacy: false
+    });
+  }
+
+  const match = await getActiveMatrimonyMatch(viewerId, otherUserId);
+  const legacy = await hasMessageHistory(viewerId, otherUserId);
+  return matrimonyLaneFromState({
+    matrimonyContext: true,
+    matchChatEnabled: !!match?.chatEnabled,
+    legacy
+  });
 }
 
 function buildAccessDto(
@@ -124,7 +149,6 @@ function buildAccessDto(
     readOnly = true;
     reason = "legacy_thread";
     code = "READ_ONLY_LEGACY";
-    // Do NOT say "archived" here — that confuses users with Inbox archive (thread preference).
     message =
       community.allowed === false && matrimony.applicable
         ? "You can view past messages, but new messages need an accepted connection or an active matrimony match."
@@ -212,17 +236,121 @@ export async function getMessageAccess(
   return buildAccessDto(community, matrimony, legacy);
 }
 
+/**
+ * Batch permission map — fixed DB round-trips instead of N× getMessageAccess
+ * (Critical N+1 fix for listThreads).
+ */
 export async function getMessageAccessMap(
   viewerId: number,
   otherUserIds: number[]
 ): Promise<Map<number, MessageAccessDto>> {
   const map = new Map<number, MessageAccessDto>();
   const unique = [...new Set(otherUserIds.filter((id) => id && id !== viewerId))];
-  await Promise.all(
-    unique.map(async (id) => {
-      map.set(id, await getMessageAccess(viewerId, id));
-    })
-  );
+  if (!unique.length) return map;
+
+  const blocked = await getBlockedUserIds(viewerId);
+  const remaining = unique.filter((id) => {
+    if (blocked.has(id)) {
+      const denied: LaneAccess = {
+        applicable: false,
+        allowed: false,
+        readOnly: false,
+        code: "BLOCKED",
+        message: "You cannot message this user."
+      };
+      map.set(id, {
+        communityChat: denied,
+        matrimonyChat: denied,
+        allowed: false,
+        canViewHistory: false,
+        readOnly: false,
+        primaryLane: null,
+        chatLanes: [],
+        code: "BLOCKED",
+        message: "You cannot message this user.",
+        reason: "blocked"
+      });
+      return false;
+    }
+    return true;
+  });
+
+  if (!remaining.length) return map;
+
+  const profileIds = [...new Set([viewerId, ...remaining])];
+
+  const [connections, matches, profiles, legacyRows] = await Promise.all([
+    MemberConnection.findAll({
+      where: {
+        status: "ACCEPTED",
+        [Op.or]: remaining.flatMap((otherId) => [
+          { requesterUserId: viewerId, recipientUserId: otherId },
+          { requesterUserId: otherId, recipientUserId: viewerId }
+        ])
+      },
+      attributes: ["requesterUserId", "recipientUserId"]
+    }),
+    MatrimonyMatch.findAll({
+      where: {
+        status: "ACTIVE",
+        [Op.or]: [
+          { userLowId: viewerId, userHighId: { [Op.in]: remaining } },
+          { userHighId: viewerId, userLowId: { [Op.in]: remaining } }
+        ]
+      },
+      attributes: ["userLowId", "userHighId", "chatEnabled"]
+    }).catch(() => [] as MatrimonyMatch[]),
+    UserProfile.findAll({
+      where: { userId: { [Op.in]: profileIds } },
+      // Only matrimony JSON is needed for discoverable flags — avoid selecting other fat columns.
+      attributes: ["userId", "matrimony"]
+    }),
+    sequelize.query<{ otherUserId: number }>(
+      `
+      SELECT DISTINCT IF(senderId = :me, recipientId, senderId) AS otherUserId
+      FROM messages
+      WHERE (senderId = :me AND recipientId IN (:ids))
+         OR (recipientId = :me AND senderId IN (:ids))
+      `,
+      { type: QueryTypes.SELECT, replacements: { me: viewerId, ids: remaining } }
+    )
+  ]);
+
+  const legacyPeers = new Set(legacyRows.map((r) => Number(r.otherUserId)));
+
+  const connectedPeers = new Set<number>();
+  for (const c of connections) {
+    connectedPeers.add(
+      c.requesterUserId === viewerId ? c.recipientUserId : c.requesterUserId
+    );
+  }
+
+  const matchByOther = new Map<number, { chatEnabled: boolean }>();
+  for (const m of matches) {
+    const other = m.userLowId === viewerId ? m.userHighId : m.userLowId;
+    matchByOther.set(other, { chatEnabled: !!(m as any).chatEnabled });
+  }
+
+  const matrimonyActive = new Map<number, boolean>();
+  for (const p of profiles) {
+    const m = normalizeJsonColumn(p.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection;
+    matrimonyActive.set(p.userId, isDiscoverableMatrimony(m));
+  }
+  const viewerHasMatrimony = matrimonyActive.get(viewerId) === true;
+
+  for (const otherId of remaining) {
+    const community = communityLaneFromConnected(connectedPeers.has(otherId));
+    const bothMatrimony = viewerHasMatrimony && matrimonyActive.get(otherId) === true;
+    const match = matchByOther.get(otherId);
+    const legacy = legacyPeers.has(otherId);
+    const matrimony = matrimonyLaneFromState({
+      matrimonyContext: bothMatrimony,
+      matchChatEnabled: !!match?.chatEnabled,
+      legacy
+    });
+    map.set(otherId, buildAccessDto(community, matrimony, legacy));
+  }
+
   return map;
 }
 

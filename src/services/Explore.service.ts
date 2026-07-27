@@ -29,14 +29,9 @@ export type ExploreDiscoveryDto = {
   suggestedTopics: Array<{ id: string; label: string }>;
 };
 
-async function approvedUserIdsInCommunity(currentUserId: number): Promise<number[]> {
+async function viewerCommunity(currentUserId: number): Promise<string | null> {
   const me = await User.findByPk(currentUserId, { attributes: ["community"] });
-  const community = me?.community ?? null;
-  const users = await User.findAll({
-    where: { status: APPROVED, community },
-    attributes: ["id"]
-  });
-  return users.map((u) => u.id);
+  return me?.community ?? null;
 }
 
 function publicPostVisibilityFilter(): WhereOptions {
@@ -73,21 +68,23 @@ export async function searchExplore(
     return { items: [], page, limit, total: 0, hasMore: false, query };
   }
 
-  const approvedIds = await approvedUserIdsInCommunity(currentUserId);
-  if (approvedIds.length === 0) {
-    return { items: [], page, limit, total: 0, hasMore: false, query };
-  }
+  const community = await viewerCommunity(currentUserId);
+  const communityUserWhere = {
+    status: APPROVED,
+    ...(community != null ? { community } : { community: null })
+  };
 
   const hashtagPostMap = await findPostIdsByTagTokens(tokens);
 
   const authorMatches = await User.findAll({
     where: {
-      id: { [Op.in]: approvedIds },
+      ...communityUserWhere,
       [Op.or]: tokens.map((t) => ({
         fullName: { [Op.like]: `%${escapeLike(t)}%` }
       }))
     },
-    attributes: ["id", "fullName"]
+    attributes: ["id", "fullName"],
+    limit: 100
   });
 
   const authorIdsByToken = new Map<string, number[]>();
@@ -117,24 +114,74 @@ export async function searchExplore(
 
   const where: WhereOptions = {
     [Op.and]: [
-      { userId: { [Op.in]: approvedIds } },
       publicPostVisibilityFilter(),
       await audienceVisibilityWhere(currentUserId, "discovery"),
       ...tokenClauses
     ]
   };
 
-  const total = await Post.count({ where });
+  const userInclude = {
+    association: "User" as const,
+    attributes: ["id", "fullName", "profilePhoto", "status"],
+    required: true as const,
+    where: communityUserWhere
+  };
+
+  const total = await Post.count({
+    where,
+    include: [userInclude],
+    distinct: true
+  });
   const offset = (page - 1) * limit;
 
   const posts = await Post.findAll({
     where,
-    include: [
-      {
-        association: "User",
-        attributes: ["id", "fullName", "profilePhoto", "status"],
-        required: true
-      }
+    include: [userInclude],
+    attributes: [
+      "id",
+      "userId",
+      "originalPostId",
+      "postType",
+      "visibility",
+      "title",
+      "description",
+      "mediaUrl",
+      "mediaType",
+      "thumbnailUrl",
+      "videoDuration",
+      "mimeType",
+      "fileSize",
+      "pinned",
+      "urgent",
+      "meetupAt",
+      "jobStatus",
+      "jobLocation",
+      "jobEmploymentType",
+      "jobSalaryMin",
+      "jobSalaryMax",
+      "marketplaceStatus",
+      "marketplaceIntent",
+      "marketplaceCategory",
+      "marketplaceCondition",
+      "marketplacePrice",
+      "marketplaceNegotiable",
+      "marketplaceDistrict",
+      "marketplaceExpiresAt",
+      "marketplaceGallery",
+      "marketplaceFeatured",
+      "marketplaceFeaturedAt",
+      "helpStatus",
+      "helpCategory",
+      "helpUrgency",
+      "helpLocation",
+      "helpGallery",
+      "helpExpiresAt",
+      "helpExtendedCount",
+      "helpResolvedAt",
+      "likeCount",
+      "commentCount",
+      "createdAt",
+      "updatedAt"
     ],
     order: [
       ["createdAt", "DESC"],

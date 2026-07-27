@@ -226,17 +226,22 @@ export async function getSubscriptionAdminOverview(): Promise<SubscriptionAdminO
   let totalRevenueInr = 0;
   let paymentFailureRate = 0;
   try {
-    const paidOrders = await MatrimonyPaymentOrder.findAll({
-      where: { status: "PAID" },
-      attributes: ["amountPaise", "updatedAt", "createdAt"]
-    });
-    for (const o of paidOrders) {
-      const inr = o.amountPaise / 100;
-      totalRevenueInr += inr;
-      const paidAt = o.updatedAt;
-      if (paidAt >= today) todayRevenueInr += inr;
-      if (paidAt >= monthStart) monthRevenueInr += inr;
-    }
+    const [rev] = await sequelize.query<{
+      total_paise: number;
+      today_paise: number;
+      month_paise: number;
+    }>(
+      `SELECT
+         COALESCE(SUM(amount_paise), 0) AS total_paise,
+         COALESCE(SUM(CASE WHEN updated_at >= :today THEN amount_paise ELSE 0 END), 0) AS today_paise,
+         COALESCE(SUM(CASE WHEN updated_at >= :monthStart THEN amount_paise ELSE 0 END), 0) AS month_paise
+       FROM matrimony_payment_orders
+       WHERE status = 'PAID'`,
+      { replacements: { today, monthStart }, type: QueryTypes.SELECT }
+    );
+    totalRevenueInr = Number(rev?.total_paise ?? 0) / 100;
+    todayRevenueInr = Number(rev?.today_paise ?? 0) / 100;
+    monthRevenueInr = Number(rev?.month_paise ?? 0) / 100;
     const totalOrders = await MatrimonyPaymentOrder.count();
     const failedOrders = await MatrimonyPaymentOrder.count({ where: { status: "FAILED" } });
     paymentFailureRate = totalOrders > 0 ? Math.round((failedOrders / totalOrders) * 1000) / 10 : 0;

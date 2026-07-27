@@ -99,6 +99,9 @@ export class Post extends Model<InferAttributes<Post>, InferCreationAttributes<P
   declare helpExtendedCount: number;
   declare helpResolvedAt: Date | null;
   declare helpResolvedBy: number | null;
+  /** Denormalized engagement counters for popular-feed ORDER BY (no correlated COUNT). */
+  declare likeCount: number;
+  declare commentCount: number;
   declare createdAt: Date;
   declare updatedAt: Date;
 }
@@ -176,8 +179,26 @@ Post.init(
     },
     helpResolvedAt: { type: DataTypes.DATE, allowNull: true },
     helpResolvedBy: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
+    likeCount: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false,
+      defaultValue: 0
+    },
+    commentCount: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false,
+      defaultValue: 0
+    },
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }
   },
-  { sequelize, tableName: "posts", timestamps: true }
+  {
+    sequelize,
+    tableName: "posts",
+    timestamps: true,
+    indexes: [
+      { name: "idx_posts_user_created", fields: ["userId", "createdAt"] },
+      { name: "idx_posts_type_created", fields: ["postType", "createdAt"] }
+    ]
+  }
 );

@@ -3,7 +3,6 @@
  * Separates identity (JWT) from app access (registration status).
  */
 
-import { Op } from "sequelize";
 import { User, AdminVerification } from "../models";
 import {
   REGISTRATION_CORRECTION_FIELDS,
@@ -52,21 +51,18 @@ async function findMobileConflict(
   userId: number,
   normalized: string
 ): Promise<boolean> {
-  const candidates = await User.findAll({
-    attributes: ["id", "mobile", "pendingMobile"],
-    where: {
-      id: { [Op.ne]: userId },
-      [Op.or]: [
-        { mobile: { [Op.not]: null } },
-        { pendingMobile: { [Op.not]: null } }
-      ]
-    }
-  });
-  return candidates.some((u) => {
-    const live = u.mobile ? mobileDigits(u.mobile) : "";
-    const pending = u.pendingMobile ? mobileDigits(u.pendingMobile) : "";
-    return live === normalized || pending === normalized;
-  });
+  // Same digit-normalize rules as mobileDigits(), evaluated in SQL — avoids loading every user with a phone.
+  const rows = (await User.sequelize!.query(
+    `SELECT id FROM users
+     WHERE id <> :userId
+       AND (
+         (mobile IS NOT NULL AND RIGHT(REGEXP_REPLACE(mobile, '[^0-9]', ''), 10) = :normalized)
+         OR (pending_mobile IS NOT NULL AND RIGHT(REGEXP_REPLACE(pending_mobile, '[^0-9]', ''), 10) = :normalized)
+       )
+     LIMIT 1`,
+    { replacements: { userId, normalized } }
+  )) as [{ id: number }[], unknown];
+  return Array.isArray(rows[0]) && rows[0].length > 0;
 }
 
 /** Block suspended accounts from receiving a session after identity success. */

@@ -346,13 +346,19 @@ function refineMediaMeta(
       path: ["file_size"]
     });
   }
-  if (data.mime_type?.trim()) {
+  if (!data.mime_type?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "mime_type is required for video posts (video/mp4)",
+      path: ["mime_type"]
+    });
+  } else {
     const mime = data.mime_type.trim().toLowerCase();
     const normalized = mime === "video/mov" ? "video/quicktime" : mime === "video/m4v" ? "video/x-m4v" : mime;
     if (!(ALLOWED_POST_VIDEO_MIMES as readonly string[]).includes(normalized)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Only MP4, MOV, or M4V videos are allowed",
+        message: "Only MP4 (H.264 + AAC) videos are allowed",
         path: ["mime_type"]
       });
     }

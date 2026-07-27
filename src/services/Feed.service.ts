@@ -1,11 +1,12 @@
 import { Op, literal, type WhereOptions } from "sequelize";
-import { User, Post, PostLike, Comment, SavedPost, HelpOffer } from "../models";
+import { User, Post, PostLike, SavedPost, HelpOffer } from "../models";
 import { toSignedUrlIfR2 } from "../utils/r2Client";
 import type { FeedAuthorDto, FeedItemDto, FeedResultDto } from "./Home.service";
 import { resolvePostMediaType } from "../constants/postMedia.constants";
 import { parseMarketplaceGallery, signMarketplaceGallery } from "../utils/marketplaceGallery";
 import { parseHelpGallery, signHelpGallery } from "../utils/helpGallery";
 import { audienceVisibilityWhere, andWhere } from "./PostVisibility.service";
+import { deriveImageVariantUrls } from "../utils/mediaVariants";
 
 const APPROVED = "APPROVED";
 const TRENDING_SCORE_THRESHOLD = 8;
@@ -36,22 +37,65 @@ export type FeedQueryParams = {
   saved?: boolean;
 };
 
-/** Engagement score: likes×2 + comments×3, decayed by age (hours^1.15). */
+/** Engagement score using denormalized counters (avoids correlated COUNT subqueries). */
 function engagementScoreSql(): ReturnType<typeof literal> {
   return literal(`(
-    (COALESCE((SELECT COUNT(*) FROM post_likes pl WHERE pl.postId = Post.id), 0) * 2.0) +
-    (COALESCE((SELECT COUNT(*) FROM comments cm WHERE cm.postId = Post.id), 0) * 3.0)
-  ) / POWER(GREATEST(TIMESTAMPDIFF(HOUR, Post.createdAt, NOW()), 1), 1.15)`);
+    (COALESCE(\`Post\`.\`likeCount\`, 0) * 2.0) +
+    (COALESCE(\`Post\`.\`commentCount\`, 0) * 3.0)
+  ) / POWER(GREATEST(TIMESTAMPDIFF(HOUR, \`Post\`.\`createdAt\`, NOW()), 1), 1.15)`);
 }
 
-async function approvedUserIdsInCommunity(currentUserId: number): Promise<number[]> {
+/** Slim post attributes for public feed (excludes admin notes / help phone). */
+const FEED_POST_ATTRIBUTES = [
+  "id",
+  "userId",
+  "originalPostId",
+  "postType",
+  "visibility",
+  "title",
+  "description",
+  "mediaUrl",
+  "mediaType",
+  "thumbnailUrl",
+  "videoDuration",
+  "mimeType",
+  "fileSize",
+  "pinned",
+  "urgent",
+  "meetupAt",
+  "jobStatus",
+  "jobLocation",
+  "jobEmploymentType",
+  "jobSalaryMin",
+  "jobSalaryMax",
+  "marketplaceStatus",
+  "marketplaceIntent",
+  "marketplaceCategory",
+  "marketplaceCondition",
+  "marketplacePrice",
+  "marketplaceNegotiable",
+  "marketplaceDistrict",
+  "marketplaceExpiresAt",
+  "marketplaceGallery",
+  "marketplaceFeatured",
+  "marketplaceFeaturedAt",
+  "helpStatus",
+  "helpCategory",
+  "helpUrgency",
+  "helpLocation",
+  "helpGallery",
+  "helpExpiresAt",
+  "helpExtendedCount",
+  "helpResolvedAt",
+  "likeCount",
+  "commentCount",
+  "createdAt",
+  "updatedAt"
+] as const;
+
+async function viewerCommunity(currentUserId: number): Promise<string | null> {
   const me = await User.findByPk(currentUserId, { attributes: ["community"] });
-  const community = me?.community ?? null;
-  const users = await User.findAll({
-    where: { status: APPROVED, community },
-    attributes: ["id"]
-  });
-  return users.map((u) => u.id);
+  return me?.community ?? null;
 }
 
 function toFeedAuthor(user: User): FeedAuthorDto {
@@ -243,18 +287,21 @@ export async function getFeed(
   const sort: FeedSortMode = params.sort === "popular" ? "popular" : "recent";
   const page = params.page ?? 1;
 
-  const approvedUserIds = await approvedUserIdsInCommunity(currentUserId);
-
-  if (approvedUserIds.length === 0 && !params.mine && !params.saved) {
-    return { items: [], page, limit, total: 0, nextCursor: null, sort };
-  }
+  const community = await viewerCommunity(currentUserId);
 
   let communityWhere: WhereOptions;
+  const userIncludeWhere =
+    params.mine || params.saved
+      ? undefined
+      : { status: APPROVED, ...(community != null ? { community } : { community: null }) };
+
   if (params.saved) {
     const savedRows = await SavedPost.findAll({
       where: { userId: currentUserId },
       attributes: ["postId"],
-      raw: true
+      raw: true,
+      limit: 500,
+      order: [["createdAt", "DESC"]]
     });
     const savedIds = (savedRows as { postId: number }[]).map((r) => r.postId);
     if (savedIds.length === 0) {
@@ -264,11 +311,7 @@ export async function getFeed(
   } else if (params.mine) {
     communityWhere = { userId: currentUserId };
   } else {
-    communityWhere = { userId: { [Op.in]: approvedUserIds } };
-    communityWhere = andWhere(
-      communityWhere,
-      await audienceVisibilityWhere(currentUserId, "feed")
-    );
+    communityWhere = andWhere({}, await audienceVisibilityWhere(currentUserId, "feed"));
   }
   if (params.saved) {
     communityWhere = andWhere(
@@ -317,15 +360,28 @@ export async function getFeed(
       ? ([[scoreSql, "DESC"], ["createdAt", "DESC"], ["id", "DESC"]] as const)
       : ([["createdAt", "DESC"], ["id", "DESC"]] as const);
 
-  const total = await Post.count({ where: filteredWhere });
+  const userInclude = {
+    association: "User" as const,
+    attributes: ["id", "fullName", "profilePhoto", "status", "username"],
+    required: true as const,
+    ...(userIncludeWhere ? { where: userIncludeWhere } : {})
+  };
+
+  const total = await Post.count({
+    where: filteredWhere,
+    include: userIncludeWhere
+      ? [{ association: "User", attributes: [], required: true, where: userIncludeWhere }]
+      : undefined,
+    distinct: true
+  });
 
   const posts = await Post.findAll({
     where,
-    include: [{ association: "User", attributes: ["id", "fullName", "profilePhoto", "status"], required: true }],
+    include: [userInclude],
     order: order as any,
     limit: limit + 1,
     offset,
-    attributes: { include: [[scoreSql, "engagementScore"]] }
+    attributes: [...FEED_POST_ATTRIBUTES, [scoreSql, "engagementScore"]] as any
   });
 
   const hasMore = posts.length > limit;
@@ -350,9 +406,8 @@ export async function buildFeedItemsFromPosts(
   const postIds = pagePosts.map((p) => p.id);
   if (postIds.length === 0) return [];
 
-  const [likeCounts, commentCounts, myLikes, mySaves, helpOffers] = await Promise.all([
-    PostLike.findAll({ where: { postId: { [Op.in]: postIds } }, attributes: ["postId"], raw: true }),
-    Comment.findAll({ where: { postId: { [Op.in]: postIds } }, attributes: ["postId"], raw: true }),
+  // Use denormalized likeCount/commentCount on posts — skip scanning post_likes/comments.
+  const [myLikes, mySaves, helpOffers] = await Promise.all([
     PostLike.findAll({
       where: { postId: { [Op.in]: postIds }, userId: currentUserId },
       attributes: ["postId"],
@@ -373,17 +428,11 @@ export async function buildFeedItemsFromPosts(
   const likeMap: Record<number, number> = {};
   const commentMap: Record<number, number> = {};
   const helpHelperMap: Record<number, number> = {};
-  postIds.forEach((id) => {
-    likeMap[id] = 0;
-    commentMap[id] = 0;
-    helpHelperMap[id] = 0;
-  });
-  likeCounts.forEach((r: { postId: number }) => {
-    likeMap[r.postId] = (likeMap[r.postId] || 0) + 1;
-  });
-  commentCounts.forEach((r: { postId: number }) => {
-    commentMap[r.postId] = (commentMap[r.postId] || 0) + 1;
-  });
+  for (const p of pagePosts) {
+    likeMap[p.id] = Number((p as any).likeCount ?? 0) || 0;
+    commentMap[p.id] = Number((p as any).commentCount ?? 0) || 0;
+    helpHelperMap[p.id] = 0;
+  }
   helpOffers.forEach((r: { postId: number }) => {
     helpHelperMap[r.postId] = (helpHelperMap[r.postId] || 0) + 1;
   });
@@ -439,6 +488,33 @@ export async function buildFeedItemsFromPosts(
         mediaType: p.mediaType as any,
         mimeType: p.mimeType
       });
+
+      // Bandwidth: images expose thumb/medium/full; feed clients should use medium/thumb.
+      let mediaUrlThumb: string | null = null;
+      let mediaUrlMedium: string | null = null;
+      let mediaUrlFull: string | null = mediaUrl;
+      let feedMediaUrl = mediaUrl;
+      let feedThumb = thumbnailUrl;
+
+      if (mediaType === "image" && p.mediaUrl) {
+        const derived = deriveImageVariantUrls(p.mediaUrl);
+        if (derived) {
+          const [t, m, f] = await Promise.all([
+            toSignedUrlIfR2(derived.thumb),
+            toSignedUrlIfR2(derived.medium),
+            toSignedUrlIfR2(derived.full)
+          ]);
+          mediaUrlThumb = t;
+          mediaUrlMedium = m;
+          mediaUrlFull = f;
+          // Prefer medium, then thumb — avoid shipping full originals on feed.
+          feedMediaUrl = m || t || mediaUrl;
+        }
+      } else if (mediaType === "video") {
+        // Poster first — keep video URL as mediaUrl; thumbnailUrl for poster.
+        feedThumb = thumbnailUrl || mediaUrlThumb;
+      }
+
       const original = p.originalPostId ? originalById.get(p.originalPostId) : null;
       const originalUser = original ? ((original as any).User as User) : null;
       const originalProfileImage = originalUser
@@ -452,9 +528,12 @@ export async function buildFeedItemsFromPosts(
         visibility: (p as any).visibility ?? "PUBLIC",
         title: p.title,
         description: p.description ?? null,
-        mediaUrl,
+        mediaUrl: feedMediaUrl,
         mediaType,
-        thumbnailUrl,
+        mediaUrlThumb,
+        mediaUrlMedium,
+        mediaUrlFull,
+        thumbnailUrl: feedThumb,
         videoDuration: p.videoDuration ?? null,
         mimeType: p.mimeType ?? null,
         fileSize: p.fileSize ?? null,

@@ -65,13 +65,25 @@ export async function adminLogin(
 }
 
 /** List users awaiting registration review (PENDING / PENDING_REVIEW / CHANGES_REQUESTED) */
-export async function listPendingUsers(): Promise<User[]> {
-  return User.findAll({
-    where: {
-      status: { [Op.in]: ["PENDING", "PENDING_REVIEW", "CHANGES_REQUESTED"] }
-    },
-    order: [["createdAt", "ASC"]]
-  });
+export async function listPendingUsers(opts?: {
+  limit?: number;
+  offset?: number;
+}): Promise<{ users: User[]; total: number }> {
+  const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
+  const offset = Math.max(opts?.offset ?? 0, 0);
+  const where = {
+    status: { [Op.in]: ["PENDING", "PENDING_REVIEW", "CHANGES_REQUESTED"] }
+  };
+  const [users, total] = await Promise.all([
+    User.findAll({
+      where,
+      order: [["createdAt", "ASC"]],
+      limit,
+      offset
+    }),
+    User.count({ where })
+  ]);
+  return { users, total };
 }
 
 const USER_SORT_FIELDS = new Set([

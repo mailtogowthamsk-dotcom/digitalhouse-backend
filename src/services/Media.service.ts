@@ -82,7 +82,8 @@ function uniqueFileName(originalName: string, mime: string): string {
   if (lower === "video/mp4" || lower === "video/x-m4v" || lower === "video/m4v") {
     return base + ".mp4";
   }
-  if (lower === "video/quicktime") return base + ".mov";
+  // New uploads should be mp4; keep .mov key only if legacy mime slips through.
+  if (lower === "video/quicktime") return base + ".mp4";
   const ext = path.extname(originalName) || "";
   return base + (ext.toLowerCase() || ".bin");
 }
@@ -135,7 +136,7 @@ export async function generateUploadUrl(
     fileType: fileTypeKind,
     status: "PENDING",
     objectKey: key,
-    processingStatus: fileTypeKind === "image" ? "pending_upload" : "ready"
+    processingStatus: fileTypeKind === "image" || fileTypeKind === "video" ? "pending_upload" : "ready"
   } as any);
 
   return {

@@ -1076,11 +1076,12 @@ export async function processScheduledPlatformNotifications(): Promise<number> {
   let sent = 0;
   try {
     const due = await PlatformNotification.findAll({
+      attributes: ["id", "kind", "title", "body", "audience", "createdBy", "scheduledAt"],
       where: {
         status: "SCHEDULED",
         scheduledAt: { [Op.lte]: now() }
       },
-      order: [["scheduledAt", "ASC"]],
+      order: [["scheduled_at", "ASC"]],
       limit: 50
     });
 

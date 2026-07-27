@@ -5,6 +5,7 @@ import { User } from "../models";
 import { Message } from "../models";
 import { presenceAdd, presenceRemove, buildPresenceSnapshot } from "./presence";
 import { setIo, communityRoom } from "./io";
+import { isAllowedOrigin } from "../config/cors";
 
 type AuthedSocketData = { userId: number };
 
@@ -16,7 +17,13 @@ function chatLog(...args: unknown[]) {
 
 export function initSocket(httpServer: HttpServer) {
   const io = new Server(httpServer, {
-    cors: { origin: true, credentials: true },
+    cors: {
+      origin: (origin, cb) => {
+        if (isAllowedOrigin(origin)) cb(null, true);
+        else cb(new Error("CORS blocked"), false);
+      },
+      credentials: true
+    },
     pingInterval: 25_000,
     pingTimeout: 20_000
   });
@@ -58,7 +65,11 @@ export function initSocket(httpServer: HttpServer) {
 
     if (becameOnline) {
       chatLog("user online", userId);
-      io.emit("presence:update", { userId, online: true, lastSeenAt: null });
+      io.to(communityRoom(community)).emit("presence:update", {
+        userId,
+        online: true,
+        lastSeenAt: null
+      });
     }
 
     /** Client re-requests after attaching listeners (fixes connect race). */
@@ -167,7 +178,7 @@ export function initSocket(httpServer: HttpServer) {
       const { userId: removedUserId, becameOffline, lastSeenAt } = presenceRemove(socket.id);
       if (removedUserId && becameOffline) {
         chatLog("user offline", removedUserId);
-        io.emit("presence:update", {
+        io.to(communityRoom(community)).emit("presence:update", {
           userId: removedUserId,
           online: false,
           lastSeenAt

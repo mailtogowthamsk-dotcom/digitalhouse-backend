@@ -9,9 +9,28 @@ export const ALLOWED_POST_IMAGE_MIMES = [
   "image/webp"
 ] as const;
 
-/** MP4, MOV (QuickTime), M4V */
-export const ALLOWED_POST_VIDEO_MIMES = [
-  "video/mp4",
+/** MP4 only for new uploads (H.264/AAC validated/optimized server-side). Legacy MOV still plays. */
+export const ALLOWED_POST_VIDEO_MIMES = ["video/mp4"] as const;
+
+/** Extensions rejected for new video uploads (MIME alone is not enough). */
+export const REJECTED_VIDEO_EXTENSIONS = [
+  ".avi",
+  ".mov",
+  ".mkv",
+  ".webm",
+  ".3gp",
+  ".3g2",
+  ".flv",
+  ".wmv",
+  ".mpeg",
+  ".mpg"
+] as const;
+
+/** Allowed extension for new video uploads. */
+export const ALLOWED_NEW_VIDEO_EXTENSIONS = [".mp4"] as const;
+
+/** Legacy MIME types still recognized for playback of existing posts (not accepted for new uploads). */
+export const LEGACY_POST_VIDEO_MIMES = [
   "video/quicktime",
   "video/x-m4v",
   "video/m4v"
@@ -31,10 +50,24 @@ export const POST_VIDEO_MIN_DURATION_SEC = 3;
 
 const VIDEO_EXT = /\.(mp4|mov|m4v)(\?|$)/i;
 
+/** True when fileName is safe for a new video upload (MP4 only). */
+export function isAllowedNewVideoFileName(fileName: string): boolean {
+  const base = fileName.trim().split(/[\\/]/).pop() || "";
+  const lower = base.toLowerCase();
+  const dot = lower.lastIndexOf(".");
+  if (dot < 0) return false;
+  const ext = lower.slice(dot);
+  if ((REJECTED_VIDEO_EXTENSIONS as readonly string[]).includes(ext)) return false;
+  return (ALLOWED_NEW_VIDEO_EXTENSIONS as readonly string[]).includes(ext);
+}
+
 export function isVideoMime(mime: string | null | undefined): boolean {
   if (!mime) return false;
   const m = mime.toLowerCase();
-  return (ALLOWED_POST_VIDEO_MIMES as readonly string[]).includes(m);
+  return (
+    (ALLOWED_POST_VIDEO_MIMES as readonly string[]).includes(m) ||
+    (LEGACY_POST_VIDEO_MIMES as readonly string[]).includes(m)
+  );
 }
 
 export function looksLikeVideoUrl(url: string | null | undefined): boolean {

@@ -39,50 +39,55 @@ export async function getHelpingHandsStats(userId: number): Promise<{
 }> {
   const me = await User.findByPk(userId, { attributes: ["community"] });
   const community = me?.community ?? null;
-  const communityUsers = await User.findAll({
-    where: { status: "APPROVED", community },
-    attributes: ["id"]
-  });
-  const ids = communityUsers.map((u) => u.id);
-  if (ids.length === 0) {
-    return { peopleHelped: 0, activeVolunteers: 0, requestsCompleted: 0, livesTouched: 0 };
-  }
 
-  const [completed, openActive, communityHelpPosts] = await Promise.all([
+  // JOIN approved community authors — avoid materializing every user id into IN (...).
+  const communityAuthorInclude = {
+    association: "User" as const,
+    attributes: [] as string[],
+    required: true as const,
+    where: { status: "APPROVED" as const, community }
+  };
+
+  const [completed, openActive, volunteerRows] = await Promise.all([
     Post.count({
-      where: {
-        postType: "HELP_REQUEST",
-        helpStatus: "COMPLETED",
-        userId: { [Op.in]: ids }
-      }
+      where: { postType: "HELP_REQUEST", helpStatus: "COMPLETED" },
+      include: [communityAuthorInclude],
+      distinct: true
     }),
     Post.count({
       where: {
         postType: "HELP_REQUEST",
-        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
-        userId: { [Op.in]: ids }
-      }
-    }),
-    Post.findAll({
-      where: {
-        postType: "HELP_REQUEST",
-        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
-        userId: { [Op.in]: ids }
+        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] }
       },
-      attributes: ["id"]
+      include: [communityAuthorInclude],
+      distinct: true
+    }),
+    HelpOffer.findAll({
+      where: { status: "ACTIVE" },
+      attributes: ["fromUserId"],
+      include: [
+        {
+          association: "Post",
+          attributes: [],
+          required: true,
+          where: {
+            postType: "HELP_REQUEST",
+            helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] }
+          },
+          include: [
+            {
+              association: "User",
+              attributes: [],
+              required: true,
+              where: { status: "APPROVED", community }
+            }
+          ]
+        }
+      ]
     })
   ]);
 
-  const openPostIds = communityHelpPosts.map((p) => p.id);
-  let activeVolunteers = 0;
-  if (openPostIds.length) {
-    const offers = await HelpOffer.findAll({
-      where: { postId: { [Op.in]: openPostIds }, status: "ACTIVE" },
-      attributes: ["fromUserId"],
-      raw: true
-    });
-    activeVolunteers = new Set((offers as { fromUserId: number }[]).map((o) => o.fromUserId)).size;
-  }
+  const activeVolunteers = new Set(volunteerRows.map((o) => o.fromUserId)).size;
 
   return {
     peopleHelped: completed,

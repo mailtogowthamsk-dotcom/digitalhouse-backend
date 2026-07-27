@@ -31,5 +31,13 @@ Message.init(
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }
   },
-  { sequelize, tableName: "messages", timestamps: true }
+  {
+    sequelize,
+    tableName: "messages",
+    timestamps: true,
+    indexes: [
+      { name: "idx_messages_pair_created", fields: ["senderId", "recipientId", "createdAt"] },
+      { name: "idx_messages_recipient_read", fields: ["recipientId", "readAt"] }
+    ]
+  }
 );

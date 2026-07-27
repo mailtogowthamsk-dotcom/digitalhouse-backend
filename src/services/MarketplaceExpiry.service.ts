@@ -148,3 +148,8 @@ export function startMarketplaceExpiryJobs(): void {
     `[marketplace-expiry-job] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min`
   );
 }
+
+export function stopMarketplaceExpiryJobs(): void {
+  if (jobTimer) clearInterval(jobTimer);
+  jobTimer = null;
+}

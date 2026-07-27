@@ -20,7 +20,7 @@ const helpCategorySchema = z.enum(HELP_CATEGORIES as unknown as [string, ...stri
 
 const feedQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
-  limit: z.coerce.number().int().min(1).max(50).default(20),
+  limit: z.coerce.number().int().min(1).max(50).default(3),
   cursor: z.coerce.number().int().positive().optional(),
   sort: z.enum(["recent", "popular"]).default("recent"),
   postType: postTypeSchema.optional(),

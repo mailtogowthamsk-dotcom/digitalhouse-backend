@@ -80,6 +80,7 @@ export async function listThreads(
     WHERE senderId = :me OR recipientId = :me
     GROUP BY otherUserId
     ORDER BY MAX(createdAt) DESC
+    LIMIT ${Math.min(Math.max(Number(process.env.THREAD_LIST_LIMIT) || 100, 20), 200)}
     `,
     { type: QueryTypes.SELECT, replacements: { me: userId } }
   );
@@ -110,6 +111,17 @@ export async function listThreads(
   const includeArchived = opts?.includeArchived === true;
   const archivedOnly = opts?.archivedOnly === true;
 
+  const signedPhotos = new Map<number, string | null>();
+  await Promise.all(
+    users.map(async (u) => {
+      if (!u.profilePhoto) {
+        signedPhotos.set(u.id, null);
+        return;
+      }
+      signedPhotos.set(u.id, (await toSignedUrlIfR2(u.profilePhoto)) ?? u.profilePhoto);
+    })
+  );
+
   const threads = await Promise.all(
     filteredRows.map(async (r) => {
       const otherUserId = Number((r as any).otherUserId);
@@ -126,8 +138,7 @@ export async function listThreads(
       const lm = lastById.get(Number((r as any).lastMessageId)) ?? null;
       const access = accessMap.get(otherUserId);
 
-      const profileImage =
-        u?.profilePhoto ? (await toSignedUrlIfR2(u.profilePhoto)) ?? u.profilePhoto : null;
+      const profileImage = signedPhotos.get(otherUserId) ?? null;
 
       return {
         otherUser: {

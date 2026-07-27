@@ -54,6 +54,11 @@ MatrimonyMatch.init(
   {
     sequelize,
     tableName: "matrimony_matches",
-    timestamps: true
+    timestamps: true,
+    indexes: [
+      { unique: true, fields: ["user_low_id", "user_high_id"], name: "uq_matrimony_match_pair" },
+      { fields: ["user_low_id", "status"], name: "idx_match_user_low" },
+      { fields: ["user_high_id", "status"], name: "idx_match_user_high" }
+    ]
   }
 );

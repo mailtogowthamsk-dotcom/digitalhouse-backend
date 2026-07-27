@@ -52,3 +52,8 @@ export function startOrphanMediaCleanupJobs(): void {
     `[media-orphan-cleanup] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min (orphan > ${OLDER_THAN_HOURS}h)`
   );
 }
+
+export function stopOrphanMediaCleanupJobs(): void {
+  if (jobTimer) clearInterval(jobTimer);
+  jobTimer = null;
+}

@@ -110,3 +110,8 @@ export function startHelpingHandsExpiryJobs(): void {
     `[helping-hands-expiry-job] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min`
   );
 }
+
+export function stopHelpingHandsExpiryJobs(): void {
+  if (jobTimer) clearInterval(jobTimer);
+  jobTimer = null;
+}

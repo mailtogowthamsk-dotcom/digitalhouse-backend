@@ -59,7 +59,8 @@ async function findUserIdsMatchingSearch(q: string): Promise<number[]> {
     where: {
       [Op.or]: [{ fullName: { [Op.like]: like } }, { email: { [Op.like]: like } }]
     },
-    attributes: ["id"]
+    attributes: ["id"],
+    limit: 200
   });
   return rows.map((u) => u.id);
 }
@@ -72,7 +73,8 @@ async function findPostIdsMatchingSearch(q: string, authorUserIds: number[]): Pr
   }
   const rows = await Post.findAll({
     where: { [Op.or]: or },
-    attributes: ["id"]
+    attributes: ["id"],
+    limit: 500
   });
   return rows.map((p) => p.id);
 }

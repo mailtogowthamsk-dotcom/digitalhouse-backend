@@ -216,13 +216,19 @@ export async function getActiveMatrimonyMatch(
   }
 }
 
-async function tryCreateMutualMatch(userA: number, userB: number): Promise<MatrimonyMatch | null> {
+async function tryCreateMutualMatch(
+  userA: number,
+  userB: number,
+  transaction?: import("sequelize").Transaction
+): Promise<MatrimonyMatch | null> {
   try {
     const ab = await MatrimonyInterest.findOne({
-      where: { fromUserId: userA, toUserId: userB, status: "ACCEPTED" }
+      where: { fromUserId: userA, toUserId: userB, status: "ACCEPTED" },
+      transaction
     });
     const ba = await MatrimonyInterest.findOne({
-      where: { fromUserId: userB, toUserId: userA, status: "ACCEPTED" }
+      where: { fromUserId: userB, toUserId: userA, status: "ACCEPTED" },
+      transaction
     });
     if (!ab || !ba) return null;
 
@@ -237,10 +243,11 @@ async function tryCreateMutualMatch(userA: number, userB: number): Promise<Matri
         contactRevealed: false,
         horoscopeShared: false,
         matchedAt: new Date()
-      } as any
+      } as any,
+      transaction
     });
     if (match.status !== "ACTIVE") {
-      await match.update({ status: "ACTIVE", matchedAt: new Date() } as any);
+      await match.update({ status: "ACTIVE", matchedAt: new Date() } as any, { transaction });
     }
     return match;
   } catch (err) {
@@ -297,7 +304,8 @@ export async function discoverProfiles(
         where: { status: "APPROVED", id: { [Op.ne]: viewerId } }
       }
     ],
-    limit: 500
+    // Cap candidate pool; true SQL filters need denormalized matrimony columns (future).
+    limit: Math.min(500, Math.max(120, page * limit + 80))
   });
 
   let interests: MatrimonyInterest[] = [];
@@ -307,14 +315,20 @@ export async function discoverProfiles(
       MatrimonyInterest.findAll({
         where: {
           [Op.or]: [{ fromUserId: viewerId }, { toUserId: viewerId }]
-        }
+        },
+        attributes: ["fromUserId", "toUserId", "status"]
       }),
-      MatrimonyMatch.findAll({
-        where: {
-          status: "ACTIVE",
-          [Op.or]: [{ userLowId: viewerId }, { userHighId: viewerId }]
-        }
-      })
+      // Two indexed lookups instead of OR (avoids table scan on matrimony_matches).
+      Promise.all([
+        MatrimonyMatch.findAll({
+          where: { status: "ACTIVE", userLowId: viewerId },
+          attributes: ["userLowId", "userHighId"]
+        }),
+        MatrimonyMatch.findAll({
+          where: { status: "ACTIVE", userHighId: viewerId },
+          attributes: ["userLowId", "userHighId"]
+        })
+      ]).then(([a, b]) => [...a, ...b])
     ]);
   } catch {
     /* tables may not exist yet */
@@ -355,17 +369,8 @@ export async function discoverProfiles(
     : [];
   const openedSet = new Set(openRows.map((r) => r.candidateUserId));
 
-  const matchRows = await MatrimonyMatch.findAll({
-    where: {
-      status: "ACTIVE",
-      [Op.or]: [{ userLowId: viewerId }, { userHighId: viewerId }]
-    },
-    attributes: ["userLowId", "userHighId"]
-  });
-  const mutualSet = new Set<number>();
-  for (const m of matchRows) {
-    mutualSet.add(m.userLowId === viewerId ? m.userHighId : m.userLowId);
-  }
+  // Reuse `matches` / matchedUserIds — avoid duplicate MatrimonyMatch.findAll
+  const mutualSet = matchedUserIds;
 
   for (const row of rows) {
     const user = (row as any).User as User;
@@ -921,10 +926,13 @@ export async function respondToInterest(
     respondedAt: new Date()
   } as any);
 
-  const match =
-    action === "ACCEPT"
-      ? await tryCreateMutualMatch(interest.fromUserId, interest.toUserId)
-      : null;
+  let match: MatrimonyMatch | null = null;
+  if (action === "ACCEPT") {
+    const { sequelize } = await import("../config/db");
+    match = await sequelize.transaction(async (t) =>
+      tryCreateMutualMatch(interest.fromUserId, interest.toUserId, t)
+    );
+  }
 
   if (action === "ACCEPT") {
     void NotificationService.notifyMatrimonyInterestAccepted(
@@ -995,8 +1003,15 @@ export async function listInterests(
   });
 
   const otherIds = rows.map((r) => (direction === "sent" ? r.toUserId : r.fromUserId));
-  const users = await User.findAll({ where: { id: { [Op.in]: otherIds } } });
-  const profiles = await UserProfile.findAll({ where: { userId: { [Op.in]: otherIds } } });
+  if (otherIds.length === 0) return [];
+  const users = await User.findAll({
+    where: { id: { [Op.in]: otherIds } },
+    attributes: ["id", "fullName", "dob", "district", "gender", "kulam", "profilePhoto", "status"]
+  });
+  const profiles = await UserProfile.findAll({
+    where: { userId: { [Op.in]: otherIds } },
+    attributes: ["userId", "matrimony"]
+  });
   const userById = new Map(users.map((u) => [u.id, u]));
   const profileByUser = new Map(profiles.map((p) => [p.userId, p]));
 
@@ -1025,17 +1040,34 @@ export async function listMatches(userId: number): Promise<unknown[]> {
   const hub = await getMatrimonyHub(userId);
   assertCanBrowse(hub);
 
-  const rows = await MatrimonyMatch.findAll({
-    where: {
-      status: "ACTIVE",
-      [Op.or]: [{ userLowId: userId }, { userHighId: userId }]
-    },
-    order: [["matchedAt", "DESC"]]
-  });
+  const [asLow, asHigh] = await Promise.all([
+    MatrimonyMatch.findAll({
+      where: { status: "ACTIVE", userLowId: userId },
+      order: [["matchedAt", "DESC"]],
+      limit: 200
+    }),
+    MatrimonyMatch.findAll({
+      where: { status: "ACTIVE", userHighId: userId },
+      order: [["matchedAt", "DESC"]],
+      limit: 200
+    })
+  ]);
+  const byId = new Map<number, MatrimonyMatch>();
+  for (const r of [...asLow, ...asHigh]) byId.set(r.id, r);
+  const rows = [...byId.values()]
+    .sort((a, b) => b.matchedAt.getTime() - a.matchedAt.getTime())
+    .slice(0, 200);
 
   const otherIds = rows.map((r) => (r.userLowId === userId ? r.userHighId : r.userLowId));
-  const users = await User.findAll({ where: { id: { [Op.in]: otherIds } } });
-  const profiles = await UserProfile.findAll({ where: { userId: { [Op.in]: otherIds } } });
+  if (otherIds.length === 0) return [];
+  const users = await User.findAll({
+    where: { id: { [Op.in]: otherIds } },
+    attributes: ["id", "fullName", "dob", "district", "gender", "kulam", "profilePhoto", "status"]
+  });
+  const profiles = await UserProfile.findAll({
+    where: { userId: { [Op.in]: otherIds } },
+    attributes: ["userId", "matrimony"]
+  });
   const userById = new Map(users.map((u) => [u.id, u]));
   const profileByUser = new Map(profiles.map((p) => [p.userId, p]));
 
@@ -1157,7 +1189,12 @@ export async function getActiveMatchForContact(
 ): Promise<MatrimonyMatch> {
   const match = await getActiveMatrimonyMatch(userId, otherUserId);
   if (!match) {
-    throw Object.assign(new Error("Contact available only after mutual match"), { status: 403 });
+    throw Object.assign(
+      new Error(
+        "Contact available only after mutual match. If you withdrew interest, both must accept again."
+      ),
+      { status: 403, code: "MUTUAL_MATCH_REQUIRED" }
+    );
   }
   return match;
 }
@@ -1168,8 +1205,11 @@ export async function revealContactIfMatched(
 ): Promise<{ mobile: string | null }> {
   const match = await getActiveMatrimonyMatch(viewerId, otherUserId);
   if (!match) {
-    const err = new Error("Contact available only after mutual match");
+    const err = new Error(
+      "Contact available only after mutual match. If you withdrew interest, both must accept again."
+    );
     (err as any).status = 403;
+    (err as any).code = "MUTUAL_MATCH_REQUIRED";
     throw err;
   }
 
@@ -1217,18 +1257,22 @@ export async function removeMatch(viewerId: number, otherUserId: number): Promis
 
   await closeMatrimonyMatchBetween(viewerId, otherUserId);
 
-  const accepted = await MatrimonyInterest.findAll({
-    where: {
-      status: "ACCEPTED",
-      [Op.or]: [
-        { fromUserId: viewerId, toUserId: otherUserId },
-        { fromUserId: otherUserId, toUserId: viewerId }
-      ]
-    }
+  const { sequelize } = await import("../config/db");
+  await sequelize.transaction(async (t) => {
+    await MatrimonyInterest.update(
+      { status: "WITHDRAWN", respondedAt: new Date() } as any,
+      {
+        where: {
+          status: "ACCEPTED",
+          [Op.or]: [
+            { fromUserId: viewerId, toUserId: otherUserId },
+            { fromUserId: otherUserId, toUserId: viewerId }
+          ]
+        },
+        transaction: t
+      }
+    );
   });
-  for (const row of accepted) {
-    await row.update({ status: "WITHDRAWN", respondedAt: new Date() } as any);
-  }
 
   void NotificationService.notifyMatrimonyMatchRemoved(otherUserId, viewerId).catch(() => {});
 }

@@ -60,11 +60,14 @@ export async function notificationStats(req: Request, res: Response) {
   return success(res, stats);
 }
 
-/** List pending users (awaiting approval) */
+/** List pending users (awaiting approval) — paginated, same `{ users }` shape + optional meta. */
 export async function listPending(req: Request, res: Response) {
-  const users = await adminService.listPendingUsers();
+  const page = Math.max(1, Number(req.query.page) || 1);
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+  const offset = (page - 1) * limit;
+  const { users, total } = await adminService.listPendingUsers({ limit, offset });
   const list = users.map((u) => userService.toAdminUser(u));
-  return success(res, { users: list });
+  return success(res, { users: list, page, limit, total });
 }
 
 /** Get full user profile by id */

@@ -1,4 +1,6 @@
 import cors from "cors";
+import compression from "compression";
+import helmet from "helmet";
 import express, { type Express } from "express";
 import "./config/env";
 import { getApiMountPaths } from "./config/apiPath";
@@ -7,8 +9,12 @@ import { corsPreflightMiddleware } from "./middlewares/corsPreflight.middleware"
 import { asyncHandler } from "./middlewares/asyncHandler";
 import { apiRouter } from "./routes";
 import { errorHandler } from "./middlewares/error.middleware";
+import { apiLimiter } from "./middlewares/rateLimit.middleware";
+import { slowApiLogger } from "./middlewares/slowApi.middleware";
 import { dbReady, dbFailed } from "./state";
 import { razorpayWebhook } from "./controllers/MatrimonyPayment.controller";
+import { getDbPoolSnapshot, DB_POOL_CONFIG } from "./config/db";
+import { getPoolDebugCounters } from "./config/dbPoolMonitor";
 
 export const app = express();
 
@@ -20,6 +26,24 @@ app.use(corsPreflightMiddleware);
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" }
+  })
+);
+
+// Gzip JSON/API responses (skip already-compressed payloads)
+app.use(
+  compression({
+    filter: (req, res) => {
+      if (req.headers["x-no-compression"]) return false;
+      return compression.filter(req, res);
+    },
+    threshold: 1024
+  })
+);
+
 // Razorpay webhook needs raw body for signature verification (before express.json)
 for (const mount of getApiMountPaths()) {
   app.post(
@@ -30,6 +54,7 @@ for (const mount of getApiMountPaths()) {
 }
 
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "4mb" }));
+app.use(slowApiLogger);
 
 // Root: some platforms hit / for health – respond quickly so Railway sees the app as up
 app.get("/", (_req, res) => {
@@ -48,7 +73,13 @@ function registerApiMounts(application: Express, mount: string) {
   const healthPath = `${mount}/health`;
 
   application.get(healthPath, (_req, res) => {
-    res.status(200).json({ ok: true, ready: dbReady, dbFailed });
+    const body: Record<string, unknown> = { ok: true, ready: dbReady, dbFailed };
+    if (process.env.DB_POOL_DEBUG === "true") {
+      body.pool = getDbPoolSnapshot();
+      body.poolConfig = DB_POOL_CONFIG;
+      body.poolCounters = getPoolDebugCounters();
+    }
+    res.status(200).json(body);
   });
 
   application.use(mount, (req, res, next) => {
@@ -73,6 +104,7 @@ function registerApiMounts(application: Express, mount: string) {
       }
       next();
     },
+    apiLimiter,
     apiRouter
   );
 }

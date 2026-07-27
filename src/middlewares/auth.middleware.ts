@@ -14,7 +14,28 @@ async function loadUserFromBearer(req: Request & { user?: User }, res: Response)
   }
   try {
     const payload = verifyAccessToken(token) as AuthPayload;
-    const user = await User.findByPk(payload.userId);
+    const user = await User.findByPk(payload.userId, {
+      attributes: [
+        "id",
+        "fullName",
+        "email",
+        "mobile",
+        "username",
+        "status",
+        "community",
+        "kulam",
+        "profilePhoto",
+        "profileComplete",
+        "profileVisibility",
+        "allowConnectionRequests",
+        "signupProvider",
+        "emailVerified",
+        "registrationRequestedFields",
+        "pendingMobile",
+        "pendingProfilePhoto",
+        "createdAt"
+      ]
+    });
     if (!user) {
       error(res, "User not found", 401);
       return null;
@@ -85,7 +106,9 @@ export async function optionalAuth(
   if (!token) return next();
   try {
     const payload = verifyAccessToken(token) as AuthPayload;
-    const user = await User.findByPk(payload.userId);
+    const user = await User.findByPk(payload.userId, {
+      attributes: ["id", "status", "community", "profileComplete"]
+    });
     if (user && user.status === "APPROVED") req.user = user;
   } catch {
     /* ignore invalid token for optional auth */

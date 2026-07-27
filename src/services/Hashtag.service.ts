@@ -97,7 +97,10 @@ export async function findPostIdsByTagTokens(tokens: string[]): Promise<Map<stri
   const tagIds = tags.map((t) => t.id);
   const links = await PostHashtag.findAll({
     where: { hashtagId: { [Op.in]: tagIds } },
-    attributes: ["postId", "hashtagId"]
+    attributes: ["postId", "hashtagId"],
+    // Soft safety cap — explore still returns recent linked posts without unbounded memory.
+    order: [["postId", "DESC"]],
+    limit: 5000
   });
 
   const tagById = new Map(tags.map((t) => [t.id, t.tag]));

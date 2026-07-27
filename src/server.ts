@@ -3,16 +3,32 @@ import os from "os";
 import http from "http";
 import { app } from "./app";
 import { getApiMountPaths } from "./config/apiPath";
-import { sequelize } from "./config/db";
+import { sequelize, initDbPoolInstrumentation } from "./config/db";
 import { seedOptionsIfEmpty } from "./seed/options.seed";
 import { masterDataService } from "./services/MasterData.service";
 import { setDbReady, setDbFailed } from "./state";
 import { initSocket } from "./realtime/socket";
-import { startMatrimonySubscriptionJobs } from "./services/MatrimonySubscriptionLifecycle.service";
-import { startMarketplaceExpiryJobs } from "./services/MarketplaceExpiry.service";
-import { startHelpingHandsExpiryJobs } from "./services/HelpingHandsExpiry.service";
-import { ensurePlatformDefaults, startPlatformNotificationJobs } from "./services/Platform.service";
-import { startOrphanMediaCleanupJobs } from "./services/OrphanMediaCleanup.service";
+import {
+  startMatrimonySubscriptionJobs,
+  stopMatrimonySubscriptionJobs
+} from "./services/MatrimonySubscriptionLifecycle.service";
+import {
+  startMarketplaceExpiryJobs,
+  stopMarketplaceExpiryJobs
+} from "./services/MarketplaceExpiry.service";
+import {
+  startHelpingHandsExpiryJobs,
+  stopHelpingHandsExpiryJobs
+} from "./services/HelpingHandsExpiry.service";
+import {
+  ensurePlatformDefaults,
+  startPlatformNotificationJobs,
+  stopPlatformNotificationJobs
+} from "./services/Platform.service";
+import {
+  startOrphanMediaCleanupJobs,
+  stopOrphanMediaCleanupJobs
+} from "./services/OrphanMediaCleanup.service";
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -29,6 +45,18 @@ function getLocalIps(): string[] {
     return ips;
   } catch {
     return [];
+  }
+}
+
+function stopAllBackgroundJobs(): void {
+  try {
+    stopMatrimonySubscriptionJobs();
+    stopMarketplaceExpiryJobs();
+    stopHelpingHandsExpiryJobs();
+    stopPlatformNotificationJobs();
+    stopOrphanMediaCleanupJobs();
+  } catch (e) {
+    console.warn("[shutdown] stop jobs:", e);
   }
 }
 
@@ -56,6 +84,7 @@ httpServer.listen(PORT, "0.0.0.0", () => {
 async function initDb() {
   try {
     await sequelize.authenticate();
+    initDbPoolInstrumentation();
     // Prefer explicit SQL migrations in production. Sync invents schema from models.
     // Set DB_SYNC=true only when intentionally bootstrapping a fresh/dev schema.
     // Set DB_SYNC_ALTER=true only when you want Sequelize to ALTER tables (never in prod).
@@ -71,11 +100,25 @@ async function initDb() {
       }
     } else {
       console.log("Skipping sequelize.sync (production). Use SQL migrations.");
-    }    await seedOptionsIfEmpty();
+    }
+    await seedOptionsIfEmpty();
     await masterDataService.seedMasterDataIfNeeded();
     await ensurePlatformDefaults();
     setDbReady(true);
     console.log("Database ready.");
+    try {
+      const { hasFfmpeg, isVideoOptimizeEnabled } = await import("./utils/videoProcessor");
+      const ff = await hasFfmpeg();
+      if (isVideoOptimizeEnabled() && !ff) {
+        console.warn(
+          "[media] VIDEO_OPTIMIZE_ENABLED but ffmpeg/ffprobe not found — install ffmpeg for 720p H.264 finalize + posters"
+        );
+      } else if (ff) {
+        console.log("[media] ffmpeg available — video optimize/finalize enabled");
+      }
+    } catch {
+      /* ignore */
+    }
     startMatrimonySubscriptionJobs();
     startMarketplaceExpiryJobs();
     startHelpingHandsExpiryJobs();
@@ -91,3 +134,36 @@ async function initDb() {
     // Fix DB env vars (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME) on Railway and redeploy.
   }
 }
+
+let shuttingDown = false;
+async function gracefulShutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} — stopping jobs, closing HTTP + DB pool…`);
+  stopAllBackgroundJobs();
+  await new Promise<void>((resolve) => {
+    httpServer.close(() => resolve());
+    setTimeout(resolve, 5000);
+  });
+  try {
+    await sequelize.close();
+    console.log("[shutdown] DB pool closed");
+  } catch (e) {
+    console.warn("[shutdown] sequelize.close failed:", e);
+  }
+  process.exit(0);
+}
+
+process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
+// ts-node-dev / crash paths — best-effort pool drain
+process.on("beforeExit", () => {
+  stopAllBackgroundJobs();
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", err);
+  void gracefulShutdown("uncaughtException");
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason);
+});

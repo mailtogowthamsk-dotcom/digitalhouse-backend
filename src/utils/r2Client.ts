@@ -6,6 +6,7 @@
 
 import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { R2_CACHE_CONTROL_IMMUTABLE } from "../config/r2Cache.config";
 
 const accountId = process.env.R2_ACCOUNT_ID;
 const accessKeyId = process.env.R2_ACCESS_KEY_ID;
@@ -41,6 +42,8 @@ export async function getPresignedPutUrl(
 ): Promise<string> {
   if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
   const client = getR2Client();
+  // Content-Type only on client PUT — Cache-Control is applied server-side after optimize
+  // so mobile uploads do not need matching signed headers.
   const command = new PutObjectCommand({
     Bucket: bucketName,
     Key: key,
@@ -133,7 +136,20 @@ export function normalizeR2ObjectKey(keyOrPath: string): string {
 }
 
 /** Default expiry for signed GET URLs (1 hour) so app can display R2 images. */
-const SIGNED_GET_EXPIRY_SEC = 3600;
+const SIGNED_GET_EXPIRY_SEC = Math.max(
+  600,
+  Number(process.env.R2_SIGNED_GET_EXPIRY_SEC || 21600)
+);
+
+/** Cache signed URLs until near expiry to cut CPU. Set R2_SIGNED_URL_CACHE_MS=0 to disable. */
+const SIGNED_URL_CACHE_TTL_MS = (() => {
+  const raw = process.env.R2_SIGNED_URL_CACHE_MS;
+  if (raw === "0") return 0;
+  return Math.max(
+    60_000,
+    Number(raw || (SIGNED_GET_EXPIRY_SEC - 300) * 1000)
+  );
+})();
 
 /**
  * Retrieve: turn stored R2 URL (or key) into a signed GET URL so the app can load the image.
@@ -167,11 +183,12 @@ export async function getR2ObjectBuffer(
   return buf;
 }
 
-/** Upload buffer to R2 with Content-Type. */
+/** Upload buffer to R2 with Content-Type + long Cache-Control (immutable optimized assets). */
 export async function putR2ObjectBuffer(
   key: string,
   body: Buffer,
-  contentType: string
+  contentType: string,
+  options?: { cacheControl?: string }
 ): Promise<void> {
   if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
   const client = getR2Client();
@@ -180,7 +197,8 @@ export async function putR2ObjectBuffer(
       Bucket: bucketName,
       Key: key,
       Body: body,
-      ContentType: contentType
+      ContentType: contentType,
+      CacheControl: options?.cacheControl ?? R2_CACHE_CONTROL_IMMUTABLE
     })
   );
 }
@@ -242,8 +260,19 @@ export async function toSignedUrlIfR2(url: string | null | undefined): Promise<s
   if (!key) key = extractR2KeyFromUrl(u);
   if (!key) return u;
   key = normalizeR2ObjectKey(key);
+
+  const { getCachedSignedUrl, setCachedSignedUrl } = await import("./signedUrlCache");
+  if (SIGNED_URL_CACHE_TTL_MS > 0) {
+    const cached = getCachedSignedUrl(key);
+    if (cached) return cached;
+  }
+
   try {
-    return await getPresignedGetUrl(key, SIGNED_GET_EXPIRY_SEC);
+    const signed = await getPresignedGetUrl(key, SIGNED_GET_EXPIRY_SEC);
+    if (SIGNED_URL_CACHE_TTL_MS > 0) {
+      setCachedSignedUrl(key, signed, SIGNED_URL_CACHE_TTL_MS);
+    }
+    return signed;
   } catch (err) {
     // Retrieve fails if R2_* env vars are missing on server (upload can still work from another env).
     console.warn(

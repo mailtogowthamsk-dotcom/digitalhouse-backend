@@ -35,6 +35,11 @@ MatrimonyInterest.init(
   {
     sequelize,
     tableName: "matrimony_interests",
-    timestamps: true
+    timestamps: true,
+    indexes: [
+      { unique: true, fields: ["from_user_id", "to_user_id"], name: "uq_matrimony_interest_pair" },
+      { fields: ["to_user_id", "status"], name: "idx_interest_to_status" },
+      { fields: ["from_user_id", "status"], name: "idx_interest_from_status" }
+    ]
   }
 );

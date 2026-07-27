@@ -47,6 +47,10 @@ export type FeedItemDto = {
   description: string | null;
   mediaUrl: string | null;
   mediaType?: "image" | "video" | "none";
+  /** Additive: feed should prefer these over full mediaUrl for images. */
+  mediaUrlThumb?: string | null;
+  mediaUrlMedium?: string | null;
+  mediaUrlFull?: string | null;
   thumbnailUrl?: string | null;
   videoDuration?: number | null;
   mimeType?: string | null;
@@ -165,25 +169,14 @@ export async function getSummary(userId: number): Promise<HomeSummaryDto> {
   };
 }
 
-/** Get module counters for quick actions (filter blocked/inactive via Post -> User). */
+/** Get module counters for quick actions (JOIN approved users — no giant IN list). */
 export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
-  const approvedUserIds = await User.findAll({
-    where: approvedUserScope,
-    attributes: ["id"]
-  }).then(users => users.map(u => u.id));
-
-  if (approvedUserIds.length === 0) {
-    return {
-      totalPosts: 0,
-      openJobs: 0,
-      marketplaceItems: 0,
-      matrimonyProfiles: 0,
-      helpingHandRequests: 0,
-      communityUpdates: 0
-    };
-  }
-
-  const baseWhere = { userId: { [Op.in]: approvedUserIds } };
+  const approvedInclude = {
+    association: "User" as const,
+    attributes: [] as string[],
+    required: true as const,
+    where: approvedUserScope
+  };
 
   const [
     totalPosts,
@@ -193,30 +186,39 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
     helpingHandRequests,
     communityUpdates
   ] = await Promise.all([
-    Post.count({ where: baseWhere }),
+    Post.count({ include: [approvedInclude], distinct: true }),
     Post.count({
       where: {
-        ...baseWhere,
         postType: "JOB",
         [Op.or]: [{ jobStatus: "OPEN" }, { jobStatus: null }]
-      }
+      },
+      include: [approvedInclude],
+      distinct: true
     }),
     Post.count({
-      where: { ...baseWhere, postType: "MARKETPLACE", marketplaceStatus: "LIVE" }
+      where: { postType: "MARKETPLACE", marketplaceStatus: "LIVE" },
+      include: [approvedInclude],
+      distinct: true
     }),
-    Post.count({ where: { ...baseWhere, postType: "MATRIMONY" } }),
+    Post.count({
+      where: { postType: "MATRIMONY" },
+      include: [approvedInclude],
+      distinct: true
+    }),
     Post.count({
       where: {
-        ...baseWhere,
         postType: "HELP_REQUEST",
         helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
-        [Op.or]: [
-          { helpExpiresAt: null },
-          { helpExpiresAt: { [Op.gt]: new Date() } }
-        ]
-      }
+        [Op.or]: [{ helpExpiresAt: null }, { helpExpiresAt: { [Op.gt]: new Date() } }]
+      },
+      include: [approvedInclude],
+      distinct: true
     }),
-    Post.count({ where: { ...baseWhere, postType: "ANNOUNCEMENT" } })
+    Post.count({
+      where: { postType: "ANNOUNCEMENT" },
+      include: [approvedInclude],
+      distinct: true
+    })
   ]);
 
   return {
@@ -285,23 +287,25 @@ export async function getFeed(
 
 /** Pinned announcements, upcoming meetups, urgent help requests (approved users only). */
 export async function getHighlights(): Promise<HighlightsDto> {
-  const approvedUserIds = await User.findAll({
-    where: approvedUserScope,
-    attributes: ["id"]
-  }).then(users => users.map(u => u.id));
-
-  if (approvedUserIds.length === 0) {
-    return {
-      pinnedAnnouncements: [],
-      upcomingMeetups: [],
-      urgentHelpRequests: []
-    };
-  }
-
-  const baseWhere = {
-    userId: { [Op.in]: approvedUserIds },
-    visibility: "PUBLIC" as const
+  // JOIN approved users — avoid loading every approved id into an IN (...) list.
+  const approvedInclude = {
+    association: "User" as const,
+    attributes: [] as string[],
+    required: true as const,
+    where: approvedUserScope
   };
+  const highlightAttributes = [
+    "id",
+    "postType",
+    "title",
+    "description",
+    "mediaUrl",
+    "createdAt",
+    "pinned",
+    "urgent",
+    "meetupAt"
+  ] as const;
+
   const toItem = (p: Post): HighlightItemDto => ({
     postId: p.id,
     postType: p.postType,
@@ -316,33 +320,36 @@ export async function getHighlights(): Promise<HighlightsDto> {
 
   const [pinnedAnnouncements, upcomingMeetups, urgentHelpRequests] = await Promise.all([
     Post.findAll({
-      where: { ...baseWhere, postType: "ANNOUNCEMENT", pinned: true },
+      where: { visibility: "PUBLIC", postType: "ANNOUNCEMENT", pinned: true },
+      include: [approvedInclude],
+      attributes: [...highlightAttributes],
       order: [["createdAt", "DESC"]],
       limit: 10
-    }).then(rows => rows.map(toItem)),
+    }).then((rows) => rows.map(toItem)),
     Post.findAll({
       where: {
-        ...baseWhere,
+        visibility: "PUBLIC",
         postType: "MEETUP",
         meetupAt: { [Op.gte]: new Date() }
       },
+      include: [approvedInclude],
+      attributes: [...highlightAttributes],
       order: [["meetupAt", "ASC"]],
       limit: 10
-    }).then(rows => rows.map(toItem)),
+    }).then((rows) => rows.map(toItem)),
     Post.findAll({
       where: {
-        ...baseWhere,
+        visibility: "PUBLIC",
         postType: "HELP_REQUEST",
         urgent: true,
         helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
-        [Op.or]: [
-          { helpExpiresAt: null },
-          { helpExpiresAt: { [Op.gt]: new Date() } }
-        ]
+        [Op.or]: [{ helpExpiresAt: null }, { helpExpiresAt: { [Op.gt]: new Date() } }]
       },
+      include: [approvedInclude],
+      attributes: [...highlightAttributes],
       order: [["createdAt", "DESC"]],
       limit: 10
-    }).then(rows => rows.map(toItem))
+    }).then((rows) => rows.map(toItem))
   ]);
 
   return {

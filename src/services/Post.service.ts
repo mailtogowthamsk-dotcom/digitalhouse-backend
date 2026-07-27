@@ -1180,14 +1180,18 @@ export async function likePost(userId: number, postId: number): Promise<{ liked:
   const existing = await PostLike.findOne({ where: { postId, userId } });
   if (existing) {
     await existing.destroy();
+    await Post.decrement("likeCount", { where: { id: postId } }).catch(() => {});
     const count = await PostLike.count({ where: { postId } });
+    await post.update({ likeCount: count } as any).catch(() => {});
     const community = await viewerCommunity(userId);
     emitFeedLike(community, { postId, likeCount: count, likedByUserId: userId, liked: false });
     logFeedEvent(userId, "unlike", postId);
     return { liked: false, like_count: count };
   }
   await PostLike.create({ postId, userId } as any);
+  await Post.increment("likeCount", { where: { id: postId } }).catch(() => {});
   const count = await PostLike.count({ where: { postId } });
+  await post.update({ likeCount: count } as any).catch(() => {});
   const community = await viewerCommunity(userId);
   emitFeedLike(community, { postId, likeCount: count, likedByUserId: userId, liked: true });
   logFeedEvent(userId, "like", postId);
@@ -1228,6 +1232,7 @@ export async function addComment(
     parentId: parentId ?? null,
     body: body.trim()
   } as any);
+  await Post.increment("commentCount", { where: { id: postId } }).catch(() => {});
   const author = await User.findByPk(userId, { attributes: ["id", "fullName", "profilePhoto", "status"] });
   if (post.userId !== userId && author) {
     const { notifyPostComment } = await import("./Notification.service");
@@ -1380,6 +1385,7 @@ export async function deleteComment(userId: number, postId: number, commentId: n
   }
   await Comment.destroy({ where: { [Op.or]: [{ id: commentId }, { parentId: commentId }] } });
   const commentCount = await Comment.count({ where: { postId } });
+  await Post.update({ commentCount } as any, { where: { id: postId } }).catch(() => {});
   const community = await viewerCommunity(userId);
   emitFeedComment(community, { postId, commentCount, commentId, userId, preview: "" });
 }

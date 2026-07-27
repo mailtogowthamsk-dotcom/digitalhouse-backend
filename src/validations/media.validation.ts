@@ -4,7 +4,8 @@ import {
   ALLOWED_POST_IMAGE_MIMES,
   ALLOWED_POST_VIDEO_MIMES,
   POST_IMAGE_UPLOAD_MAX_BYTES,
-  POST_VIDEO_MAX_BYTES
+  POST_VIDEO_MAX_BYTES,
+  isAllowedNewVideoFileName
 } from "../constants/postMedia.constants";
 
 const ALLOWED_IMAGE_TYPES = ALLOWED_POST_IMAGE_MIMES;
@@ -51,7 +52,19 @@ export const uploadUrlSchema = z
     },
     {
       message:
-        "Invalid fileType or fileSize: images ≤ 2 MB (jpeg, png, webp), videos ≤ 50 MB (mp4, mov, m4v)"
+        "Invalid fileType or fileSize: images ≤ 2 MB (jpeg, png, webp), videos ≤ 50 MB (video/mp4 only)"
+    }
+  )
+  .refine(
+    (data) => {
+      const t = data.fileType.toLowerCase();
+      if (!(ALLOWED_VIDEO_TYPES as readonly string[]).includes(t)) return true;
+      // Block AVI/MOV/MKV/3GP even if MIME is spoofed as video/mp4.
+      return isAllowedNewVideoFileName(data.fileName);
+    },
+    {
+      message:
+        "Unsupported video container. Upload MP4 only (H.264 + AAC). AVI, MOV, MKV, and 3GP are not allowed."
     }
   )
   .refine(

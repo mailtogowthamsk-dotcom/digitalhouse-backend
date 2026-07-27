@@ -145,17 +145,18 @@ export async function blockUser(viewerId: number, candidateUserId: number): Prom
   if (viewerId === candidateUserId) {
     throw Object.assign(new Error("Invalid profile"), { status: 400 });
   }
-  await MatrimonyBlock.findOrCreate({
-    where: { userId: viewerId, blockedUserId: candidateUserId },
-    defaults: { userId: viewerId, blockedUserId: candidateUserId, createdAt: new Date() } as any
+  const { sequelize } = await import("../config/db");
+  await sequelize.transaction(async (t) => {
+    await MatrimonyBlock.findOrCreate({
+      where: { userId: viewerId, blockedUserId: candidateUserId },
+      defaults: { userId: viewerId, blockedUserId: candidateUserId, createdAt: new Date() } as any,
+      transaction: t
+    });
+    await MatrimonySavedProfile.destroy({
+      where: { userId: viewerId, savedUserId: candidateUserId },
+      transaction: t
+    });
   });
-  await MatrimonySavedProfile.destroy({
-    where: { userId: viewerId, savedUserId: candidateUserId }
-  });
-
-  // Do not sever connections / matches here. The block row already hides the
-  // member and locks messaging; destroying relationships made Unblock useless
-  // (users could not message again without reconnecting / rematching).
 
   return { blocked: true };
 }
@@ -165,41 +166,51 @@ export async function blockUser(viewerId: number, candidateUserId: number): Prom
  * older block flows may have cancelled (connection CANCELLED, match UNMATCHED).
  */
 export async function unblockUser(viewerId: number, candidateUserId: number): Promise<void> {
-  await MatrimonyBlock.destroy({
-    where: { userId: viewerId, blockedUserId: candidateUserId }
+  const { sequelize } = await import("../config/db");
+  await sequelize.transaction(async (t) => {
+    await MatrimonyBlock.destroy({
+      where: { userId: viewerId, blockedUserId: candidateUserId },
+      transaction: t
+    });
+    await restoreMessagingAfterUnblock(viewerId, candidateUserId, t);
   });
-  await restoreMessagingAfterUnblock(viewerId, candidateUserId);
 }
 
-async function restoreMessagingAfterUnblock(userA: number, userB: number): Promise<void> {
+async function restoreMessagingAfterUnblock(
+  userA: number,
+  userB: number,
+  transaction?: import("sequelize").Transaction
+): Promise<void> {
   const { MemberConnection, MatrimonyMatch } = await import("../models");
   const now = new Date();
 
-  const connections = await MemberConnection.findAll({
-    where: {
-      status: "CANCELLED",
-      [Op.or]: [
-        { requesterUserId: userA, recipientUserId: userB },
-        { requesterUserId: userB, recipientUserId: userA }
-      ]
+  await MemberConnection.update(
+    { status: "ACCEPTED", respondedAt: now } as any,
+    {
+      where: {
+        status: "CANCELLED",
+        [Op.or]: [
+          { requesterUserId: userA, recipientUserId: userB },
+          { requesterUserId: userB, recipientUserId: userA }
+        ]
+      },
+      transaction
     }
-  });
-  for (const row of connections) {
-    await row.update({ status: "ACCEPTED", respondedAt: now });
-  }
+  );
 
   const low = Math.min(userA, userB);
   const high = Math.max(userA, userB);
-  const match = await MatrimonyMatch.findOne({
-    where: {
-      userLowId: low,
-      userHighId: high,
-      status: { [Op.in]: ["UNMATCHED", "BLOCKED"] }
+  await MatrimonyMatch.update(
+    { status: "ACTIVE", chatEnabled: true } as any,
+    {
+      where: {
+        userLowId: low,
+        userHighId: high,
+        status: { [Op.in]: ["UNMATCHED", "BLOCKED"] }
+      },
+      transaction
     }
-  });
-  if (match) {
-    await match.update({ status: "ACTIVE", chatEnabled: true } as any);
-  }
+  );
 }
 
 export async function reportProfile(
