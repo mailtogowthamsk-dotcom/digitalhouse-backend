@@ -396,6 +396,21 @@ const emptyHelpFields = {
   helpResolvedBy: null as number | null
 };
 
+/** Job columns as stored on Post — `jobSkills` is null for non-job posts. */
+type PostJobFields = {
+  jobCompany: string | null;
+  jobCategory: string | null;
+  jobLocation: string | null;
+  jobEmploymentType: JobEmploymentType | null;
+  jobWorkMode: JobWorkMode | null;
+  jobExperience: string | null;
+  jobSkills: string[] | null;
+  jobSalaryMin: number | null;
+  jobSalaryMax: number | null;
+  jobVacancies: number | null;
+  jobApplicationDeadline: Date | null;
+};
+
 function normalizeJobFields(payload: {
   job_company?: string | null;
   job_category?: string | null;
@@ -564,7 +579,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
   const isMarketplace = payload.post_type === "MARKETPLACE";
   const isHelp = payload.post_type === "HELP_REQUEST";
   const resolvedJobStatus: JobStatus | null = isJob ? (payload.job_status ?? "OPEN") : null;
-  let jobFields = isJob
+  let jobFields: PostJobFields = isJob
     ? normalizeJobFields(payload)
     : {
         jobCompany: null,

@@ -8,6 +8,13 @@ import { emitFeedNewPost } from "../realtime/feedEvents";
 import * as Notifications from "./Notification.service";
 import { parseMarketplaceGallery, signMarketplaceGallery } from "../utils/marketplaceGallery";
 
+/** Grouped COUNT() rows come back raw, outside the model's attribute types. */
+type CountByPostRow = { postId: number; cnt: number };
+
+function asCountRows(rows: unknown): CountByPostRow[] {
+  return (rows ?? []) as CountByPostRow[];
+}
+
 export type AdminMarketplaceListItem = {
   id: number;
   title: string;
@@ -434,16 +441,16 @@ export async function listAdminMarketplace(query: {
   const totalReportMap: Record<number, number> = {};
   const savedMap: Record<number, number> = {};
   const viewMap: Record<number, number> = {};
-  for (const r of pendingReportRows as { postId: number; cnt: number }[]) {
+  for (const r of asCountRows(pendingReportRows)) {
     pendingReportMap[r.postId] = Number(r.cnt) || 0;
   }
-  for (const r of totalReportRows as { postId: number; cnt: number }[]) {
+  for (const r of asCountRows(totalReportRows)) {
     totalReportMap[r.postId] = Number(r.cnt) || 0;
   }
-  for (const r of savedRows as { postId: number; cnt: number }[]) {
+  for (const r of asCountRows(savedRows)) {
     savedMap[r.postId] = Number(r.cnt) || 0;
   }
-  for (const r of viewRows as { postId: number; cnt: number }[]) {
+  for (const r of asCountRows(viewRows)) {
     viewMap[r.postId] = Number(r.cnt) || 0;
   }
 

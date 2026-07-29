@@ -2,10 +2,16 @@
  * Password hashing for admin accounts (Node crypto scrypt — no extra dependency).
  * Format: saltHex:hashHex
  */
-import { randomBytes, scrypt, timingSafeEqual } from "crypto";
+import { randomBytes, scrypt, timingSafeEqual, type ScryptOptions } from "crypto";
 import { promisify } from "util";
 
-const scryptAsync = promisify(scrypt);
+/** promisify() resolves to the 3-arg overload, so keep the options overload explicit. */
+const scryptAsync = promisify(scrypt) as (
+  password: string,
+  salt: string,
+  keylen: number,
+  options?: ScryptOptions
+) => Promise<Buffer>;
 
 /** scrypt params — modest cost suitable for admin login (not mobile OTP). */
 const SCRYPT_N = 16384;
@@ -15,11 +21,11 @@ const SCRYPT_KEYLEN = 64;
 
 export async function hashPassword(password: string): Promise<string> {
   const salt = randomBytes(16).toString("hex");
-  const derived = (await scryptAsync(password, salt, SCRYPT_KEYLEN, {
+  const derived = await scryptAsync(password, salt, SCRYPT_KEYLEN, {
     N: SCRYPT_N,
     r: SCRYPT_R,
     p: SCRYPT_P
-  })) as Buffer;
+  });
   return `${salt}:${derived.toString("hex")}`;
 }
 
@@ -27,18 +33,18 @@ export async function verifyPassword(password: string, stored: string): Promise<
   const [salt, hashHex] = String(stored || "").split(":");
   if (!salt || !hashHex) return false;
   try {
-    const derived = (await scryptAsync(password, salt, SCRYPT_KEYLEN, {
+    const derived = await scryptAsync(password, salt, SCRYPT_KEYLEN, {
       N: SCRYPT_N,
       r: SCRYPT_R,
       p: SCRYPT_P
-    })) as Buffer;
+    });
     const expected = Buffer.from(hashHex, "hex");
     if (expected.length !== derived.length) return false;
     return timingSafeEqual(derived, expected);
   } catch {
     // Legacy hashes (Phase 5 default scrypt options) still verify
     try {
-      const derived = (await scryptAsync(password, salt, SCRYPT_KEYLEN)) as Buffer;
+      const derived = await scryptAsync(password, salt, SCRYPT_KEYLEN);
       const expected = Buffer.from(hashHex, "hex");
       if (expected.length !== derived.length) return false;
       return timingSafeEqual(derived, expected);

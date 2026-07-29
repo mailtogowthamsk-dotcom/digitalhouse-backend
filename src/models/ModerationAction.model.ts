@@ -1,4 +1,10 @@
-import { DataTypes, InferAttributes, InferCreationAttributes, Model } from "sequelize";
+import {
+  CreationOptional,
+  DataTypes,
+  InferAttributes,
+  InferCreationAttributes,
+  Model
+} from "sequelize";
 import { sequelize } from "../config/db";
 import {
   MODERATION_ACTIONS,
@@ -12,7 +18,7 @@ export class ModerationAction extends Model<
   InferAttributes<ModerationAction>,
   InferCreationAttributes<ModerationAction>
 > {
-  declare id: number;
+  declare id: CreationOptional<number>;
   declare action: ModerationActionType;
   declare targetUserId: number | null;
   declare postId: number | null;
@@ -20,7 +26,7 @@ export class ModerationAction extends Model<
   declare reportId: number | null;
   declare adminEmail: string;
   declare note: string | null;
-  declare createdAt: Date;
+  declare createdAt: CreationOptional<Date>;
 }
 
 ModerationAction.init(
