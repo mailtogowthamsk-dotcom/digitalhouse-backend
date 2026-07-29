@@ -61,6 +61,15 @@ export const MARKETPLACE_DUPLICATE_WINDOW_HOURS = 24;
 /** Max photos per marketplace listing (first = cover / mediaUrl). */
 export const MARKETPLACE_MAX_PHOTOS = 6;
 
+/**
+ * Absolute Zod / API ceiling for gallery length.
+ * Effective business limit comes from Business Settings (`max_photos`).
+ */
+export const MARKETPLACE_PHOTOS_ABSOLUTE_MAX = 20;
+
+/** Featured listing price in INR (config only until billing is wired). */
+export const MARKETPLACE_FEATURED_LISTING_PRICE_INR = 0;
+
 export const MARKETPLACE_REPORT_REASONS = [
   "Spam",
   "Duplicate",

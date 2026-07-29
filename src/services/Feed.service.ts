@@ -132,6 +132,7 @@ function applyPostFilters(
   currentUserId: number
 ): WhereOptions {
   const andParts: WhereOptions[] = [baseWhere];
+  andParts.push({ moderationStatus: "ACTIVE" });
 
   if (params.mine) {
     andParts.push({ userId: currentUserId });

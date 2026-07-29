@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { adminMiddleware } from "../middlewares/admin.middleware";
 import { asyncHandler } from "../middlewares/asyncHandler";
-import { authLimiter } from "../middlewares/rateLimit.middleware";
+import { adminLoginLimiter } from "../middlewares/rateLimit.middleware";
 import * as AdminController from "../controllers/Admin.controller";
 import * as MatrimonyAdminController from "../controllers/MatrimonyAdmin.controller";
 import * as MatrimonySubscriptionAdminController from "../controllers/MatrimonySubscriptionAdmin.controller";
@@ -12,301 +12,974 @@ import * as AdminHelpingHandsController from "../controllers/AdminHelpingHands.c
 import * as AdminReportsController from "../controllers/AdminReports.controller";
 import * as AdminSupportController from "../controllers/AdminSupport.controller";
 import * as AdminSettingsController from "../controllers/AdminSettings.controller";
-import { requireAdminAction, requireAdminModule } from "../controllers/AdminSettings.controller";
+import * as AdminPostsController from "../controllers/AdminPosts.controller";
+import { requireAdminAction, requireAdminModule } from "../middlewares/adminPermission.middleware";
 import * as PlatformController from "../controllers/Platform.controller";
 import * as ProminentPeopleController from "../controllers/ProminentPeople.controller";
+import * as SystemSchedulerController from "../controllers/SystemScheduler.controller";
 
 export const adminRouter = Router();
 
 /** Public: admin login (email + password) → JWT */
-adminRouter.post("/login", authLimiter, asyncHandler(AdminController.login));
+adminRouter.post("/login", adminLoginLimiter, asyncHandler(AdminController.login));
 
 adminRouter.use(adminMiddleware);
 
+// ── Dashboard ──────────────────────────────────────────────
+adminRouter.get(
+  "/stats",
+  requireAdminModule("dashboard"),
+  asyncHandler(AdminController.getStats)
+);
+
+// ── Notifications ──────────────────────────────────────────
 adminRouter.get(
   "/notifications/stats",
+  requireAdminModule("notifications"),
   asyncHandler(AdminController.notificationStats)
 );
 adminRouter.post(
   "/notifications/broadcast",
+  requireAdminModule("notifications"),
   requireAdminAction("notifications.broadcast"),
   asyncHandler(AdminController.broadcastNotifications)
 );
-adminRouter.get("/stats", asyncHandler(AdminController.getStats));
-adminRouter.get("/users", asyncHandler(AdminController.listUsers));
-adminRouter.get("/pending", asyncHandler(AdminController.listPending));
-adminRouter.get("/users/:id", asyncHandler(AdminController.getUser));
+
+// ── User Management ────────────────────────────────────────
+adminRouter.get(
+  "/users",
+  requireAdminModule("users"),
+  asyncHandler(AdminController.listUsers)
+);
+adminRouter.get(
+  "/pending",
+  requireAdminModule("users"),
+  asyncHandler(AdminController.listPending)
+);
+adminRouter.get(
+  "/users/:id",
+  requireAdminModule("users"),
+  asyncHandler(AdminController.getUser)
+);
+adminRouter.patch(
+  "/users/:id",
+  requireAdminModule("users"),
+  requireAdminAction("users.edit"),
+  asyncHandler(AdminController.updateUser)
+);
 adminRouter.post(
   "/users/:id/approve",
+  requireAdminModule("users"),
   requireAdminAction("users.approve"),
   asyncHandler(AdminController.approveUser)
 );
 adminRouter.post(
   "/users/:id/reject",
+  requireAdminModule("users"),
   requireAdminAction("users.approve"),
   asyncHandler(AdminController.rejectUser)
 );
 adminRouter.post(
   "/users/:id/request-changes",
+  requireAdminModule("users"),
   requireAdminAction("users.approve"),
   asyncHandler(AdminController.requestRegistrationChanges)
 );
 adminRouter.post(
+  "/users/:id/soft-delete",
+  requireAdminModule("users"),
+  requireAdminAction("users.delete"),
+  asyncHandler(AdminController.softDeleteUser)
+);
+adminRouter.post(
+  "/users/:id/restore",
+  requireAdminModule("users"),
+  requireAdminAction("users.delete"),
+  asyncHandler(AdminController.restoreUser)
+);
+adminRouter.post(
+  "/users/:id/hard-delete",
+  requireAdminModule("users"),
+  requireAdminAction("users.delete"),
+  asyncHandler(AdminController.hardDeleteUser)
+);
+adminRouter.post(
   "/users/:id/warn",
+  requireAdminModule("users"),
   requireAdminAction("reports.warn"),
   asyncHandler(AdminReportsController.warnUser)
 );
 adminRouter.post(
   "/users/:id/suspend",
+  requireAdminModule("users"),
   requireAdminAction("users.suspend"),
   asyncHandler(AdminReportsController.suspendUser)
 );
 adminRouter.post(
   "/users/:id/reactivate",
+  requireAdminModule("users"),
   requireAdminAction("users.suspend"),
   asyncHandler(AdminReportsController.reactivateUser)
 );
-adminRouter.get("/media/pending", asyncHandler(AdminController.listPendingMedia));
-adminRouter.post("/media/:id/approve", asyncHandler(AdminController.approveMedia));
-adminRouter.post("/media/:id/reject", asyncHandler(AdminController.rejectMedia));
 
-// Pending profile updates (Matrimony / Business)
-adminRouter.get("/pending-updates", asyncHandler(AdminController.listPendingUpdates));
-adminRouter.post("/approve-update", asyncHandler(AdminController.approveUpdate));
-adminRouter.post("/reject-update", asyncHandler(AdminController.rejectUpdate));
+// Media review (registration / profile pipeline → users module)
+adminRouter.get(
+  "/media/pending",
+  requireAdminModule("users"),
+  asyncHandler(AdminController.listPendingMedia)
+);
+adminRouter.post(
+  "/media/:id/approve",
+  requireAdminModule("users"),
+  requireAdminAction("users.approve"),
+  asyncHandler(AdminController.approveMedia)
+);
+adminRouter.post(
+  "/media/:id/reject",
+  requireAdminModule("users"),
+  requireAdminAction("users.approve"),
+  asyncHandler(AdminController.rejectMedia)
+);
 
-// Matrimony admin module
-adminRouter.get("/matrimony/stats", asyncHandler(MatrimonyAdminController.getStats));
-adminRouter.get("/matrimony/config", asyncHandler(MatrimonyAdminController.getConfig));
-adminRouter.put("/matrimony/platform-settings", asyncHandler(MatrimonyAdminController.updatePlatformSettings));
-adminRouter.get("/matrimony/requests", asyncHandler(MatrimonyAdminController.listRequests));
-adminRouter.post("/matrimony/bulk", asyncHandler(MatrimonyAdminController.bulkAction));
-adminRouter.get("/matrimony/requests/:id", asyncHandler(MatrimonyAdminController.getRequestDetail));
-adminRouter.post("/matrimony/requests/:id/assign", asyncHandler(MatrimonyAdminController.assignReviewer));
-adminRouter.post("/matrimony/requests/:id/approve", asyncHandler(MatrimonyAdminController.approveRequest));
+// Pending profile updates (matrimony / business)
+adminRouter.get(
+  "/pending-updates",
+  requireAdminModule("users"),
+  asyncHandler(AdminController.listPendingUpdates)
+);
+adminRouter.post(
+  "/approve-update",
+  requireAdminModule("users"),
+  requireAdminAction("users.approve"),
+  asyncHandler(AdminController.approveUpdate)
+);
+adminRouter.post(
+  "/reject-update",
+  requireAdminModule("users"),
+  requireAdminAction("users.approve"),
+  asyncHandler(AdminController.rejectUpdate)
+);
+
+// ── Post moderation ────────────────────────────────────────
+adminRouter.get(
+  "/posts/overview",
+  requireAdminModule("posts"),
+  asyncHandler(AdminPostsController.getOverview)
+);
+adminRouter.get(
+  "/posts",
+  requireAdminModule("posts"),
+  asyncHandler(AdminPostsController.listPosts)
+);
+adminRouter.get(
+  "/posts/:id",
+  requireAdminModule("posts"),
+  asyncHandler(AdminPostsController.getPost)
+);
+adminRouter.post(
+  "/posts/bulk",
+  requireAdminModule("posts"),
+  requireAdminAction("posts.manage"),
+  asyncHandler(AdminPostsController.bulkAction)
+);
+adminRouter.patch(
+  "/posts/:id",
+  requireAdminModule("posts"),
+  requireAdminAction("posts.manage"),
+  asyncHandler(AdminPostsController.updatePost)
+);
+adminRouter.post(
+  "/posts/:id/hide",
+  requireAdminModule("posts"),
+  requireAdminAction("posts.manage"),
+  asyncHandler(AdminPostsController.hidePost)
+);
+adminRouter.post(
+  "/posts/:id/restore",
+  requireAdminModule("posts"),
+  requireAdminAction("posts.manage"),
+  asyncHandler(AdminPostsController.restorePost)
+);
+adminRouter.post(
+  "/posts/:id/soft-delete",
+  requireAdminModule("posts"),
+  requireAdminAction("posts.manage"),
+  asyncHandler(AdminPostsController.softDeletePost)
+);
+adminRouter.post(
+  "/posts/:id/hard-delete",
+  requireAdminModule("posts"),
+  requireAdminAction("posts.delete_hard"),
+  asyncHandler(AdminPostsController.hardDeletePost)
+);
+
+// ── Matrimony admin ────────────────────────────────────────
+adminRouter.get(
+  "/matrimony/stats",
+  requireAdminModule("matrimony"),
+  asyncHandler(MatrimonyAdminController.getStats)
+);
+adminRouter.get(
+  "/matrimony/config",
+  requireAdminModule("matrimony"),
+  asyncHandler(MatrimonyAdminController.getConfig)
+);
+adminRouter.put(
+  "/matrimony/platform-settings",
+  requireAdminModule("matrimony"),
+  requireAdminAction("matrimony.manage"),
+  asyncHandler(MatrimonyAdminController.updatePlatformSettings)
+);
+adminRouter.get(
+  "/matrimony/requests",
+  requireAdminModule("matrimony"),
+  asyncHandler(MatrimonyAdminController.listRequests)
+);
+adminRouter.post(
+  "/matrimony/bulk",
+  requireAdminModule("matrimony"),
+  requireAdminAction("matrimony.manage"),
+  asyncHandler(MatrimonyAdminController.bulkAction)
+);
+adminRouter.get(
+  "/matrimony/requests/:id",
+  requireAdminModule("matrimony"),
+  asyncHandler(MatrimonyAdminController.getRequestDetail)
+);
+adminRouter.post(
+  "/matrimony/requests/:id/assign",
+  requireAdminModule("matrimony"),
+  requireAdminAction("matrimony.manage"),
+  asyncHandler(MatrimonyAdminController.assignReviewer)
+);
+adminRouter.post(
+  "/matrimony/requests/:id/approve",
+  requireAdminModule("matrimony"),
+  requireAdminAction("matrimony.manage"),
+  asyncHandler(MatrimonyAdminController.approveRequest)
+);
 adminRouter.post(
   "/matrimony/requests/:id/candidate-photo",
+  requireAdminModule("matrimony"),
+  requireAdminAction("matrimony.manage"),
   asyncHandler(MatrimonyAdminController.updateCandidatePhoto)
 );
-adminRouter.post("/matrimony/requests/:id/reject", asyncHandler(MatrimonyAdminController.rejectRequest));
+adminRouter.post(
+  "/matrimony/requests/:id/reject",
+  requireAdminModule("matrimony"),
+  requireAdminAction("matrimony.manage"),
+  asyncHandler(MatrimonyAdminController.rejectRequest)
+);
 adminRouter.post(
   "/matrimony/requests/:id/request-changes",
+  requireAdminModule("matrimony"),
+  requireAdminAction("matrimony.manage"),
   asyncHandler(MatrimonyAdminController.requestChanges)
 );
-adminRouter.post("/matrimony/requests/:id/suspend", asyncHandler(MatrimonyAdminController.suspendProfile));
+adminRouter.post(
+  "/matrimony/requests/:id/suspend",
+  requireAdminModule("matrimony"),
+  requireAdminAction("matrimony.manage"),
+  asyncHandler(MatrimonyAdminController.suspendProfile)
+);
 adminRouter.post(
   "/matrimony/requests/:id/verification",
+  requireAdminModule("matrimony"),
+  requireAdminAction("matrimony.manage"),
   asyncHandler(MatrimonyAdminController.updateVerification)
 );
-adminRouter.post("/matrimony/requests/:id/notes", asyncHandler(MatrimonyAdminController.addNote));
-adminRouter.get("/matrimony/reports", asyncHandler(MatrimonyAdminController.listReports));
-adminRouter.post("/matrimony/reports/:id/resolve", asyncHandler(MatrimonyAdminController.resolveReport));
+adminRouter.post(
+  "/matrimony/requests/:id/notes",
+  requireAdminModule("matrimony"),
+  requireAdminAction("matrimony.manage"),
+  asyncHandler(MatrimonyAdminController.addNote)
+);
+adminRouter.get(
+  "/matrimony/reports",
+  requireAdminModule("matrimony_reports"),
+  asyncHandler(MatrimonyAdminController.listReports)
+);
+adminRouter.post(
+  "/matrimony/reports/:id/resolve",
+  requireAdminModule("matrimony_reports"),
+  requireAdminAction("reports.manage"),
+  asyncHandler(MatrimonyAdminController.resolveReport)
+);
 
-// Matrimony subscriptions & revenue (P2)
+// ── Matrimony subscriptions & revenue ──────────────────────
 adminRouter.get(
   "/matrimony/subscriptions/overview",
+  requireAdminModule("matrimony_subscriptions"),
   asyncHandler(MatrimonySubscriptionAdminController.getOverview)
 );
 adminRouter.get(
   "/matrimony/subscriptions/reports",
+  requireAdminModule("matrimony_subscriptions"),
   asyncHandler(MatrimonySubscriptionAdminController.getReports)
 );
 adminRouter.get(
   "/matrimony/subscriptions",
+  requireAdminModule("matrimony_subscriptions"),
   asyncHandler(MatrimonySubscriptionAdminController.listSubscriptions)
 );
 adminRouter.get(
   "/matrimony/subscriptions/export",
+  requireAdminModule("matrimony_subscriptions"),
+  requireAdminAction("matrimony_subscriptions.export"),
   asyncHandler(MatrimonySubscriptionAdminController.exportSubscriptions)
 );
 adminRouter.get(
   "/matrimony/subscriptions/revenue-export",
+  requireAdminModule("matrimony_subscriptions"),
+  requireAdminAction("matrimony_subscriptions.export"),
   asyncHandler(MatrimonySubscriptionAdminController.exportRevenue)
 );
 adminRouter.get(
   "/matrimony/subscriptions/payments",
+  requireAdminModule("matrimony_subscriptions"),
   asyncHandler(MatrimonySubscriptionAdminController.listPayments)
 );
 adminRouter.get(
   "/matrimony/subscriptions/payments/export",
+  requireAdminModule("matrimony_subscriptions"),
+  requireAdminAction("matrimony_subscriptions.export"),
   asyncHandler(MatrimonySubscriptionAdminController.exportPayments)
 );
 adminRouter.get(
   "/matrimony/subscriptions/:id",
+  requireAdminModule("matrimony_subscriptions"),
   asyncHandler(MatrimonySubscriptionAdminController.getDetail)
 );
 adminRouter.post(
+  "/matrimony/subscriptions/:id/extend",
+  requireAdminModule("matrimony_subscriptions"),
+  requireAdminAction("matrimony_subscriptions.manage"),
+  asyncHandler(MatrimonySubscriptionAdminController.extendSubscription)
+);
+adminRouter.post(
+  "/matrimony/subscriptions/:id/cancel",
+  requireAdminModule("matrimony_subscriptions"),
+  requireAdminAction("matrimony_subscriptions.manage"),
+  asyncHandler(MatrimonySubscriptionAdminController.cancelSubscription)
+);
+adminRouter.post(
   "/matrimony/subscriptions/grant",
+  requireAdminModule("matrimony_subscriptions"),
+  requireAdminAction("matrimony_subscriptions.grant"),
   asyncHandler(MatrimonySubscriptionAdminController.grantSubscription)
 );
 adminRouter.post(
   "/matrimony/subscriptions/payments/:orderId/refund",
+  requireAdminModule("matrimony_subscriptions"),
+  requireAdminAction("matrimony_subscriptions.refund"),
   asyncHandler(MatrimonySubscriptionAdminController.recordRefund)
 );
 
-// Jobs portal moderation (Phase 3)
-adminRouter.get("/jobs", asyncHandler(AdminJobsController.listJobs));
-adminRouter.post("/jobs/:id/close", asyncHandler(AdminJobsController.closeJob));
-adminRouter.post("/jobs/:id/reopen", asyncHandler(AdminJobsController.reopenJob));
-adminRouter.delete("/jobs/:id", asyncHandler(AdminJobsController.deleteJob));
+// ── Jobs portal ────────────────────────────────────────────
+adminRouter.get(
+  "/jobs/overview",
+  requireAdminModule("jobs"),
+  asyncHandler(AdminJobsController.getOverview)
+);
+adminRouter.get(
+  "/jobs",
+  requireAdminModule("jobs"),
+  asyncHandler(AdminJobsController.listJobs)
+);
+adminRouter.get(
+  "/jobs/:id",
+  requireAdminModule("jobs"),
+  asyncHandler(AdminJobsController.getJob)
+);
+adminRouter.patch(
+  "/jobs/:id",
+  requireAdminModule("jobs"),
+  requireAdminAction("jobs.manage"),
+  asyncHandler(AdminJobsController.updateJob)
+);
+adminRouter.post(
+  "/jobs/:id/close",
+  requireAdminModule("jobs"),
+  requireAdminAction("jobs.manage"),
+  asyncHandler(AdminJobsController.closeJob)
+);
+adminRouter.post(
+  "/jobs/:id/reopen",
+  requireAdminModule("jobs"),
+  requireAdminAction("jobs.manage"),
+  asyncHandler(AdminJobsController.reopenJob)
+);
+adminRouter.post(
+  "/jobs/:id/hide",
+  requireAdminModule("jobs"),
+  requireAdminAction("jobs.manage"),
+  asyncHandler(AdminJobsController.hideJob)
+);
+adminRouter.post(
+  "/jobs/:id/restore",
+  requireAdminModule("jobs"),
+  requireAdminAction("jobs.manage"),
+  asyncHandler(AdminJobsController.restoreJob)
+);
+adminRouter.post(
+  "/jobs/:id/soft-delete",
+  requireAdminModule("jobs"),
+  requireAdminAction("jobs.manage"),
+  asyncHandler(AdminJobsController.softDeleteJob)
+);
+adminRouter.post(
+  "/jobs/:id/notes",
+  requireAdminModule("jobs"),
+  requireAdminAction("jobs.manage"),
+  asyncHandler(AdminJobsController.addJobNote)
+);
+adminRouter.get(
+  "/job-applications",
+  requireAdminModule("jobs"),
+  asyncHandler(AdminJobsController.listApplications)
+);
+adminRouter.patch(
+  "/job-applications/:id",
+  requireAdminModule("jobs"),
+  requireAdminAction("jobs.manage"),
+  asyncHandler(AdminJobsController.updateApplication)
+);
+adminRouter.delete(
+  "/jobs/:id",
+  requireAdminModule("jobs"),
+  requireAdminAction("jobs.delete_hard"),
+  asyncHandler(AdminJobsController.deleteJob)
+);
 
-// Marketplace moderation
-adminRouter.get("/marketplace", asyncHandler(AdminMarketplaceController.listMarketplace));
+// ── Marketplace ────────────────────────────────────────────
+adminRouter.get(
+  "/marketplace/overview",
+  requireAdminModule("marketplace"),
+  asyncHandler(AdminMarketplaceController.getOverview)
+);
+adminRouter.get(
+  "/marketplace",
+  requireAdminModule("marketplace"),
+  asyncHandler(AdminMarketplaceController.listMarketplace)
+);
+adminRouter.get(
+  "/marketplace/:id",
+  requireAdminModule("marketplace"),
+  asyncHandler(AdminMarketplaceController.getListing)
+);
+adminRouter.patch(
+  "/marketplace/:id",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
+  asyncHandler(AdminMarketplaceController.updateListing)
+);
+adminRouter.post(
+  "/marketplace/:id/notes",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
+  asyncHandler(AdminMarketplaceController.addNote)
+);
 adminRouter.post(
   "/marketplace/:id/approve",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
   asyncHandler(AdminMarketplaceController.approveListing)
 );
 adminRouter.post(
   "/marketplace/:id/reject",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
   asyncHandler(AdminMarketplaceController.rejectListing)
 );
 adminRouter.post(
   "/marketplace/:id/request-changes",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
   asyncHandler(AdminMarketplaceController.requestChanges)
 );
 adminRouter.post(
   "/marketplace/:id/hide",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
   asyncHandler(AdminMarketplaceController.hideListing)
 );
 adminRouter.post(
   "/marketplace/:id/unhide",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
   asyncHandler(AdminMarketplaceController.unhideListing)
 );
 adminRouter.post(
+  "/marketplace/:id/soft-delete",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
+  asyncHandler(AdminMarketplaceController.softDeleteListing)
+);
+adminRouter.post(
+  "/marketplace/:id/restore",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
+  asyncHandler(AdminMarketplaceController.restoreSoftDeletedListing)
+);
+adminRouter.post(
   "/marketplace/:id/dismiss-reports",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
   asyncHandler(AdminMarketplaceController.dismissReports)
 );
 adminRouter.post(
   "/marketplace/:id/feature",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.manage"),
   asyncHandler(AdminMarketplaceController.setFeatured)
 );
-adminRouter.delete("/marketplace/:id", asyncHandler(AdminMarketplaceController.deleteListing));
+adminRouter.delete(
+  "/marketplace/:id",
+  requireAdminModule("marketplace"),
+  requireAdminAction("marketplace.delete_hard"),
+  asyncHandler(AdminMarketplaceController.deleteListing)
+);
 
-// Helping Hands moderation
-adminRouter.get("/helping-hands", asyncHandler(AdminHelpingHandsController.listHelpRequests));
-adminRouter.get("/helping-hands/:id", asyncHandler(AdminHelpingHandsController.getHelpRequest));
+// ── Helping Hands ──────────────────────────────────────────
+adminRouter.get(
+  "/helping-hands",
+  requireAdminModule("helping_hands"),
+  asyncHandler(AdminHelpingHandsController.listHelpRequests)
+);
+adminRouter.get(
+  "/helping-hands/:id",
+  requireAdminModule("helping_hands"),
+  asyncHandler(AdminHelpingHandsController.getHelpRequest)
+);
 adminRouter.post(
   "/helping-hands/:id/status",
+  requireAdminModule("helping_hands"),
+  requireAdminAction("helping_hands.manage"),
   asyncHandler(AdminHelpingHandsController.setHelpStatus)
 );
 adminRouter.post(
   "/helping-hands/:id/cancel",
+  requireAdminModule("helping_hands"),
+  requireAdminAction("helping_hands.manage"),
   asyncHandler(AdminHelpingHandsController.cancelHelpRequest)
 );
 adminRouter.post(
   "/helping-hands/:id/reopen",
+  requireAdminModule("helping_hands"),
+  requireAdminAction("helping_hands.manage"),
   asyncHandler(AdminHelpingHandsController.reopenHelpRequest)
 );
 adminRouter.post(
   "/helping-hands/:id/complete",
+  requireAdminModule("helping_hands"),
+  requireAdminAction("helping_hands.manage"),
   asyncHandler(AdminHelpingHandsController.completeHelpRequest)
 );
 adminRouter.post(
   "/helping-hands/:id/expire",
+  requireAdminModule("helping_hands"),
+  requireAdminAction("helping_hands.manage"),
   asyncHandler(AdminHelpingHandsController.expireHelpRequest)
 );
 adminRouter.post(
   "/helping-hands/:id/extend",
+  requireAdminModule("helping_hands"),
+  requireAdminAction("helping_hands.manage"),
   asyncHandler(AdminHelpingHandsController.extendHelpRequest)
 );
 adminRouter.delete(
   "/helping-hands/:id",
+  requireAdminModule("helping_hands"),
+  requireAdminAction("helping_hands.manage"),
   asyncHandler(AdminHelpingHandsController.deleteHelpRequest)
 );
 
-// Help & Support
-adminRouter.get("/support/tickets", asyncHandler(AdminSupportController.listTickets));
-adminRouter.get("/support/tickets/:ticketId", asyncHandler(AdminSupportController.getTicket));
-adminRouter.patch("/support/tickets/:ticketId", asyncHandler(AdminSupportController.updateTicket));
-adminRouter.get("/support/faqs", asyncHandler(AdminSupportController.listFaqs));
-adminRouter.post("/support/faqs", asyncHandler(AdminSupportController.createFaq));
-adminRouter.put("/support/faqs/:faqId", asyncHandler(AdminSupportController.updateFaq));
-adminRouter.delete("/support/faqs/:faqId", asyncHandler(AdminSupportController.deleteFaq));
-adminRouter.get("/support/guides", asyncHandler(AdminSupportController.listGuides));
-adminRouter.post("/support/guides", asyncHandler(AdminSupportController.createGuide));
-adminRouter.put("/support/guides/:guideId", asyncHandler(AdminSupportController.upsertGuide));
-adminRouter.delete("/support/guides/:guideId", asyncHandler(AdminSupportController.deleteGuide));
-adminRouter.get("/support/contact", asyncHandler(AdminSupportController.getContact));
-adminRouter.put("/support/contact", asyncHandler(AdminSupportController.updateContact));
+// ── Help & Support ─────────────────────────────────────────
+adminRouter.get(
+  "/support/tickets",
+  requireAdminModule("support"),
+  asyncHandler(AdminSupportController.listTickets)
+);
+adminRouter.get(
+  "/support/tickets/:ticketId",
+  requireAdminModule("support"),
+  asyncHandler(AdminSupportController.getTicket)
+);
+adminRouter.patch(
+  "/support/tickets/:ticketId",
+  requireAdminModule("support"),
+  requireAdminAction("support.write"),
+  asyncHandler(AdminSupportController.updateTicket)
+);
+adminRouter.get(
+  "/support/faqs",
+  requireAdminModule("support"),
+  asyncHandler(AdminSupportController.listFaqs)
+);
+adminRouter.post(
+  "/support/faqs",
+  requireAdminModule("support"),
+  requireAdminAction("support.write"),
+  asyncHandler(AdminSupportController.createFaq)
+);
+adminRouter.put(
+  "/support/faqs/:faqId",
+  requireAdminModule("support"),
+  requireAdminAction("support.write"),
+  asyncHandler(AdminSupportController.updateFaq)
+);
+adminRouter.delete(
+  "/support/faqs/:faqId",
+  requireAdminModule("support"),
+  requireAdminAction("support.write"),
+  asyncHandler(AdminSupportController.deleteFaq)
+);
+adminRouter.get(
+  "/support/guides",
+  requireAdminModule("support"),
+  asyncHandler(AdminSupportController.listGuides)
+);
+adminRouter.post(
+  "/support/guides",
+  requireAdminModule("support"),
+  requireAdminAction("support.write"),
+  asyncHandler(AdminSupportController.createGuide)
+);
+adminRouter.put(
+  "/support/guides/:guideId",
+  requireAdminModule("support"),
+  requireAdminAction("support.write"),
+  asyncHandler(AdminSupportController.upsertGuide)
+);
+adminRouter.delete(
+  "/support/guides/:guideId",
+  requireAdminModule("support"),
+  requireAdminAction("support.write"),
+  asyncHandler(AdminSupportController.deleteGuide)
+);
+adminRouter.get(
+  "/support/contact",
+  requireAdminModule("support"),
+  asyncHandler(AdminSupportController.getContact)
+);
+adminRouter.put(
+  "/support/contact",
+  requireAdminModule("support"),
+  requireAdminAction("support.write"),
+  asyncHandler(AdminSupportController.updateContact)
+);
 
-
-// Master Data Management
-adminRouter.get("/master-data/types", asyncHandler(AdminMasterDataController.listTypes));
-adminRouter.get("/master-data/items", asyncHandler(AdminMasterDataController.listItems));
+// ── Master Data ────────────────────────────────────────────
+adminRouter.get(
+  "/master-data/types",
+  requireAdminModule("master_data"),
+  asyncHandler(AdminMasterDataController.listTypes)
+);
+adminRouter.get(
+  "/master-data/items",
+  requireAdminModule("master_data"),
+  asyncHandler(AdminMasterDataController.listItems)
+);
 adminRouter.post(
   "/master-data/items",
+  requireAdminModule("master_data"),
   requireAdminAction("master_data.write"),
   asyncHandler(AdminMasterDataController.createItem)
 );
 adminRouter.patch(
   "/master-data/items/:itemId",
+  requireAdminModule("master_data"),
   requireAdminAction("master_data.write"),
   asyncHandler(AdminMasterDataController.updateItem)
 );
-adminRouter.get("/master-data/audits", asyncHandler(AdminMasterDataController.listAudits));
+adminRouter.get(
+  "/master-data/audits",
+  requireAdminModule("master_data"),
+  asyncHandler(AdminMasterDataController.listAudits)
+);
 
-// Reports & Complaints (post + profile)
-adminRouter.get("/reports", asyncHandler(AdminReportsController.listReports));
-adminRouter.get("/reports/:kind/:id", asyncHandler(AdminReportsController.getReport));
-adminRouter.post("/reports/:kind/:id/resolve", asyncHandler(AdminReportsController.resolveReport));
-adminRouter.post("/reports/:kind/:id/dismiss", asyncHandler(AdminReportsController.dismissReport));
+// ── Reports & Complaints ───────────────────────────────────
+adminRouter.get(
+  "/reports",
+  requireAdminModule("reports"),
+  asyncHandler(AdminReportsController.listReports)
+);
+adminRouter.get(
+  "/reports/:kind/:id",
+  requireAdminModule("reports"),
+  asyncHandler(AdminReportsController.getReport)
+);
+adminRouter.post(
+  "/reports/:kind/:id/resolve",
+  requireAdminModule("reports"),
+  requireAdminAction("reports.manage"),
+  asyncHandler(AdminReportsController.resolveReport)
+);
+adminRouter.post(
+  "/reports/:kind/:id/dismiss",
+  requireAdminModule("reports"),
+  requireAdminAction("reports.manage"),
+  asyncHandler(AdminReportsController.dismissReport)
+);
 adminRouter.post(
   "/reports/:kind/:id/escalate",
+  requireAdminModule("reports"),
   requireAdminAction("reports.escalate"),
   asyncHandler(AdminReportsController.escalateReport)
 );
 adminRouter.post(
   "/reports/:kind/:id/warn",
+  requireAdminModule("reports"),
   requireAdminAction("reports.warn"),
   asyncHandler(AdminReportsController.warnFromReport)
 );
 adminRouter.post(
   "/reports/:kind/:id/suspend",
+  requireAdminModule("reports"),
   requireAdminAction("reports.suspend"),
   asyncHandler(AdminReportsController.suspendFromReport)
 );
 
-// Settings & Roles
-adminRouter.get("/settings", asyncHandler(AdminSettingsController.getSettings));
+// ── Settings & Roles ───────────────────────────────────────
+adminRouter.get(
+  "/settings",
+  requireAdminModule("settings"),
+  asyncHandler(AdminSettingsController.getSettings)
+);
+/** Session permissions — any authenticated admin (needed before module UI loads). */
 adminRouter.get("/settings/me", asyncHandler(AdminSettingsController.getMe));
 adminRouter.put(
   "/settings/roles",
+  requireAdminModule("settings"),
   requireAdminAction("settings.manage_roles"),
   asyncHandler(AdminSettingsController.setAdminRole)
 );
+adminRouter.post(
+  "/settings/admins",
+  requireAdminModule("settings"),
+  requireAdminAction("settings.manage_roles"),
+  asyncHandler(AdminSettingsController.createAdminUser)
+);
+adminRouter.patch(
+  "/settings/admins/:email",
+  requireAdminModule("settings"),
+  requireAdminAction("settings.manage_roles"),
+  asyncHandler(AdminSettingsController.updateAdminUser)
+);
 
-// Platform Management
-adminRouter.get("/platform/dashboard", asyncHandler(PlatformController.dashboard));
-adminRouter.get("/platform/versions", asyncHandler(PlatformController.listVersions));
-adminRouter.post("/platform/versions", asyncHandler(PlatformController.saveVersion));
-adminRouter.get("/platform/maintenance", asyncHandler(PlatformController.getMaintenance));
-adminRouter.put("/platform/maintenance", asyncHandler(PlatformController.updateMaintenance));
-adminRouter.get("/platform/notifications", asyncHandler(PlatformController.listNotifications));
-adminRouter.post("/platform/notifications", asyncHandler(PlatformController.createNotification));
+// ── Platform Management ────────────────────────────────────
+adminRouter.get(
+  "/platform/dashboard",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.dashboard)
+);
+adminRouter.get(
+  "/platform/versions",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listVersions)
+);
+adminRouter.post(
+  "/platform/versions",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.versions"),
+  asyncHandler(PlatformController.saveVersion)
+);
+adminRouter.get(
+  "/platform/maintenance",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.getMaintenance)
+);
+adminRouter.put(
+  "/platform/maintenance",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.maintenance"),
+  asyncHandler(PlatformController.updateMaintenance)
+);
+adminRouter.get(
+  "/platform/notifications",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listNotifications)
+);
+adminRouter.post(
+  "/platform/notifications",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.manage"),
+  asyncHandler(PlatformController.createNotification)
+);
 adminRouter.post(
   "/platform/notifications/:id/send",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.manage"),
   asyncHandler(PlatformController.sendNotification)
 );
 adminRouter.post(
   "/platform/notifications/process-scheduled",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.manage"),
   asyncHandler(PlatformController.processScheduledNotifications)
 );
-adminRouter.get("/platform/popups", asyncHandler(PlatformController.listPopups));
-adminRouter.post("/platform/popups", asyncHandler(PlatformController.savePopup));
-adminRouter.get("/platform/announcements", asyncHandler(PlatformController.listAnnouncements));
-adminRouter.post("/platform/announcements", asyncHandler(PlatformController.saveAnnouncement));
-adminRouter.get("/platform/banners", asyncHandler(PlatformController.listBanners));
-adminRouter.post("/platform/banners", asyncHandler(PlatformController.saveBanner));
-adminRouter.get("/platform/features", asyncHandler(PlatformController.listFeatures));
-adminRouter.patch("/platform/features/:code", asyncHandler(PlatformController.setFeature));
-adminRouter.get("/platform/menu", asyncHandler(PlatformController.listMenu));
-adminRouter.patch("/platform/menu/:code", asyncHandler(PlatformController.setMenu));
-adminRouter.get("/platform/ads/analytics", asyncHandler(PlatformController.adAnalytics));
-adminRouter.get("/platform/ads", asyncHandler(PlatformController.listAds));
-adminRouter.post("/platform/ads", asyncHandler(PlatformController.saveAd));
-adminRouter.get("/platform/audits", asyncHandler(PlatformController.listAudits));
+adminRouter.get(
+  "/platform/popups",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listPopups)
+);
+adminRouter.post(
+  "/platform/popups",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.manage"),
+  asyncHandler(PlatformController.savePopup)
+);
+adminRouter.get(
+  "/platform/announcements",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listAnnouncements)
+);
+adminRouter.post(
+  "/platform/announcements",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.manage"),
+  asyncHandler(PlatformController.saveAnnouncement)
+);
+adminRouter.get(
+  "/platform/banners",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listBanners)
+);
+adminRouter.post(
+  "/platform/banners",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.manage"),
+  asyncHandler(PlatformController.saveBanner)
+);
+adminRouter.get(
+  "/platform/features",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listFeatures)
+);
+adminRouter.patch(
+  "/platform/features/:code",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.features"),
+  asyncHandler(PlatformController.setFeature)
+);
+adminRouter.get(
+  "/platform/menu",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listMenu)
+);
+adminRouter.patch(
+  "/platform/menu/:code",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.features"),
+  asyncHandler(PlatformController.setMenu)
+);
+adminRouter.get(
+  "/platform/ads/analytics",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.adAnalytics)
+);
+adminRouter.get(
+  "/platform/ads",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listAds)
+);
+adminRouter.post(
+  "/platform/ads",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.manage"),
+  asyncHandler(PlatformController.saveAd)
+);
+adminRouter.get(
+  "/platform/audits",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listAudits)
+);
+adminRouter.get(
+  "/platform/subscription-plans",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listSubscriptionPlans)
+);
+adminRouter.put(
+  "/platform/subscription-plans",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.manage"),
+  asyncHandler(PlatformController.updateSubscriptionPlans)
+);
+adminRouter.get(
+  "/platform/business-settings",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.listBusinessSettings)
+);
+adminRouter.get(
+  "/platform/business-settings/:module/:key",
+  requireAdminModule("platform"),
+  asyncHandler(PlatformController.getBusinessSetting)
+);
+adminRouter.put(
+  "/platform/business-settings",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.manage"),
+  asyncHandler(PlatformController.upsertBusinessSetting)
+);
+adminRouter.post(
+  "/platform/business-settings/:module/:key/reset",
+  requireAdminModule("platform"),
+  requireAdminAction("platform.manage"),
+  asyncHandler(PlatformController.resetBusinessSetting)
+);
 
-// Prominent People CMS
+// ── System Scheduler ───────────────────────────────────────
+adminRouter.get(
+  "/scheduler/dashboard",
+  requireAdminModule("system_scheduler"),
+  asyncHandler(SystemSchedulerController.getDashboard)
+);
+adminRouter.get(
+  "/scheduler/health",
+  requireAdminModule("system_scheduler"),
+  asyncHandler(SystemSchedulerController.getHealth)
+);
+adminRouter.get(
+  "/scheduler/jobs",
+  requireAdminModule("system_scheduler"),
+  asyncHandler(SystemSchedulerController.listJobs)
+);
+adminRouter.get(
+  "/scheduler/jobs/:jobKey",
+  requireAdminModule("system_scheduler"),
+  asyncHandler(SystemSchedulerController.getJob)
+);
+adminRouter.get(
+  "/scheduler/runs",
+  requireAdminModule("system_scheduler"),
+  asyncHandler(SystemSchedulerController.listRuns)
+);
+adminRouter.post(
+  "/scheduler/jobs/:jobKey/enable",
+  requireAdminModule("system_scheduler"),
+  requireAdminAction("system_scheduler.manage"),
+  asyncHandler(SystemSchedulerController.enableJob)
+);
+adminRouter.post(
+  "/scheduler/jobs/:jobKey/disable",
+  requireAdminModule("system_scheduler"),
+  requireAdminAction("system_scheduler.manage"),
+  asyncHandler(SystemSchedulerController.disableJob)
+);
+adminRouter.post(
+  "/scheduler/jobs/:jobKey/run",
+  requireAdminModule("system_scheduler"),
+  requireAdminAction("system_scheduler.manage"),
+  asyncHandler(SystemSchedulerController.runJobNow)
+);
+adminRouter.post(
+  "/scheduler/jobs/:jobKey/retry",
+  requireAdminModule("system_scheduler"),
+  requireAdminAction("system_scheduler.manage"),
+  asyncHandler(SystemSchedulerController.retryJob)
+);
+
+// ── Prominent People CMS ───────────────────────────────────
 adminRouter.get(
   "/prominent-people/categories",
   requireAdminModule("prominent_people"),

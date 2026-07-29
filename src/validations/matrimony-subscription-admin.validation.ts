@@ -7,6 +7,8 @@ export const subscriptionListQuerySchema = z.object({
   subscriptionStatus: z.enum(["any", "ACTIVE", "EXPIRED", "CANCELLED"]).default("any"),
   paymentStatus: z.enum(["any", "CREATED", "PAID", "FAILED"]).default("any"),
   plan: z.enum(["any", "GOLD", "PLATINUM", "FREE"]).default("any"),
+  community: z.string().trim().optional(),
+  district: z.string().trim().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
   amountMin: z.coerce.number().int().min(0).optional(),
@@ -29,4 +31,13 @@ export const grantSubscriptionSchema = z.object({
 export const recordRefundSchema = z.object({
   note: z.string().trim().max(500).optional(),
   cancelSubscription: z.coerce.boolean().optional().default(true)
+});
+
+export const extendSubscriptionSchema = z.object({
+  durationMonths: z.coerce.number().int().min(1).max(24).default(1),
+  adminNote: z.string().trim().max(500).optional()
+});
+
+export const cancelSubscriptionSchema = z.object({
+  adminNote: z.string().trim().max(500).optional()
 });

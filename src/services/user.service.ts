@@ -173,6 +173,7 @@ export function toAdminUser(user: User) {
   return {
     id: user.id,
     fullName: user.fullName,
+    username: user.username ?? null,
     gender: user.gender,
     dob: user.dob,
     email: user.email,
@@ -192,6 +193,17 @@ export function toAdminUser(user: User) {
     profileComplete: user.profileComplete !== false,
     linkedProviders: ensureLinkedProviders(user),
     loginSource: resolveLoginSource(user),
+    bloodGroup: user.bloodGroup ?? null,
+    education: user.education ?? null,
+    jobTitle: user.jobTitle ?? null,
+    company: user.company ?? null,
+    workLocation: user.workLocation ?? null,
+    skills: user.skills ?? null,
+    city: user.city ?? null,
+    district: user.district ?? null,
+    communityRole: user.communityRole ?? null,
+    profileVisibility: user.profileVisibility,
+    allowConnectionRequests: user.allowConnectionRequests,
     registrationAdminRemarks: user.registrationAdminRemarks ?? null,
     registrationRequestedFields: Array.isArray(user.registrationRequestedFields)
       ? user.registrationRequestedFields
@@ -204,6 +216,9 @@ export function toAdminUser(user: User) {
     registrationReviewedAt: user.registrationReviewedAt
       ? user.registrationReviewedAt.toISOString()
       : null,
+    deletedAt: user.deletedAt ? user.deletedAt.toISOString() : null,
+    deletedBy: user.deletedBy ?? null,
+    deleteReason: user.deleteReason ?? null,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt
   };

@@ -1,12 +1,20 @@
 import { Op } from "sequelize";
 import { Post, User, JobInterest, MemberConnection } from "../models";
 import * as Notifications from "./Notification.service";
+import { logJobAudit } from "./JobAudit.service";
+import * as JobsSettings from "./JobsSettings.service";
 
 export type JobInterestItem = {
   id: number;
   post_id: number;
   from_user_id: number;
   message: string | null;
+  status: string;
+  resume_url: string | null;
+  admin_notes: string | null;
+  employer_notes: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
   created_at: string;
   author: {
     id: number;
@@ -43,7 +51,8 @@ async function assertOpenJob(postId: number, viewerUserId: number): Promise<Post
 export async function expressJobInterest(
   fromUserId: number,
   postId: number,
-  message?: string | null
+  message?: string | null,
+  resumeUrl?: string | null
 ): Promise<{ interested: boolean; canMessage: boolean; interestId: number; created: boolean }> {
   const post = await assertOpenJob(postId, fromUserId);
   if (post.userId === fromUserId) {
@@ -56,12 +65,25 @@ export async function expressJobInterest(
     return { interested: true, canMessage, interestId: existing.id, created: false };
   }
 
+  const applicationLimit = await JobsSettings.getApplicationLimit();
+  if (applicationLimit > 0) {
+    const applicationCount = await JobInterest.count({ where: { postId } });
+    if (applicationCount >= applicationLimit) {
+      throw Object.assign(
+        new Error("This job has reached its application limit."),
+        { status: 400, code: "JOB_APPLICATION_LIMIT" }
+      );
+    }
+  }
+
   let row: JobInterest;
   try {
     row = await JobInterest.create({
       postId,
       fromUserId,
       message: message?.trim()?.slice(0, 500) || null,
+      status: "APPLIED",
+      resumeUrl: resumeUrl?.trim() || null,
       createdAt: new Date(),
       updatedAt: new Date()
     } as any);
@@ -83,6 +105,15 @@ export async function expressJobInterest(
     post.title,
     message?.trim() || null
   ).catch(() => {});
+  await logJobAudit({
+    postId: post.id,
+    jobInterestId: row.id,
+    actorType: "USER",
+    actorUserId: fromUserId,
+    action: "APPLICATION_APPLIED",
+    statusTo: "APPLIED",
+    note: message?.trim() || null
+  });
 
   const canMessage = await canMessagePoster(fromUserId, post.userId);
   return { interested: true, canMessage, interestId: row.id, created: true };
@@ -149,6 +180,12 @@ export async function listJobInterestsForOwner(
       post_id: r.postId,
       from_user_id: r.fromUserId,
       message: r.message ?? null,
+      status: r.status,
+      resume_url: r.resumeUrl ?? null,
+      admin_notes: r.adminNotes ?? null,
+      employer_notes: r.employerNotes ?? null,
+      reviewed_by: r.reviewedBy ?? null,
+      reviewed_at: r.reviewedAt?.toISOString() ?? null,
       created_at: r.createdAt.toISOString(),
       author: {
         id: author.id,

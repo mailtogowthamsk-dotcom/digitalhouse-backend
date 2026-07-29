@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import { error, success } from "../utils/response";
 import * as Platform from "../services/Platform.service";
+import * as BusinessSettings from "../services/BusinessSettings.service";
 import {
   APP_PLATFORMS,
   PLATFORM_AUDIENCES,
@@ -10,6 +11,7 @@ import {
   VERSION_STATUSES,
   AD_KINDS
 } from "../constants/platform.constants";
+import { BUSINESS_SETTING_VALUE_TYPES } from "../constants/businessSettings.constants";
 
 function adminEmail(req: Request): string | null {
   const e = (req as any).adminEmail;
@@ -153,8 +155,11 @@ export async function sendNotification(req: Request, res: Response) {
   }
 }
 
-export async function processScheduledNotifications(_req: Request, res: Response) {
-  const sent = await Platform.processScheduledPlatformNotifications();
+export async function processScheduledNotifications(req: Request, res: Response) {
+  const sent = await Platform.processScheduledPlatformNotifications({
+    trigger: "manual",
+    executedBy: adminEmail(req)
+  });
   return success(res, { sent });
 }
 
@@ -292,6 +297,119 @@ export async function listAudits(req: Request, res: Response) {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 50));
   const module = typeof req.query.module === "string" ? req.query.module : undefined;
-  const data = await Platform.listAuditLogs(page, limit, module);
+  const action = typeof req.query.action === "string" ? req.query.action : undefined;
+  const configOnly =
+    req.query.configOnly === "1" ||
+    req.query.configOnly === "true" ||
+    req.query.configOnly === "yes";
+  const data = await Platform.listAuditLogs(page, limit, module, { configOnly, action });
   return success(res, data);
+}
+
+/** Subscription plan pricing — reuses MatrimonyPlatformSettings / Subscriptions module. */
+export async function listSubscriptionPlans(_req: Request, res: Response) {
+  const { platformSettings, planCatalog } = await (
+    await import("../services/MatrimonyPlatformSettings.service")
+  ).settingsForAdminAsync();
+  return success(res, { platformSettings, planCatalog });
+}
+
+export async function updateSubscriptionPlans(req: Request, res: Response) {
+  const body = z
+    .object({
+      goldPriceInr: z.number().int().min(0).optional(),
+      platinumPriceInr: z.number().int().min(0).optional(),
+      contactRevealPaise: z.number().int().min(0).optional(),
+      monthlyOpenQuota: z.number().int().min(0).optional(),
+      durationMonths: z.number().int().min(0).max(60).optional(),
+      gstPercent: z.number().min(0).max(100).optional(),
+      plans: z
+        .array(
+          z.object({
+            plan: z.enum(["FREE", "GOLD", "PLATINUM"]),
+            label: z.string().trim().min(1).max(80).optional(),
+            tagline: z.string().trim().max(200).optional(),
+            priceInr: z.number().int().min(0).optional(),
+            durationMonths: z.number().int().min(0).max(60).optional(),
+            opensPerMonth: z.number().int().min(0).max(10_000).optional(),
+            benefits: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+            gstPercent: z.number().min(0).max(100).optional(),
+            displayOrder: z.number().int().min(0).max(10_000).optional(),
+            isActive: z.boolean().optional(),
+            popular: z.boolean().optional(),
+            canOpenOneStar: z.boolean().optional(),
+            canOpenTwoStar: z.boolean().optional(),
+            whoViewedMe: z.boolean().optional()
+          })
+        )
+        .max(10)
+        .optional()
+    })
+    .parse(req.body ?? {});
+
+  const PlatformSettings = await import("../services/MatrimonyPlatformSettings.service");
+  const saved = await PlatformSettings.saveSubscriptionPlanConfig(body, adminEmail(req));
+  return success(res, {
+    platformSettings: saved.platformSettings,
+    planCatalog: saved.planCatalog,
+    message: "Subscription plan pricing updated."
+  });
+}
+
+/** Business Settings foundation — list effective (DB + constant fallback). */
+export async function listBusinessSettings(req: Request, res: Response) {
+  const module = typeof req.query.module === "string" ? req.query.module : undefined;
+  const category = typeof req.query.category === "string" ? req.query.category : undefined;
+  const settings = await BusinessSettings.listEffectiveSettings({ module, category });
+  return success(res, {
+    settings,
+    modules: BusinessSettings.listKnownModules()
+  });
+}
+
+export async function getBusinessSetting(req: Request, res: Response) {
+  const module = String(req.params.module || "").trim();
+  const key = String(req.params.key || "").trim();
+  if (!module || !key) return error(res, "module and key are required", 400);
+  try {
+    const setting = await BusinessSettings.getSettingDetail(module, key);
+    return success(res, { setting });
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function upsertBusinessSetting(req: Request, res: Response) {
+  const body = z
+    .object({
+      module: z.string().trim().min(1).max(64),
+      settingKey: z.string().trim().min(1).max(128),
+      value: z.unknown(),
+      valueType: z.enum(BUSINESS_SETTING_VALUE_TYPES as unknown as [string, ...string[]]).optional(),
+      description: z.string().trim().max(500).nullable().optional(),
+      category: z.string().trim().max(64).nullable().optional(),
+      isEditable: z.boolean().optional()
+    })
+    .parse(req.body ?? {});
+  try {
+    const setting = await BusinessSettings.upsertSetting(adminEmail(req), body as any);
+    return success(res, { setting });
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function resetBusinessSetting(req: Request, res: Response) {
+  const module = String(req.params.module || "").trim();
+  const key = String(req.params.key || "").trim();
+  if (!module || !key) return error(res, "module and key are required", 400);
+  try {
+    const setting = await BusinessSettings.resetSettingToDefault(adminEmail(req), module, key);
+    return success(res, { setting, message: "Reset to constant default." });
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
 }

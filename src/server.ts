@@ -29,6 +29,8 @@ import {
   startOrphanMediaCleanupJobs,
   stopOrphanMediaCleanupJobs
 } from "./services/OrphanMediaCleanup.service";
+import * as SystemScheduler from "./services/SystemScheduler.service";
+import { bootstrapAdminUsers } from "./services/AdminUsers.service";
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -104,6 +106,22 @@ async function initDb() {
     await seedOptionsIfEmpty();
     await masterDataService.seedMasterDataIfNeeded();
     await ensurePlatformDefaults();
+    try {
+      const PlanSettings = await import("./services/MatrimonyPlatformSettings.service");
+      await PlanSettings.refreshPlanCatalogCache();
+    } catch (e) {
+      console.warn("[startup] subscription plan catalog cache warm failed:", e);
+    }
+    try {
+      const BusinessSettings = await import("./services/BusinessSettings.service");
+      await Promise.all([
+        BusinessSettings.warmModuleCache("marketplace"),
+        BusinessSettings.warmModuleCache("jobs"),
+        BusinessSettings.warmModuleCache("subscriptions")
+      ]);
+    } catch (e) {
+      console.warn("[startup] business settings cache warm failed:", e);
+    }
     setDbReady(true);
     console.log("Database ready.");
     try {
@@ -124,8 +142,24 @@ async function initDb() {
     startHelpingHandsExpiryJobs();
     startPlatformNotificationJobs();
     startOrphanMediaCleanupJobs();
+    void SystemScheduler.bootstrap().catch((e) =>
+      console.warn("[system-scheduler] bootstrap failed:", e)
+    );
+    void bootstrapAdminUsers().catch((e) =>
+      console.warn("[admin-users] bootstrap failed:", e)
+    );
     if (!process.env.ADMIN_API_KEY) {
       console.warn("Warning: ADMIN_API_KEY is not set in .env — admin APIs will return 500.");
+    } else {
+      const { isWeakAdminApiKey } = await import("./middlewares/admin.middleware");
+      if (isWeakAdminApiKey(process.env.ADMIN_API_KEY)) {
+        console.warn(
+          "Warning: ADMIN_API_KEY looks weak or is a placeholder — use a long random secret."
+        );
+      }
+    }
+    if (process.env.ADMIN_API_KEY_ROLE) {
+      console.log(`[admin-auth] API key role = ${process.env.ADMIN_API_KEY_ROLE}`);
     }
   } catch (e) {
     console.error("Database init failed:", e);

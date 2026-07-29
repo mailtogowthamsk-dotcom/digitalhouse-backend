@@ -2,14 +2,15 @@ import { DataTypes, InferAttributes, InferCreationAttributes, Model } from "sequ
 import { sequelize } from "../config/db";
 import type { AuthProviderCode } from "../constants/auth.constants";
 
-/** User status: PENDING/PENDING_REVIEW = awaiting approval; CHANGES_REQUESTED = admin asked for corrections; APPROVED = app access; REJECTED = denied; SUSPENDED = moderation block */
+/** User status: PENDING/PENDING_REVIEW = awaiting approval; CHANGES_REQUESTED = admin asked for corrections; APPROVED = app access; REJECTED = denied; SUSPENDED = moderation block; DELETED = soft-deleted */
 export type UserStatus =
   | "PENDING"
   | "APPROVED"
   | "REJECTED"
   | "PENDING_REVIEW"
   | "SUSPENDED"
-  | "CHANGES_REQUESTED";
+  | "CHANGES_REQUESTED"
+  | "DELETED";
 export type ProfileVisibility = "PUBLIC" | "PRIVATE";
 
 export class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
@@ -57,6 +58,10 @@ export class User extends Model<InferAttributes<User>, InferCreationAttributes<U
   declare pendingProfilePhoto: string | null;
   declare registrationResubmittedAt: Date | null;
   declare registrationReviewedAt: Date | null;
+  /** Soft-delete metadata (hard delete removes the row entirely). */
+  declare deletedAt: Date | null;
+  declare deletedBy: string | null;
+  declare deleteReason: string | null;
   declare createdAt: Date;
   declare updatedAt: Date;
 }
@@ -101,7 +106,8 @@ User.init(
         "REJECTED",
         "PENDING_REVIEW",
         "SUSPENDED",
-        "CHANGES_REQUESTED"
+        "CHANGES_REQUESTED",
+        "DELETED"
       ),
       allowNull: false,
       defaultValue: "PENDING"
@@ -167,6 +173,9 @@ User.init(
       allowNull: true,
       field: "registration_reviewed_at"
     },
+    deletedAt: { type: DataTypes.DATE, allowNull: true, field: "deleted_at" },
+    deletedBy: { type: DataTypes.STRING(191), allowNull: true, field: "deleted_by" },
+    deleteReason: { type: DataTypes.TEXT, allowNull: true, field: "delete_reason" },
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }
   },
@@ -180,7 +189,8 @@ User.init(
       { fields: ["community"] },
       { fields: ["gender"] },
       { fields: ["email"] },
-      { fields: ["mobile"] }
+      { fields: ["mobile"] },
+      { fields: ["deleted_at"] }
     ]
   }
 );

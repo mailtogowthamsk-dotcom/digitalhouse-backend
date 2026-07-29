@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import { ZodError } from "zod";
 import * as adminService from "../services/admin.service";
+import * as adminUserManagement from "../services/AdminUserManagement.service";
 import { mediaService } from "../services/Media.service";
 import { userService } from "../services/user.service";
 import { success, error } from "../utils/response";
@@ -10,13 +11,16 @@ import {
   rejectUserSchema,
   requestRegistrationChangesSchema,
   approveProfileUpdateSchema,
-  rejectProfileUpdateSchema
+  rejectProfileUpdateSchema,
+  updateAdminUserSchema,
+  softDeleteUserSchema,
+  hardDeleteUserSchema
 } from "../validations/admin.validation";
 import { adminBroadcastSchema } from "../validations/notifications.validation";
 import { adminBroadcast, getNotificationAudienceStats } from "../services/Notification.service";
-import { registrationStatusService } from "../services/RegistrationStatus.service";
 
-const ADMIN_ID = process.env.ADMIN_API_KEY || "admin";
+/** Attribution for API-key requests — never embed the raw key in audit fields. */
+const ADMIN_API_KEY_ACTOR = "api_key";
 
 /** POST /api/admin/login – email + password; returns JWT. No auth middleware. */
 export async function login(req: Request, res: Response) {
@@ -25,6 +29,7 @@ export async function login(req: Request, res: Response) {
     const result = await adminService.adminLogin(body.email, body.password);
     return success(res, result);
   } catch (e: any) {
+    if (e?.status === 429) return error(res, e.message || "Too many failed attempts. Try again later.", 429);
     if (e?.status === 401) return error(res, "Invalid credentials", 401);
     throw e;
   }
@@ -74,15 +79,68 @@ export async function listPending(req: Request, res: Response) {
 export async function getUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
-  const user = await adminService.getUserById(id);
-  if (!user) return error(res, "User not found", 404);
-  const history = await adminService.getVerificationHistory(user.id);
-  const registrationReview = await registrationStatusService.toAdminRegistrationReview(user);
-  return success(res, {
-    user: userService.toAdminUser(user),
-    verificationHistory: history,
-    registrationReview
-  });
+  const detail = await adminUserManagement.getAdminUserDetail(id);
+  if (!detail) return error(res, "User not found", 404);
+  return success(res, detail);
+}
+
+/** PATCH /admin/users/:id – edit profile fields */
+export async function updateUser(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!id) return error(res, "Invalid user id", 400);
+  try {
+    const body = updateAdminUserSchema.parse(req.body || {});
+    const user = await adminUserManagement.updateAdminUser(id, body);
+    return success(res, { user: userService.toAdminUser(user), message: "User updated." });
+  } catch (e: any) {
+    if (e instanceof ZodError) return error(res, e.errors[0]?.message ?? "Invalid request", 400);
+    return error(res, e?.message ?? "Failed to update", e?.status ?? 400);
+  }
+}
+
+/** POST /admin/users/:id/soft-delete */
+export async function softDeleteUser(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!id) return error(res, "Invalid user id", 400);
+  const body = softDeleteUserSchema.parse(req.body || {});
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
+  try {
+    const user = await adminUserManagement.softDeleteUser(id, adminId, body.reason);
+    return success(res, { message: "User soft-deleted.", user: userService.toAdminUser(user) });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to soft-delete", e?.status ?? 400);
+  }
+}
+
+/** POST /admin/users/:id/restore */
+export async function restoreUser(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!id) return error(res, "Invalid user id", 400);
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
+  try {
+    const user = await adminUserManagement.restoreSoftDeletedUser(id, adminId);
+    return success(res, { message: "User restored.", user: userService.toAdminUser(user) });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to restore", e?.status ?? 400);
+  }
+}
+
+/** POST /admin/users/:id/hard-delete — irreversible; deletes DB + R2 */
+export async function hardDeleteUser(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!id) return error(res, "Invalid user id", 400);
+  const body = hardDeleteUserSchema.parse(req.body || {});
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
+  try {
+    const result = await adminUserManagement.hardDeleteUser(id, adminId, body.reason);
+    return success(res, {
+      message: "User permanently deleted including media.",
+      ...result
+    });
+  } catch (e: any) {
+    if (e instanceof ZodError) return error(res, e.errors[0]?.message ?? "Invalid request", 400);
+    return error(res, e?.message ?? "Failed to hard-delete", e?.status ?? 400);
+  }
 }
 
 /** Approve user; optional remarks */
@@ -90,7 +148,7 @@ export async function approveUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
   const body = approveUserSchema.parse(req.body || {});
-  const adminId = (req as any).adminEmail ?? ADMIN_ID;
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
     await adminService.approveUser(id, adminId, body.remarks ?? null);
     return success(res, { message: "User approved." });
@@ -104,7 +162,7 @@ export async function rejectUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
   const body = rejectUserSchema.parse(req.body);
-  const adminId = (req as any).adminEmail ?? ADMIN_ID;
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
     await adminService.rejectUser(id, adminId, body.remarks);
     return success(res, { message: "User rejected." });
@@ -118,7 +176,7 @@ export async function requestRegistrationChanges(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
   const body = requestRegistrationChangesSchema.parse(req.body);
-  const adminId = (req as any).adminEmail ?? ADMIN_ID;
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
     await adminService.requestRegistrationChanges(id, adminId, body.remarks, body.requestedFields);
     return success(res, { message: "Changes requested." });
@@ -196,7 +254,7 @@ export async function listPendingUpdates(req: Request, res: Response) {
 /** POST /admin/approve-update – approve pending profile update; move data to main profile */
 export async function approveUpdate(req: Request, res: Response) {
   const body = approveProfileUpdateSchema.parse(req.body || {});
-  const adminId = (req as any).adminEmail ?? ADMIN_ID;
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
     await adminService.approveProfileUpdate(body.updateId, adminId, body.remarks ?? null);
     return success(res, { message: "Profile update approved." });
@@ -235,7 +293,7 @@ export async function broadcastNotifications(req: Request, res: Response) {
 /** POST /admin/reject-update – reject pending profile update; store remarks */
 export async function rejectUpdate(req: Request, res: Response) {
   const body = rejectProfileUpdateSchema.parse(req.body);
-  const adminId = (req as any).adminEmail ?? ADMIN_ID;
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
     await adminService.rejectProfileUpdate(body.updateId, adminId, body.remarks);
     return success(res, { message: "Profile update rejected." });

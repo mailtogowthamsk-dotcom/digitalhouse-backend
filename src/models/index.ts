@@ -36,6 +36,7 @@ import { AuthAnalyticsEvent } from "./AuthAnalyticsEvent.model";
 import { UsernameReservation } from "./UsernameReservation.model";
 import { MessageThreadPreference } from "./MessageThreadPreference.model";
 import { JobInterest } from "./JobInterest.model";
+import { JobAuditLog } from "./JobAuditLog.model";
 import { HelpOffer } from "./HelpOffer.model";
 import { HelpAppreciation } from "./HelpAppreciation.model";
 import { MemberConnection } from "./MemberConnection.model";
@@ -64,7 +65,8 @@ import {
   PlatformFeatureFlag,
   PlatformMenuItem,
   PlatformAd,
-  PlatformAuditLog
+  PlatformAuditLog,
+  PlatformBusinessSetting
 } from "./Platform.models";
 import {
   ProminentCategory,
@@ -72,6 +74,8 @@ import {
   ProminentGalleryItem,
   ProminentTimelineEntry
 } from "./ProminentPeople.models";
+import { SystemSchedulerJob, SystemSchedulerRun } from "./SystemScheduler.models";
+import { AdminUser } from "./AdminUser.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
@@ -93,6 +97,10 @@ Post.hasMany(JobInterest, { foreignKey: "postId" });
 JobInterest.belongsTo(Post, { foreignKey: "postId" });
 User.hasMany(JobInterest, { foreignKey: "fromUserId", as: "JobInterestsSent" });
 JobInterest.belongsTo(User, { foreignKey: "fromUserId", as: "FromUser" });
+Post.hasMany(JobAuditLog, { foreignKey: "postId", as: "JobAuditLogs" });
+JobAuditLog.belongsTo(Post, { foreignKey: "postId" });
+JobInterest.hasMany(JobAuditLog, { foreignKey: "jobInterestId", as: "AuditLogs" });
+JobAuditLog.belongsTo(JobInterest, { foreignKey: "jobInterestId" });
 Post.hasMany(HelpOffer, { foreignKey: "postId" });
 HelpOffer.belongsTo(Post, { foreignKey: "postId" });
 User.hasMany(HelpOffer, { foreignKey: "fromUserId", as: "HelpOffersSent" });
@@ -172,8 +180,8 @@ ProminentPerson.hasMany(ProminentTimelineEntry, { foreignKey: "personId", as: "T
 ProminentTimelineEntry.belongsTo(ProminentPerson, { foreignKey: "personId", as: "Person" });
 
 export type { UserStatus } from "./user.model";
-export type { PostType, JobStatus, JobEmploymentType, PostVisibility } from "./Post.model";
-export { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES, POST_VISIBILITIES } from "./Post.model";
+export type { PostType, JobStatus, JobEmploymentType, JobWorkMode, PostVisibility } from "./Post.model";
+export { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES, JOB_WORK_MODES, POST_VISIBILITIES } from "./Post.model";
 export type { ReportStatus } from "./PostReport.model";
 export type { MediaStatus, MediaFileType, MediaModule } from "./MediaFile.model";
 export { MEDIA_MODULES } from "./MediaFile.model";
@@ -219,6 +227,7 @@ export {
   MemberExpertiseSelection,
   MessageThreadPreference,
   JobInterest,
+  JobAuditLog,
   HelpOffer,
   HelpAppreciation,
   MasterDataType,
@@ -242,8 +251,12 @@ export {
   PlatformMenuItem,
   PlatformAd,
   PlatformAuditLog,
+  PlatformBusinessSetting,
   ProminentCategory,
   ProminentPerson,
   ProminentGalleryItem,
-  ProminentTimelineEntry
+  ProminentTimelineEntry,
+  SystemSchedulerJob,
+  SystemSchedulerRun,
+  AdminUser
 };

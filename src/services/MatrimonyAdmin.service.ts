@@ -9,6 +9,7 @@ import {
   MatrimonyInterest,
   MatrimonyMatch,
   MatrimonyReport,
+  MatrimonySubscription,
   Kulam,
   Location
 } from "../models";
@@ -104,17 +105,61 @@ export type MatrimonyRequestListQuery = {
   gender?: string;
   district?: string;
   kulam?: string;
+  community?: string;
   ageMin?: number;
   ageMax?: number;
   submittedFrom?: string;
   submittedTo?: string;
+  /** today | week | month — convenience date windows on current application */
+  period?: "today" | "week" | "month";
   completionMin?: number;
   verificationStatus?: "complete" | "incomplete" | "any";
   search?: string;
   includeDrafts?: boolean;
   /** When true, show SUBMITTED, UNDER_REVIEW, and RESUBMITTED only */
   pendingReviewOnly?: boolean;
+  subscriptionPlan?: string;
+  versionMin?: number;
 };
+
+/** Prefer an open PENDING application; otherwise the latest by submittedAt. */
+function pickCurrentApplication<
+  T extends { rowStatus: string; submittedAt: string; updatedAt: string }
+>(apps: T[]): T {
+  const pending = apps.filter((a) => a.rowStatus === "PENDING");
+  const pool = pending.length > 0 ? pending : apps;
+  return [...pool].sort(
+    (a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime()
+  )[0];
+}
+
+function periodRange(period?: string): { from?: Date; to?: Date } {
+  if (!period) return {};
+  const now = new Date();
+  const to = new Date(now);
+  to.setHours(23, 59, 59, 999);
+  const from = new Date(now);
+  from.setHours(0, 0, 0, 0);
+  if (period === "week") {
+    from.setDate(from.getDate() - 7);
+  } else if (period === "month") {
+    from.setDate(1);
+  } else if (period !== "today") {
+    return {};
+  }
+  return { from, to };
+}
+
+function adminDecisionLabel(workflowStatus: string, reviewedBy: string | null): string {
+  if (workflowStatus === "APPROVED") return reviewedBy ? `Approved by ${reviewedBy}` : "Approved";
+  if (workflowStatus === "REJECTED") return reviewedBy ? `Rejected by ${reviewedBy}` : "Rejected";
+  if (workflowStatus === "CHANGES_REQUESTED") {
+    return reviewedBy ? `Changes requested by ${reviewedBy}` : "Changes requested";
+  }
+  if (workflowStatus === "SUSPENDED") return "Suspended";
+  if (workflowStatus === "UNDER_REVIEW") return reviewedBy ? `Under review (${reviewedBy})` : "Under review";
+  return "—";
+}
 
 function calcAge(dob: Date | string | null): number | null {
   if (!dob) return null;
@@ -314,25 +359,9 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
   const sortDir = query.sortDir === "asc" ? "ASC" : "DESC";
 
   const pendingWhere: WhereOptions = { section: "MATRIMONY" };
-  if (query.submittedFrom) {
-    const from = new Date(query.submittedFrom);
-    if (!Number.isNaN(from.getTime())) {
-      (pendingWhere as any).submittedAt = {
-        ...((pendingWhere as any).submittedAt ?? {}),
-        [Op.gte]: from
-      };
-    }
-  }
-  if (query.submittedTo) {
-    const to = new Date(query.submittedTo);
-    if (!Number.isNaN(to.getTime())) {
-      to.setHours(23, 59, 59, 999);
-      (pendingWhere as any).submittedAt = {
-        ...((pendingWhere as any).submittedAt ?? {}),
-        [Op.lte]: to
-      };
-    }
-  }
+  const period = periodRange(query.period);
+  const submittedFrom = query.submittedFrom || (period.from ? period.from.toISOString() : undefined);
+  const submittedTo = query.submittedTo || (period.to ? period.to.toISOString() : undefined);
 
   const userWhere: WhereOptions = {};
   if (query.gender?.trim()) {
@@ -341,16 +370,19 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
   if (query.district?.trim()) {
     (userWhere as any).district = { [Op.like]: `%${query.district.trim()}%` };
   }
+  if (query.community?.trim()) {
+    (userWhere as any).community = { [Op.like]: `%${query.community.trim()}%` };
+  }
   const hasUserFilter = Object.keys(userWhere).length > 0;
 
   const rows = await PendingProfileUpdate.findAll({
     where: pendingWhere,
-    order: [[sortBy === "submittedAt" ? "submittedAt" : "updatedAt", sortDir]],
+    order: [["submittedAt", "ASC"]],
     include: [
       {
         model: User,
         as: "User",
-        required: hasUserFilter,
+        required: true,
         where: hasUserFilter ? userWhere : undefined
       }
     ]
@@ -365,61 +397,81 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
   ]);
   const profileByUser = new Map(profiles.map((p) => [p.userId, p]));
 
-  const search = query.search?.trim().toLowerCase();
-  const items: Array<Record<string, unknown> & { _candidateUrl?: string | null }> = [];
+  type BuiltItem = {
+    id: number;
+    userId: number;
+    fullName: string;
+    email: string;
+    mobile: string | null;
+    gender: string | null;
+    age: number | null;
+    district: string;
+    community: string;
+    kulam: string;
+    submittedAt: string;
+    updatedAt: string;
+    profileCompletion: number;
+    workflowStatus: MatrimonyWorkflowStatus;
+    rowStatus: string;
+    assignedReviewer: string | null;
+    reviewedBy: string | null;
+    verificationComplete: boolean;
+    profilePhotoUrl: string | null;
+    submittedForReview: boolean;
+    adminDecision: string;
+    applicationVersion: number;
+    applicationCount: number;
+    isCurrent: boolean;
+    subscriptionPlan: string | null;
+    _candidateUrl?: string | null;
+  };
+
+  const byUser = new Map<number, BuiltItem[]>();
 
   for (const row of rows) {
-    const user = (row as any).User as User | undefined;
+    const u = (row as any).User as User;
+
     const profile = profileByUser.get(row.userId);
     const allowedKeys = SECTION_ALLOWED_KEYS.matrimony;
     const rawData = readRawPendingData(row.data);
     const data = normalizeJsonColumn(row.data, allowedKeys) ?? {};
     const meta = metaByPending.get(row.id) ?? null;
     const workflowStatus = deriveWorkflow(row.status, rawData, meta);
-    if (!query.includeDrafts && workflowStatus === "DRAFT") continue;
-    // Explicit status filter wins; otherwise optional pending-review queue.
-    if (query.workflowStatus) {
-      if (workflowStatus !== query.workflowStatus) continue;
-    } else if (query.pendingReviewOnly) {
-      const pending = new Set(["SUBMITTED", "UNDER_REVIEW", "RESUBMITTED"]);
-      if (!pending.has(workflowStatus)) continue;
-    }
+
     if (
       query.gender &&
-      !(user?.gender ?? "").toLowerCase().includes(query.gender.toLowerCase())
+      !(u.gender ?? "").toLowerCase().includes(query.gender.toLowerCase())
     ) {
       continue;
     }
 
-    const district = user?.district ?? "";
+    const district = u.district ?? "";
     if (query.district && !district.toLowerCase().includes(query.district.toLowerCase())) continue;
+
+    const communityName = u.community ?? "";
+    if (
+      query.community &&
+      !communityName.toLowerCase().includes(query.community.toLowerCase())
+    ) {
+      continue;
+    }
 
     const community = normalizeJsonColumn(profile?.community, SECTION_ALLOWED_KEYS.community) as {
       kulam?: string;
     } | null;
     const kulam =
-      (data.kulamSnapshot as string) ?? community?.kulam ?? user?.kulam ?? "";
+      (data.kulamSnapshot as string) ?? community?.kulam ?? u.kulam ?? "";
     if (query.kulam && !String(kulam).toLowerCase().includes(query.kulam.toLowerCase())) continue;
 
-    const age = calcAge(user?.dob ?? null);
+    const age = calcAge(u.dob ?? null);
     if (query.ageMin != null && (age == null || age < query.ageMin)) continue;
     if (query.ageMax != null && (age == null || age > query.ageMax)) continue;
-
-    if (query.submittedFrom) {
-      const from = new Date(query.submittedFrom);
-      if (row.submittedAt < from) continue;
-    }
-    if (query.submittedTo) {
-      const to = new Date(query.submittedTo);
-      to.setHours(23, 59, 59, 999);
-      if (row.submittedAt > to) continue;
-    }
 
     const approved = normalizeJsonColumn(profile?.matrimony, allowedKeys) ?? {};
     const { percentage } = computeMatrimonyCompletion(
       approved as any,
       data as any,
-      user?.profilePhoto ?? null
+      u.profilePhoto ?? null
     );
     if (query.completionMin != null && percentage < query.completionMin) continue;
 
@@ -428,42 +480,137 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     if (query.verificationStatus === "complete" && !vComplete) continue;
     if (query.verificationStatus === "incomplete" && vComplete) continue;
 
+    const search = query.search?.trim().toLowerCase();
     if (search) {
       const idMatch = String(row.id).includes(search) || String(row.userId).includes(search);
-      const nameMatch = (user?.fullName ?? "").toLowerCase().includes(search);
-      const mobileMatch = (user?.mobile ?? "").includes(search);
-      const emailMatch = (user?.email ?? "").toLowerCase().includes(search);
-      if (!idMatch && !nameMatch && !mobileMatch && !emailMatch) continue;
+      const nameMatch = (u.fullName ?? "").toLowerCase().includes(search);
+      const mobileMatch = (u.mobile ?? "").includes(search);
+      const emailMatch = (u.email ?? "").toLowerCase().includes(search);
+      const communityMatch = communityName.toLowerCase().includes(search);
+      const kulamMatch = String(kulam).toLowerCase().includes(search);
+      const districtMatch = district.toLowerCase().includes(search);
+      if (
+        !idMatch &&
+        !nameMatch &&
+        !mobileMatch &&
+        !emailMatch &&
+        !communityMatch &&
+        !kulamMatch &&
+        !districtMatch
+      ) {
+        continue;
+      }
     }
 
     const candidateUrl = resolveCandidatePhotoUrl(data as Record<string, unknown>);
+    const reviewedBy = meta?.reviewedBy ?? null;
 
-    items.push({
+    const item: BuiltItem = {
       id: row.id,
       userId: row.userId,
-      fullName: user?.fullName ?? `User #${row.userId}`,
-      email: user?.email ?? "",
-      mobile: user?.mobile ?? null,
-      gender: user?.gender ?? null,
+      fullName: u.fullName ?? `User #${row.userId}`,
+      email: u.email ?? "",
+      mobile: u.mobile ?? null,
+      gender: u.gender ?? null,
       age,
       district,
-      kulam,
+      community: communityName,
+      kulam: String(kulam),
       submittedAt: row.submittedAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
       profileCompletion: percentage,
       workflowStatus,
       rowStatus: row.status,
       assignedReviewer: meta?.assignedReviewer ?? null,
+      reviewedBy,
       verificationComplete: vComplete,
       profilePhotoUrl: null,
       submittedForReview: rawData[SUBMITTED_FLAG] !== false,
+      adminDecision: adminDecisionLabel(workflowStatus, reviewedBy),
+      applicationVersion: 0,
+      applicationCount: 0,
+      isCurrent: false,
+      subscriptionPlan: null,
       _candidateUrl: candidateUrl
-    });
+    };
+
+    const list = byUser.get(row.userId) ?? [];
+    list.push(item);
+    byUser.set(row.userId, list);
   }
 
-  const total = items.length;
+  // Assign version numbers (chronological) and pick ONE current row per user
+  let currentItems: BuiltItem[] = [];
+  for (const [, apps] of byUser) {
+    const chron = [...apps].sort(
+      (a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime()
+    );
+    chron.forEach((a, idx) => {
+      a.applicationVersion = idx + 1;
+      a.applicationCount = chron.length;
+    });
+    const current = pickCurrentApplication(chron);
+    current.isCurrent = true;
+    currentItems.push(current);
+  }
+
+  // Status / draft / date filters apply to the CURRENT application only
+  currentItems = currentItems.filter((item) => {
+    if (!query.includeDrafts && item.workflowStatus === "DRAFT") return false;
+    if (query.workflowStatus) {
+      if (item.workflowStatus !== query.workflowStatus) return false;
+    } else if (query.pendingReviewOnly) {
+      const pending = new Set(["SUBMITTED", "UNDER_REVIEW", "RESUBMITTED"]);
+      if (!pending.has(item.workflowStatus)) return false;
+    }
+    if (submittedFrom) {
+      const from = new Date(submittedFrom);
+      if (!Number.isNaN(from.getTime()) && new Date(item.submittedAt) < from) return false;
+    }
+    if (submittedTo) {
+      const to = new Date(submittedTo);
+      if (!Number.isNaN(to.getTime()) && new Date(item.submittedAt) > to) return false;
+    }
+    if (query.versionMin != null && item.applicationVersion < query.versionMin) return false;
+    return true;
+  });
+
+  // Optional subscription plan filter
+  if (query.subscriptionPlan?.trim() && currentItems.length > 0) {
+    const ids = currentItems.map((i) => i.userId);
+    const subs = await MatrimonySubscription.findAll({
+      where: { userId: { [Op.in]: ids }, status: "ACTIVE" },
+      attributes: ["userId", "plan"]
+    }).catch(() => [] as MatrimonySubscription[]);
+    const planByUser = new Map(subs.map((s) => [s.userId, s.plan]));
+    const want = query.subscriptionPlan.trim().toUpperCase();
+    currentItems = currentItems.filter((i) => (planByUser.get(i.userId) ?? "FREE") === want);
+    for (const i of currentItems) {
+      i.subscriptionPlan = planByUser.get(i.userId) ?? "FREE";
+    }
+  } else if (currentItems.length > 0) {
+    const ids = currentItems.map((i) => i.userId);
+    const subs = await MatrimonySubscription.findAll({
+      where: { userId: { [Op.in]: ids }, status: "ACTIVE" },
+      attributes: ["userId", "plan"]
+    }).catch(() => [] as MatrimonySubscription[]);
+    const planByUser = new Map(subs.map((s) => [s.userId, s.plan]));
+    for (const i of currentItems) {
+      i.subscriptionPlan = planByUser.get(i.userId) ?? null;
+    }
+  }
+
+  currentItems.sort((a, b) => {
+    const aVal =
+      sortBy === "updatedAt" ? new Date(a.updatedAt).getTime() : new Date(a.submittedAt).getTime();
+    const bVal =
+      sortBy === "updatedAt" ? new Date(b.updatedAt).getTime() : new Date(b.submittedAt).getTime();
+    return sortDir === "ASC" ? aVal - bVal : bVal - aVal;
+  });
+
+  const total = currentItems.length;
   const offset = (page - 1) * limit;
-  const pageItems = items.slice(offset, offset + limit);
+  const pageItems = currentItems.slice(offset, offset + limit);
 
   await Promise.all(
     pageItems.map(async (item) => {
@@ -617,7 +764,164 @@ export async function getMatrimonyRequestDetail(updateId: number) {
       createdBy: a.createdBy,
       createdAt: a.createdAt.toISOString()
     })),
-    rejectionReasons: MATRIMONY_REJECTION_REASONS
+    rejectionReasons: MATRIMONY_REJECTION_REASONS,
+    ...(await buildApplicationHistoryPayload(row.userId, row.id))
+  };
+}
+
+/** All matrimony application versions for a user + timeline (history preserved). */
+async function buildApplicationHistoryPayload(userId: number, currentId: number) {
+  const allRows = await PendingProfileUpdate.findAll({
+    where: { userId, section: "MATRIMONY" },
+    order: [["submittedAt", "ASC"]]
+  });
+  const metaMap = await loadMetaForPendingIds(allRows.map((r) => r.id));
+  const allNotes = await MatrimonyAdminNote.findAll({
+    where: { userId },
+    order: [["createdAt", "ASC"]]
+  }).catch(() => [] as MatrimonyAdminNote[]);
+  const notesByPending = new Map<number, MatrimonyAdminNote[]>();
+  for (const n of allNotes) {
+    const list = notesByPending.get(n.pendingUpdateId) ?? [];
+    list.push(n);
+    notesByPending.set(n.pendingUpdateId, list);
+  }
+
+  const applicationHistory = allRows.map((r, idx) => {
+    const raw = readRawPendingData(r.data);
+    const meta = metaMap.get(r.id) ?? null;
+    const workflowStatus = deriveWorkflow(r.status, raw, meta);
+    const versionNotes = (notesByPending.get(r.id) ?? []).map((n) => ({
+      id: n.id,
+      noteType: n.noteType,
+      content: n.content,
+      createdBy: n.createdBy,
+      createdAt: n.createdAt.toISOString()
+    }));
+    return {
+      id: r.id,
+      applicationVersion: idx + 1,
+      isCurrent: r.id === currentId,
+      workflowStatus,
+      rowStatus: r.status,
+      submittedAt: r.submittedAt.toISOString(),
+      updatedAt: r.updatedAt.toISOString(),
+      reviewedAt: r.reviewedAt?.toISOString() ?? null,
+      adminRemarks: r.adminRemarks,
+      assignedReviewer: meta?.assignedReviewer ?? null,
+      reviewedBy: meta?.reviewedBy ?? null,
+      rejectionReason: meta?.rejectionReason ?? null,
+      rejectionComment: meta?.rejectionComment ?? null,
+      changeRequest:
+        (raw[CHANGE_REQUEST_KEY] as MatrimonyRequestMeta["changeRequest"]) ??
+        meta?.changeRequest ??
+        null,
+      resubmissionCount: Number(raw[RESUB_COUNT_KEY] ?? 0),
+      submittedForReview: raw[SUBMITTED_FLAG] !== false,
+      adminDecision: adminDecisionLabel(workflowStatus, meta?.reviewedBy ?? null),
+      notes: versionNotes
+    };
+  });
+
+  const currentVersion =
+    applicationHistory.find((h) => h.isCurrent)?.applicationVersion ??
+    applicationHistory.length;
+
+  const timeline: Array<{
+    at: string;
+    type: string;
+    label: string;
+    actor: string | null;
+    applicationVersion: number | null;
+    meta?: string | null;
+  }> = [];
+
+  for (const h of applicationHistory) {
+    timeline.push({
+      at: h.submittedAt,
+      type: "APPLICATION_SUBMITTED",
+      label: `Version ${h.applicationVersion} submitted`,
+      actor: "User",
+      applicationVersion: h.applicationVersion
+    });
+    if (h.workflowStatus === "APPROVED" && h.reviewedAt) {
+      timeline.push({
+        at: h.reviewedAt,
+        type: "APPROVED",
+        label: `Version ${h.applicationVersion} approved`,
+        actor: h.reviewedBy,
+        applicationVersion: h.applicationVersion,
+        meta: h.adminRemarks
+      });
+    }
+    if (h.workflowStatus === "REJECTED" && h.reviewedAt) {
+      timeline.push({
+        at: h.reviewedAt,
+        type: "REJECTED",
+        label: `Version ${h.applicationVersion} rejected`,
+        actor: h.reviewedBy,
+        applicationVersion: h.applicationVersion,
+        meta: h.rejectionComment || h.rejectionReason
+      });
+    }
+    if (h.workflowStatus === "CHANGES_REQUESTED") {
+      const at = h.changeRequest?.requestedAt || h.updatedAt;
+      timeline.push({
+        at,
+        type: "CHANGES_REQUESTED",
+        label: `Version ${h.applicationVersion} — changes requested`,
+        actor: h.changeRequest?.requestedBy || h.reviewedBy,
+        applicationVersion: h.applicationVersion,
+        meta: h.changeRequest?.comment || h.rejectionComment
+      });
+    }
+    if (h.resubmissionCount > 0) {
+      timeline.push({
+        at: h.updatedAt,
+        type: "RESUBMITTED",
+        label: `Version ${h.applicationVersion} resubmitted (×${h.resubmissionCount})`,
+        actor: "User",
+        applicationVersion: h.applicationVersion
+      });
+    }
+  }
+
+  const audits = await MatrimonyReviewAudit.findAll({
+    where: { userId },
+    order: [["createdAt", "ASC"]],
+    limit: 100
+  }).catch(() => [] as MatrimonyReviewAudit[]);
+
+  for (const a of audits) {
+    const version =
+      applicationHistory.find((h) => h.id === a.pendingUpdateId)?.applicationVersion ?? null;
+    timeline.push({
+      at: a.createdAt.toISOString(),
+      type: a.action,
+      label: a.action.replace(/_/g, " "),
+      actor: a.createdBy,
+      applicationVersion: version,
+      meta: a.payload ? JSON.stringify(a.payload) : null
+    });
+  }
+
+  timeline.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+
+  const currentRow = allRows.find((r) => r.id === currentId);
+  const pendingSince = currentRow?.submittedAt
+    ? Math.max(
+        0,
+        Math.floor((Date.now() - currentRow.submittedAt.getTime()) / (24 * 60 * 60 * 1000))
+      )
+    : null;
+
+  return {
+    applicationVersion: currentVersion,
+    applicationCount: applicationHistory.length,
+    isCurrent: true,
+    pendingSinceDays: pendingSince,
+    applicationHistory,
+    timeline
   };
 }
 

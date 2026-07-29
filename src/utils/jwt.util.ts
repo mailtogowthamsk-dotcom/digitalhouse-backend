@@ -38,8 +38,17 @@ export function verifyAdminToken(token: string): { email: string; admin: true; r
     email?: string;
     admin?: boolean;
     role?: string;
+    userId?: number;
   };
-  if (!decoded.admin || !decoded.email) throw new Error("Invalid admin token");
-  return { email: decoded.email, admin: true, role: decoded.role };
+  // Must be an admin token — reject accidental use of member access tokens
+  if (!decoded.admin || !decoded.email || typeof decoded.email !== "string") {
+    throw new Error("Invalid admin token");
+  }
+  if (decoded.userId != null) {
+    throw new Error("Invalid admin token");
+  }
+  const email = decoded.email.trim().toLowerCase();
+  if (!email.includes("@")) throw new Error("Invalid admin token");
+  return { email, admin: true, role: decoded.role };
 }
 

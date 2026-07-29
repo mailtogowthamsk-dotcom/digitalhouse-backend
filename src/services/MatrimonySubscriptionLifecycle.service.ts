@@ -4,19 +4,36 @@ import { MatrimonyPaymentOrder, type MatrimonyPaymentPurpose } from "../models/M
 import { MATRIMONY_PLAN_CATALOG } from "../constants/matrimony-monetization.constants";
 import * as Monetization from "./MatrimonyMonetization.service";
 import * as Notifications from "./Notification.service";
+import * as PlatformSettings from "./MatrimonyPlatformSettings.service";
 import {
   hasMatrimonySubscriptionP1Columns,
   withSubscriptionAttributes
 } from "../utils/matrimonySubscriptionSchema.util";
+import * as SchedulerTracking from "./SystemSchedulerTracking.service";
 
 const JOB_INTERVAL_MS = Number(process.env.MATRIMONY_SUBSCRIPTION_JOB_INTERVAL_MS || 60 * 60 * 1000);
 const EXPIRY_JOB_ENABLED = process.env.MATRIMONY_SUBSCRIPTION_JOB_ENABLED !== "false";
+const SCHEDULER_JOB_KEY = "matrimony_subscription_lifecycle" as const;
 
 let jobTimer: ReturnType<typeof setInterval> | null = null;
 let jobRunning = false;
 
+export function getMatrimonySubscriptionJobRuntimeStatus() {
+  return {
+    timerActive: jobTimer != null,
+    running: jobRunning,
+    intervalMs: JOB_INTERVAL_MS,
+    envEnabled: EXPIRY_JOB_ENABLED
+  };
+}
+
 function planLabel(plan: string): string {
-  return MATRIMONY_PLAN_CATALOG.find((p) => p.plan === plan)?.label ?? plan;
+  return (
+    PlatformSettings.getDynamicPlanCatalog({ includeInactive: true }).find((p) => p.plan === plan)
+      ?.label ??
+    MATRIMONY_PLAN_CATALOG.find((p) => p.plan === plan)?.label ??
+    plan
+  );
 }
 
 function purposeLabel(purpose: MatrimonyPaymentPurpose): string {
@@ -155,17 +172,35 @@ export async function sendExpiryReminders(): Promise<{ sevenDay: number; oneDay:
   return { sevenDay, oneDay };
 }
 
-export async function runSubscriptionLifecycleJobs(): Promise<void> {
+export async function runSubscriptionLifecycleJobs(opts?: {
+  trigger?: "automatic" | "manual";
+  executedBy?: string | null;
+}): Promise<void> {
+  const trigger = opts?.trigger ?? "automatic";
+  if (trigger === "automatic" && !(await SchedulerTracking.isJobEnabled(SCHEDULER_JOB_KEY))) {
+    return;
+  }
   if (jobRunning) return;
   jobRunning = true;
   try {
-    const expired = await expireDueSubscriptions();
-    const reminders = await sendExpiryReminders();
-    if (expired > 0 || reminders.sevenDay > 0 || reminders.oneDay > 0) {
-      console.log("[matrimony-subscription-job]", { expired, reminders });
+    const tracked = await SchedulerTracking.trackExecution(
+      SCHEDULER_JOB_KEY,
+      trigger,
+      opts?.executedBy ?? null,
+      async () => {
+        const expired = await expireDueSubscriptions();
+        const reminders = await sendExpiryReminders();
+        if (expired > 0 || reminders.sevenDay > 0 || reminders.oneDay > 0) {
+          console.log("[matrimony-subscription-job]", { expired, reminders });
+        }
+        return {
+          recordsProcessed: expired + reminders.sevenDay + reminders.oneDay
+        };
+      }
+    );
+    if (!tracked.ok && tracked.error) {
+      console.error("[matrimony-subscription-job] failed", tracked.error);
     }
-  } catch (e) {
-    console.error("[matrimony-subscription-job] failed", e);
   } finally {
     jobRunning = false;
   }

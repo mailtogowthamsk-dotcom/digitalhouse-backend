@@ -18,6 +18,15 @@ export const authLimiter = rateLimit({
   legacyHeaders: false
 });
 
+/** Dedicated admin login limiter (stricter than general auth). */
+export const adminLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  message: { ok: false, message: "Too many login attempts. Please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 /** Very strict for OTP request (email/SMS cost). */
 export const otpRequestLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,

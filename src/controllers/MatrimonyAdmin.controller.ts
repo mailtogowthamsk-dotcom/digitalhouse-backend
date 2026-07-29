@@ -184,6 +184,7 @@ export async function bulkAction(req: Request, res: Response) {
 }
 
 export async function getConfig(_req: Request, res: Response) {
+  const { platformSettings, planCatalog } = await PlatformSettings.settingsForAdminAsync();
   return success(res, {
     changeRequestTemplates: MATRIMONY_CHANGE_REQUEST_TEMPLATES,
     changeSections: Object.entries(MATRIMONY_CHANGE_SECTIONS).map(([key, v]) => ({
@@ -192,23 +193,46 @@ export async function getConfig(_req: Request, res: Response) {
       fields: v.fields
     })),
     reportReasons: MATRIMONY_REPORT_REASONS,
-    platformSettings: PlatformSettings.settingsForAdmin(),
-    planCatalog: PlatformSettings.getDynamicPlanCatalog()
+    platformSettings,
+    planCatalog
   });
 }
+
+const planOverrideSchema = z.object({
+  plan: z.enum(["FREE", "GOLD", "PLATINUM"]),
+  label: z.string().trim().min(1).max(80).optional(),
+  tagline: z.string().trim().max(200).optional(),
+  priceInr: z.number().int().min(0).optional(),
+  durationMonths: z.number().int().min(0).max(60).optional(),
+  opensPerMonth: z.number().int().min(0).max(10_000).optional(),
+  benefits: z.array(z.string().trim().min(1).max(200)).max(20).optional(),
+  gstPercent: z.number().min(0).max(100).optional(),
+  displayOrder: z.number().int().min(0).max(10_000).optional(),
+  isActive: z.boolean().optional(),
+  popular: z.boolean().optional(),
+  canOpenOneStar: z.boolean().optional(),
+  canOpenTwoStar: z.boolean().optional(),
+  whoViewedMe: z.boolean().optional()
+});
 
 const platformSettingsSchema = z.object({
   goldPriceInr: z.number().int().positive().optional(),
   platinumPriceInr: z.number().int().positive().optional(),
   contactRevealPaise: z.number().int().positive().optional(),
   monthlyOpenQuota: z.number().int().positive().optional(),
-  durationMonths: z.number().int().positive().optional()
+  durationMonths: z.number().int().positive().optional(),
+  gstPercent: z.number().min(0).max(100).optional(),
+  plans: z.array(planOverrideSchema).max(10).optional()
 });
 
 export async function updatePlatformSettings(req: Request, res: Response) {
   const body = platformSettingsSchema.parse(req.body);
-  const saved = PlatformSettings.saveMatrimonyPlatformSettings(body, adminEmail(req));
-  return success(res, { platformSettings: saved, message: "Platform settings updated." });
+  const saved = await PlatformSettings.saveSubscriptionPlanConfig(body, adminEmail(req));
+  return success(res, {
+    platformSettings: saved.platformSettings,
+    planCatalog: saved.planCatalog,
+    message: "Platform settings updated."
+  });
 }
 
 export async function listReports(req: Request, res: Response) {

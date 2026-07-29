@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { MATRIMONY_REPORT_REASONS } from "../constants/matrimony-safety.constants";
+
+const reportCodes = MATRIMONY_REPORT_REASONS.map((r) => r.code) as [string, ...string[]];
 
 export const usersSearchQuerySchema = z.object({
   q: z.string().trim().min(1).max(80)
@@ -21,7 +24,7 @@ export const connectionRequestsSchema = z.object({
 });
 
 export const reportUserSchema = z.object({
-  reasonCode: z.string().trim().min(1).max(40),
+  reasonCode: z.enum(reportCodes),
   details: z.string().trim().max(2000).optional()
 });
 

@@ -10,14 +10,25 @@ import {
 } from "../constants/helpingHands.constants";
 import type { HelpStatus } from "../constants/helpingHands.constants";
 import * as Notifications from "./Notification.service";
+import * as SchedulerTracking from "./SystemSchedulerTracking.service";
 
 const JOB_INTERVAL_MS = Number(
   process.env.HELPING_HANDS_EXPIRY_JOB_INTERVAL_MS || 15 * 60 * 1000
 );
 const JOB_ENABLED = process.env.HELPING_HANDS_EXPIRY_JOB_ENABLED !== "false";
+const SCHEDULER_JOB_KEY = "helping_hands_expiry" as const;
 
 let jobTimer: ReturnType<typeof setInterval> | null = null;
 let jobRunning = false;
+
+export function getHelpingHandsExpiryJobRuntimeStatus() {
+  return {
+    timerActive: jobTimer != null,
+    running: jobRunning,
+    intervalMs: JOB_INTERVAL_MS,
+    envEnabled: JOB_ENABLED
+  };
+}
 
 /** OPEN/IN_PROGRESS past helpExpiresAt → EXPIRED + drop urgent flag. */
 export async function expireDueHelpRequests(): Promise<number> {
@@ -82,17 +93,33 @@ export async function sendHelpExpiryReminders(): Promise<number> {
   return count;
 }
 
-export async function runHelpingHandsExpiryJobs(): Promise<void> {
+export async function runHelpingHandsExpiryJobs(opts?: {
+  trigger?: "automatic" | "manual";
+  executedBy?: string | null;
+}): Promise<void> {
+  const trigger = opts?.trigger ?? "automatic";
+  if (trigger === "automatic" && !(await SchedulerTracking.isJobEnabled(SCHEDULER_JOB_KEY))) {
+    return;
+  }
   if (jobRunning) return;
   jobRunning = true;
   try {
-    const expired = await expireDueHelpRequests();
-    const reminders = await sendHelpExpiryReminders();
-    if (expired > 0 || reminders > 0) {
-      console.log("[helping-hands-expiry-job]", { expired, reminders });
+    const tracked = await SchedulerTracking.trackExecution(
+      SCHEDULER_JOB_KEY,
+      trigger,
+      opts?.executedBy ?? null,
+      async () => {
+        const expired = await expireDueHelpRequests();
+        const reminders = await sendHelpExpiryReminders();
+        if (expired > 0 || reminders > 0) {
+          console.log("[helping-hands-expiry-job]", { expired, reminders });
+        }
+        return { recordsProcessed: expired + reminders };
+      }
+    );
+    if (!tracked.ok && tracked.error) {
+      console.error("[helping-hands-expiry-job] failed", tracked.error);
     }
-  } catch (e) {
-    console.error("[helping-hands-expiry-job] failed", e);
   } finally {
     jobRunning = false;
   }

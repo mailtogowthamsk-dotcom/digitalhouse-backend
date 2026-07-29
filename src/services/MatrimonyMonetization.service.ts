@@ -90,10 +90,14 @@ export type MySubscriptionDetail = SubscriptionSummary & {
 
 export async function getSubscriptionSummary(userId: number): Promise<SubscriptionSummary> {
   const plan = await getActivePlan(userId);
-  const catalog = MATRIMONY_PLAN_CATALOG.find((p) => p.plan === plan)!;
+  const catalog =
+    PlatformSettings.getDynamicPlanCatalog({ includeInactive: true }).find((p) => p.plan === plan) ||
+    MATRIMONY_PLAN_CATALOG.find((p) => p.plan === plan)!;
   const period = currentBillingPeriod();
   const used = await countOpensInPeriod(userId, period);
   const activeSub = await getActiveSubscriptionRow(userId);
+  const quotaLimit =
+    plan === "FREE" ? catalog.opensPerMonth : PlatformSettings.monthlyOpenQuota();
 
   return {
     plan,
@@ -101,7 +105,7 @@ export async function getSubscriptionSummary(userId: number): Promise<Subscripti
     expiresAt: activeSub?.endsAt.toISOString() ?? null,
     quota: {
       used,
-      limit: catalog.opensPerMonth,
+      limit: quotaLimit,
       period,
       resetsAt: billingPeriodResetsAt(period)
     },
@@ -293,7 +297,9 @@ export async function getMySubscriptionDetail(userId: number): Promise<MySubscri
       lastPaid &&
       (lastPaid.status === "EXPIRED" || lastPaid.endsAt.getTime() <= now);
     const expiredCatalog = lastPaid
-      ? MATRIMONY_PLAN_CATALOG.find((p) => p.plan === lastPaid.plan)
+      ? PlatformSettings.getDynamicPlanCatalog({ includeInactive: true }).find(
+          (p) => p.plan === lastPaid.plan
+        ) || MATRIMONY_PLAN_CATALOG.find((p) => p.plan === lastPaid.plan)
       : null;
     return {
       ...summary,
@@ -543,5 +549,5 @@ export async function listWhoViewedMe(userId: number): Promise<
 }
 
 export function getPlanCatalog() {
-  return PlatformSettings.getDynamicPlanCatalog();
+  return PlatformSettings.getDynamicPlanCatalog({ includeInactive: false });
 }

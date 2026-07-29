@@ -1,6 +1,6 @@
 import { Op, type WhereOptions } from "sequelize";
 import { sequelize } from "../config/db";
-import { User, UserProfile, PendingProfileUpdate, AdminVerification } from "../models";
+import { User, UserProfile, PendingProfileUpdate, AdminVerification, MatrimonySubscription, Post, PostReport } from "../models";
 import { ensureUserProfile } from "./ensureUserProfile";
 import { resolveLoginSource } from "../utils/authProvider.util";
 import type { MatrimonySection, BusinessSection } from "../models/UserProfile.model";
@@ -11,6 +11,7 @@ import { getPendingReportCount } from "./AdminReports.service";
 import { resolveAdminRole } from "./AdminRoles.service";
 import { ADMIN_ROLE_LABELS } from "../constants/adminRoles.constants";
 import { registrationStatusService } from "./RegistrationStatus.service";
+import { dummyPasswordVerify, safeEqualString } from "../utils/adminPassword.util";
 
 const MATRIMONY_MEDIA_URL_KEYS = ["candidatePhotoUrl", "profilePhotoUrl", "horoscopeDocumentUrl"] as const;
 
@@ -39,24 +40,65 @@ function getAdminWhitelist(): { emails: Set<string>; password: string } {
   return { emails, password };
 }
 
-/** Admin login: email must be in whitelist, password must match. Returns JWT. */
+/**
+ * Admin login: prefer admin_users (hashed password); fall back to ADMIN_EMAILS + shared ADMIN_PASSWORD.
+ * Successful legacy logins are auto-provisioned into admin_users when the table exists.
+ */
 export async function adminLogin(
   email: string,
   password: string
-): Promise<{ token: string; admin: { email: string; role: string; roleLabel: string } }> {
-  const { emails, password: expectedPassword } = getAdminWhitelist();
+): Promise<{ token: string; admin: { email: string; role: string; roleLabel: string; name?: string } }> {
   const normalized = email.trim().toLowerCase();
+  const AdminUsers = await import("./AdminUsers.service");
+  const dbResult = await AdminUsers.tryDatabaseLogin(normalized, password);
+
+  if (dbResult.ok) {
+    const token = signAdminToken({ email: dbResult.email, role: dbResult.role });
+    return {
+      token,
+      admin: {
+        email: dbResult.email,
+        role: dbResult.role,
+        roleLabel: ADMIN_ROLE_LABELS[dbResult.role],
+        name: dbResult.name
+      }
+    };
+  }
+
+  // Known DB account — never fall through to shared password
+  if (
+    dbResult.reason === "bad_password" ||
+    dbResult.reason === "inactive" ||
+    dbResult.reason === "locked"
+  ) {
+    const err = new Error("Invalid credentials");
+    (err as any).status = dbResult.reason === "locked" ? 429 : 401;
+    if (dbResult.reason === "locked") {
+      err.message = "Too many failed attempts. Try again later.";
+    }
+    throw err;
+  }
+
+  // Equalize timing vs hashed-password path when email is unknown to DB
+  await dummyPasswordVerify(password);
+
+  const { emails, password: expectedPassword } = getAdminWhitelist();
   if (!emails.has(normalized)) {
     const err = new Error("Invalid credentials");
     (err as any).status = 401;
     throw err;
   }
-  if (expectedPassword === "" || password !== expectedPassword) {
+  if (!expectedPassword || !safeEqualString(password, expectedPassword)) {
     const err = new Error("Invalid credentials");
     (err as any).status = 401;
     throw err;
   }
+
   const role = resolveAdminRole(normalized);
+  void AdminUsers.provisionFromLegacyLogin({ email: normalized, password, role }).catch((e) =>
+    console.warn("[admin-users] legacy provision failed:", e instanceof Error ? e.message : e)
+  );
+
   const token = signAdminToken({ email: normalized, role });
   return {
     token,
@@ -112,7 +154,13 @@ export async function listUsers(
   const safeLimit = Math.min(Math.max(1, limit), 100);
   const safePage = Math.max(1, page);
   const offset = (safePage - 1) * safeLimit;
-  const where: WhereOptions = status ? { status: status as any } : {};
+  const where: WhereOptions = {};
+  if (status) {
+    Object.assign(where, { status: status as any });
+  } else {
+    // Hide soft-deleted users from default list
+    Object.assign(where, { status: { [Op.ne]: "DELETED" } });
+  }
   const term = q?.trim();
   if (term && term.length >= 1) {
     Object.assign(where, {
@@ -160,20 +208,50 @@ export async function listUsers(
     limit: safeLimit,
     offset
   });
+
+  // Lightweight subscription badges for current page only
+  const ids = rows.map((u) => u.id);
+  const subs =
+    ids.length === 0
+      ? []
+      : await MatrimonySubscription.findAll({
+          where: { userId: { [Op.in]: ids }, status: "ACTIVE" },
+          attributes: ["userId", "plan", "status", "endsAt"]
+        });
+  const subByUser = new Map(subs.map((s) => [s.userId, s]));
+
   return {
-    users: rows.map((u) => ({
-      id: u.id,
-      fullName: u.fullName,
-      username: u.username ?? null,
-      email: u.email,
-      mobile: u.mobile ?? null,
-      community: u.community ?? null,
-      gender: u.gender ?? null,
-      status: u.status,
-      loginSource: resolveLoginSource(u),
-      createdAt: u.createdAt.toISOString(),
-      updatedAt: u.updatedAt.toISOString()
-    })),
+    users: await Promise.all(
+      rows.map(async (u) => {
+        const sub = subByUser.get(u.id);
+        const photo = u.profilePhoto
+          ? (await toSignedUrlIfR2(u.profilePhoto)) ?? u.profilePhoto
+          : null;
+        return {
+          id: u.id,
+          fullName: u.fullName,
+          username: u.username ?? null,
+          email: u.email,
+          mobile: u.mobile ?? null,
+          community: u.community ?? null,
+          kulam: u.kulam ?? null,
+          gender: u.gender ?? null,
+          district: u.district ?? null,
+          city: u.city ?? null,
+          status: u.status,
+          emailVerified: !!u.emailVerified,
+          loginSource: resolveLoginSource(u),
+          profilePhoto: photo,
+          subscriptionPlan: sub?.plan ?? null,
+          subscriptionStatus: sub?.status ?? null,
+          communityRole: u.communityRole ?? null,
+          lastLoginProvider: u.lastLoginProvider ?? null,
+          createdAt: u.createdAt.toISOString(),
+          updatedAt: u.updatedAt.toISOString(),
+          deletedAt: u.deletedAt ? u.deletedAt.toISOString() : null
+        };
+      })
+    ),
     total: count,
     page: safePage,
     limit: safeLimit
@@ -413,21 +491,45 @@ export async function getDashboardStats(): Promise<{
   pendingMatrimonyApprovals: number;
   pendingBusinessApprovals: number;
   reportedPosts: number;
+  pendingMarketplaceListings: number;
+  reportedMarketplaceListings: number;
 }> {
-  const [totalUsers, pendingUserApprovals, pendingMatrimony, pendingBusiness, reportedPosts] = await Promise.all([
+  const [
+    totalUsers,
+    pendingUserApprovals,
+    pendingMatrimony,
+    pendingBusiness,
+    reportedPosts,
+    pendingMarketplaceListings,
+    pendingMarketplaceReports
+  ] = await Promise.all([
     User.count(),
     User.count({
       where: { status: { [Op.in]: ["PENDING", "PENDING_REVIEW", "CHANGES_REQUESTED"] } }
     }),
     PendingProfileUpdate.count({ where: { section: "MATRIMONY", status: "PENDING" } }),
     PendingProfileUpdate.count({ where: { section: "BUSINESS", status: "PENDING" } }),
-    getPendingReportCount()
+    getPendingReportCount(),
+    Post.count({ where: { postType: "MARKETPLACE", marketplaceStatus: "PENDING_REVIEW" } }),
+    (async () => {
+      const rows = await PostReport.findAll({
+        where: { status: "PENDING" },
+        attributes: ["postId"],
+        group: ["postId"],
+        raw: true
+      });
+      const ids = (rows as { postId: number }[]).map((r) => r.postId);
+      if (!ids.length) return 0;
+      return Post.count({ where: { id: { [Op.in]: ids }, postType: "MARKETPLACE" } });
+    })()
   ]);
   return {
     totalUsers,
     pendingUserApprovals,
     pendingMatrimonyApprovals: pendingMatrimony,
     pendingBusinessApprovals: pendingBusiness,
-    reportedPosts
+    reportedPosts,
+    pendingMarketplaceListings,
+    reportedMarketplaceListings: pendingMarketplaceReports
   };
 }

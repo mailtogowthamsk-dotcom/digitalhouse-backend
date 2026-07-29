@@ -420,3 +420,51 @@ PlatformAuditLog.init(
   },
   { sequelize, tableName: "platform_audit_logs", timestamps: false }
 );
+
+export type PlatformBusinessSettingValueType = "string" | "number" | "boolean" | "json";
+
+export class PlatformBusinessSetting extends Model<
+  InferAttributes<PlatformBusinessSetting>,
+  InferCreationAttributes<PlatformBusinessSetting>
+> {
+  declare id: number;
+  declare module: string;
+  declare settingKey: string;
+  declare value: string;
+  declare valueType: PlatformBusinessSettingValueType;
+  declare description: string | null;
+  declare category: string | null;
+  declare isEditable: boolean;
+  declare createdBy: string | null;
+  declare updatedBy: string | null;
+  declare createdAt: Date;
+  declare updatedAt: Date;
+}
+
+PlatformBusinessSetting.init(
+  {
+    id: { type: DataTypes.INTEGER.UNSIGNED, autoIncrement: true, primaryKey: true },
+    module: { type: DataTypes.STRING(64), allowNull: false },
+    settingKey: { type: DataTypes.STRING(128), allowNull: false, field: "setting_key" },
+    value: { type: DataTypes.TEXT, allowNull: false },
+    valueType: {
+      type: DataTypes.ENUM("string", "number", "boolean", "json"),
+      allowNull: false,
+      defaultValue: "string",
+      field: "value_type"
+    },
+    description: { type: DataTypes.STRING(500), allowNull: true },
+    category: { type: DataTypes.STRING(64), allowNull: true },
+    isEditable: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+      field: "is_editable"
+    },
+    createdBy: { type: DataTypes.STRING(191), allowNull: true, field: "created_by" },
+    updatedBy: { type: DataTypes.STRING(191), allowNull: true, field: "updated_by" },
+    createdAt: { type: DataTypes.DATE, allowNull: false, field: "created_at" },
+    updatedAt: { type: DataTypes.DATE, allowNull: false, field: "updated_at" }
+  },
+  { sequelize, tableName: "platform_business_settings", timestamps: true }
+);

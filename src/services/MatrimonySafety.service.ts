@@ -318,13 +318,7 @@ export async function resolveReport(
   status: "RESOLVED" | "DISMISSED",
   adminRemarks?: string
 ) {
-  const row = await MatrimonyReport.findByPk(reportId);
-  if (!row) throw Object.assign(new Error("Report not found"), { status: 404 });
-  await row.update({
-    status,
-    adminRemarks: adminRemarks?.trim() || null,
-    reviewedBy: adminEmail,
-    reviewedAt: new Date()
-  } as any);
-  return row;
+  // Delegate to unified reports stack (audit log + reporter notification)
+  const { setAdminReportStatus } = await import("./AdminReports.service");
+  return setAdminReportStatus("PROFILE", reportId, status, adminEmail, adminRemarks);
 }

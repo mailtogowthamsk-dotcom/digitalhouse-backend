@@ -2,7 +2,7 @@ import { Op } from "sequelize";
 import { sequelize } from "../config/db";
 import { User, Post, PostLike, Comment, Notification, PostReport, SavedPost } from "../models";
 import { toSignedUrlIfR2, deleteR2ImageVariants } from "../utils/r2Client";
-import type { PostType, JobStatus, JobEmploymentType } from "../models";
+import type { PostType, JobStatus, JobEmploymentType, JobWorkMode } from "../models";
 import type {
   MarketplaceStatus,
   MarketplaceIntent,
@@ -16,6 +16,8 @@ import {
   resolveMarketplaceMedia,
   signMarketplaceGallery
 } from "../utils/marketplaceGallery";
+import * as MarketplaceSettings from "./MarketplaceSettings.service";
+import * as JobsSettings from "./JobsSettings.service";
 import { parseHelpGallery, resolveHelpMedia, signHelpGallery } from "../utils/helpGallery";
 import {
   resolvePostMediaType,
@@ -57,6 +59,10 @@ async function attachPostMediaFiles(
 
 const APPROVED = "APPROVED";
 
+function isModeratedAway(post: Post): boolean {
+  return post.moderationStatus === "HIDDEN" || post.moderationStatus === "SOFT_DELETED";
+}
+
 // --- DTOs ---
 
 export type PostAuthorDto = {
@@ -83,10 +89,16 @@ export type PostDetailDto = {
   meetup_at: string | null;
   job_status: string | null;
   job_company: string | null;
+  job_category?: string | null;
   job_location: string | null;
   job_employment_type: string | null;
+  job_work_mode?: string | null;
+  job_experience?: string | null;
+  job_skills?: string[];
   job_salary_min: number | null;
   job_salary_max: number | null;
+  job_vacancies?: number | null;
+  job_application_deadline?: string | null;
   marketplace_status: string | null;
   marketplace_intent: string | null;
   marketplace_category: string | null;
@@ -182,10 +194,16 @@ export type CreatePostPayload = {
   meetup_at?: string | null;
   job_status?: JobStatus | null;
   job_company?: string | null;
+  job_category?: string | null;
   job_location?: string | null;
   job_employment_type?: JobEmploymentType | null;
+  job_work_mode?: JobWorkMode | null;
+  job_experience?: string | null;
+  job_skills?: string[];
   job_salary_min?: number | null;
   job_salary_max?: number | null;
+  job_vacancies?: number | null;
+  job_application_deadline?: string | null;
   marketplace_status?: MarketplaceStatus | null;
   marketplace_intent?: MarketplaceIntent | null;
   marketplace_category?: string | null;
@@ -211,10 +229,18 @@ export type UpdatePostPayload = Partial<Omit<CreatePostPayload, "post_type">>;
 function jobFieldsFromPost(post: Post) {
   return {
     job_company: post.jobCompany ?? null,
+    job_category: post.jobCategory ?? null,
     job_location: post.jobLocation ?? null,
     job_employment_type: post.jobEmploymentType ?? null,
+    job_work_mode: post.jobWorkMode ?? null,
+    job_experience: post.jobExperience ?? null,
+    job_skills: Array.isArray(post.jobSkills) ? (post.jobSkills as string[]) : [],
     job_salary_min: post.jobSalaryMin ?? null,
-    job_salary_max: post.jobSalaryMax ?? null
+    job_salary_max: post.jobSalaryMax ?? null,
+    job_vacancies: post.jobVacancies ?? null,
+    job_application_deadline: post.jobApplicationDeadline
+      ? post.jobApplicationDeadline.toISOString()
+      : null
   };
 }
 
@@ -372,17 +398,31 @@ const emptyHelpFields = {
 
 function normalizeJobFields(payload: {
   job_company?: string | null;
+  job_category?: string | null;
   job_location?: string | null;
   job_employment_type?: JobEmploymentType | null;
+  job_work_mode?: JobWorkMode | null;
+  job_experience?: string | null;
+  job_skills?: string[];
   job_salary_min?: number | null;
   job_salary_max?: number | null;
+  job_vacancies?: number | null;
+  job_application_deadline?: string | null;
 }) {
   return {
     jobCompany: payload.job_company?.trim() || null,
+    jobCategory: payload.job_category?.trim() || null,
     jobLocation: payload.job_location?.trim() || null,
     jobEmploymentType: payload.job_employment_type ?? null,
+    jobWorkMode: payload.job_work_mode ?? null,
+    jobExperience: payload.job_experience?.trim() || null,
+    jobSkills: payload.job_skills?.map((skill) => skill.trim()).filter(Boolean) ?? [],
     jobSalaryMin: payload.job_salary_min ?? null,
-    jobSalaryMax: payload.job_salary_max ?? null
+    jobSalaryMax: payload.job_salary_max ?? null,
+    jobVacancies: payload.job_vacancies ?? null,
+    jobApplicationDeadline: payload.job_application_deadline
+      ? new Date(payload.job_application_deadline)
+      : null
   };
 }
 
@@ -497,27 +537,66 @@ async function approvedUserIdsInCommunity(userId: number): Promise<number[]> {
   return users.map(u => u.id);
 }
 
+async function assertJobActiveLimit(userId: number, excludePostId?: number): Promise<void> {
+  const maxActive = await JobsSettings.getMaxActiveJobs();
+  if (!maxActive || maxActive <= 0) return;
+  const where: Record<string, unknown> = {
+    userId,
+    postType: "JOB",
+    [Op.or]: [{ jobStatus: "OPEN" }, { jobStatus: null }]
+  };
+  if (excludePostId) {
+    where.id = { [Op.ne]: excludePostId };
+  }
+  const count = await Post.count({ where: where as any });
+  if (count >= maxActive) {
+    throw Object.assign(
+      new Error(
+        `You already have ${maxActive} active job posting${maxActive === 1 ? "" : "s"}. Close one before posting another.`
+      ),
+      { status: 400, code: "JOB_ACTIVE_LIMIT" }
+    );
+  }
+}
+
 export async function createPost(userId: number, payload: CreatePostPayload): Promise<PostDetailDto> {
   const isJob = payload.post_type === "JOB";
   const isMarketplace = payload.post_type === "MARKETPLACE";
   const isHelp = payload.post_type === "HELP_REQUEST";
   const resolvedJobStatus: JobStatus | null = isJob ? (payload.job_status ?? "OPEN") : null;
-  const jobFields = isJob
+  let jobFields = isJob
     ? normalizeJobFields(payload)
     : {
         jobCompany: null,
+        jobCategory: null,
         jobLocation: null,
         jobEmploymentType: null,
+        jobWorkMode: null,
+        jobExperience: null,
+        jobSkills: null,
         jobSalaryMin: null,
-        jobSalaryMax: null
+        jobSalaryMax: null,
+        jobVacancies: null,
+        jobApplicationDeadline: null
       };
 
+  if (isJob) {
+    await JobsSettings.assertEmploymentTypeAllowed(jobFields.jobEmploymentType);
+    if (resolvedJobStatus !== "CLOSED") {
+      await assertJobActiveLimit(userId);
+    }
+    if (!jobFields.jobApplicationDeadline) {
+      const defaultDeadline = await JobsSettings.resolveDefaultJobDeadline();
+      if (defaultDeadline) {
+        jobFields = { ...jobFields, jobApplicationDeadline: defaultDeadline };
+      }
+    }
+  }
+
   if (isMarketplace) {
-    const { MARKETPLACE_DUPLICATE_WINDOW_HOURS } = await import(
-      "../constants/marketplace.constants"
-    );
+    const duplicateWindowHours = await MarketplaceSettings.getDuplicateWindowHours();
     const titleNorm = payload.title.trim().toLowerCase();
-    const since = new Date(Date.now() - MARKETPLACE_DUPLICATE_WINDOW_HOURS * 60 * 60 * 1000);
+    const since = new Date(Date.now() - duplicateWindowHours * 60 * 60 * 1000);
     const dup = await Post.findOne({
       where: {
         userId,
@@ -531,7 +610,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     });
     if (dup && dup.title.trim().toLowerCase() === titleNorm) {
       const err = new Error(
-        "You already posted a listing with this title recently. Edit the existing one or wait 24 hours."
+        `You already posted a listing with this title recently. Edit the existing one or wait ${duplicateWindowHours} hours.`
       );
       (err as any).status = 409;
       (err as any).code = "MARKETPLACE_DUPLICATE";
@@ -573,8 +652,16 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
       })
     : false;
 
+  const maxMarketplacePhotos = isMarketplace
+    ? await MarketplaceSettings.getMaxPhotos()
+    : undefined;
+
   const mediaResolved = isMarketplace
-    ? resolveMarketplaceMedia(payload.media_url, payload.marketplace_gallery ?? null)
+    ? resolveMarketplaceMedia(
+        payload.media_url,
+        payload.marketplace_gallery ?? null,
+        maxMarketplacePhotos
+      )
     : isHelp
       ? (() => {
           const h = resolveHelpMedia(payload.media_url, payload.help_gallery ?? null);
@@ -605,6 +692,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     urgent: isHelp ? helpUrgent : payload.urgent ?? false,
     meetupAt: payload.meetup_at ? new Date(payload.meetup_at) : null,
     jobStatus: resolvedJobStatus,
+    jobClosedAt: resolvedJobStatus === "CLOSED" ? new Date() : null,
     ...jobFields,
     ...marketplaceFields,
     ...helpFields,
@@ -687,6 +775,16 @@ export async function updatePost(userId: number, postId: number, payload: Update
       (err as any).status = 400;
       throw err;
     }
+    if (payload.job_employment_type !== undefined) {
+      await JobsSettings.assertEmploymentTypeAllowed(payload.job_employment_type);
+    }
+    if (
+      payload.job_status !== undefined &&
+      (payload.job_status ?? "OPEN") !== "CLOSED" &&
+      post.jobStatus === "CLOSED"
+    ) {
+      await assertJobActiveLimit(userId, post.id);
+    }
   }
 
   const marketplaceFieldTouched =
@@ -761,12 +859,16 @@ export async function updatePost(userId: number, postId: number, payload: Update
   const mediaUpdate =
     isMarketplace &&
     (payload.media_url !== undefined || payload.marketplace_gallery !== undefined)
-      ? resolveMarketplaceMedia(
-          payload.media_url !== undefined ? payload.media_url : post.mediaUrl,
-          payload.marketplace_gallery !== undefined
-            ? payload.marketplace_gallery
-            : parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl)
-        )
+      ? await (async () => {
+          const maxPhotos = await MarketplaceSettings.getMaxPhotos();
+          return resolveMarketplaceMedia(
+            payload.media_url !== undefined ? payload.media_url : post.mediaUrl,
+            payload.marketplace_gallery !== undefined
+              ? payload.marketplace_gallery
+              : parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl, maxPhotos),
+            maxPhotos
+          );
+        })()
       : null;
 
   const helpMediaUpdate =
@@ -866,11 +968,16 @@ export async function updatePost(userId: number, postId: number, payload: Update
     }),
     ...(isJob &&
       payload.job_status !== undefined && {
-        jobStatus: payload.job_status ?? "OPEN"
+        jobStatus: payload.job_status ?? "OPEN",
+        jobClosedAt: payload.job_status === "CLOSED" ? new Date() : null
       }),
     ...(isJob &&
       payload.job_company !== undefined && {
         jobCompany: payload.job_company?.trim() || null
+      }),
+    ...(isJob &&
+      payload.job_category !== undefined && {
+        jobCategory: payload.job_category?.trim() || null
       }),
     ...(isJob &&
       payload.job_location !== undefined && {
@@ -881,12 +988,34 @@ export async function updatePost(userId: number, postId: number, payload: Update
         jobEmploymentType: payload.job_employment_type ?? null
       }),
     ...(isJob &&
+      payload.job_work_mode !== undefined && {
+        jobWorkMode: payload.job_work_mode ?? null
+      }),
+    ...(isJob &&
+      payload.job_experience !== undefined && {
+        jobExperience: payload.job_experience?.trim() || null
+      }),
+    ...(isJob &&
+      payload.job_skills !== undefined && {
+        jobSkills: payload.job_skills?.map((skill) => skill.trim()).filter(Boolean) ?? []
+      }),
+    ...(isJob &&
       payload.job_salary_min !== undefined && {
         jobSalaryMin: payload.job_salary_min ?? null
       }),
     ...(isJob &&
       payload.job_salary_max !== undefined && {
         jobSalaryMax: payload.job_salary_max ?? null
+      }),
+    ...(isJob &&
+      payload.job_vacancies !== undefined && {
+        jobVacancies: payload.job_vacancies ?? null
+      }),
+    ...(isJob &&
+      payload.job_application_deadline !== undefined && {
+        jobApplicationDeadline: payload.job_application_deadline
+          ? new Date(payload.job_application_deadline)
+          : null
       }),
     ...(isMarketplace &&
       payload.marketplace_status === "SOLD" && {
@@ -1048,6 +1177,11 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
   }
   const author = (post as any).User as User;
   await ensureCommunityVisible(post, userId);
+  if (isModeratedAway(post) && post.userId !== userId) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
 
   if (post.postType === "MARKETPLACE") {
     const isOwner = post.userId === userId;
@@ -1176,6 +1310,11 @@ export async function likePost(userId: number, postId: number): Promise<{ liked:
     throw err;
   }
   await ensureCommunityVisible(post, userId);
+  if (isModeratedAway(post)) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
 
   const existing = await PostLike.findOne({ where: { postId, userId } });
   if (existing) {
@@ -1216,6 +1355,11 @@ export async function addComment(
     throw err;
   }
   await ensureCommunityVisible(post, userId);
+  if (isModeratedAway(post)) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
 
   if (parentId) {
     const parent = await Comment.findOne({ where: { id: parentId, postId } });
@@ -1277,6 +1421,11 @@ export async function getComments(
     throw err;
   }
   await ensureCommunityVisible(post, currentUserId);
+  if (isModeratedAway(post)) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
 
   const offset = (page - 1) * limit;
   const topLevelWhere = { postId, parentId: { [Op.is]: null } };
@@ -1345,6 +1494,11 @@ export async function updateComment(
     throw err;
   }
   await ensureCommunityVisible(post, userId);
+  if (isModeratedAway(post)) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
 
   const comment = await Comment.findOne({ where: { id: commentId, postId } });
   if (!comment) {
@@ -1371,6 +1525,11 @@ export async function deleteComment(userId: number, postId: number, commentId: n
     throw err;
   }
   await ensureCommunityVisible(post, userId);
+  if (isModeratedAway(post)) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
 
   const comment = await Comment.findOne({ where: { id: commentId, postId } });
   if (!comment) {
@@ -1442,6 +1601,11 @@ export async function reportPost(userId: number, postId: number, reason: string)
     throw err;
   }
   await ensureCommunityVisible(post, userId);
+  if (isModeratedAway(post)) {
+    const err = new Error("Post not found");
+    (err as any).status = 404;
+    throw err;
+  }
 
   if (post.userId === userId) {
     const err = new Error("You cannot report your own listing");
@@ -1462,13 +1626,11 @@ export async function reportPost(userId: number, postId: number, reason: string)
   } as any);
 
   if (post.postType === "MARKETPLACE" && post.marketplaceStatus === "LIVE") {
-    const { MARKETPLACE_AUTO_HIDE_REPORT_THRESHOLD } = await import(
-      "../constants/marketplace.constants"
-    );
+    const threshold = await MarketplaceSettings.getAutoHideReportThreshold();
     const pendingCount = await PostReport.count({
       where: { postId, status: "PENDING" }
     });
-    if (pendingCount >= MARKETPLACE_AUTO_HIDE_REPORT_THRESHOLD) {
+    if (pendingCount >= threshold) {
       await post.update({ marketplaceStatus: "HIDDEN" as MarketplaceStatus });
       const Notifications = await import("./Notification.service");
       void Notifications.notifyMarketplaceListingHidden(

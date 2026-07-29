@@ -8,7 +8,10 @@ export const MATRIMONY_MONTHLY_OPEN_QUOTA = 10;
 /** One-time contact reveal (paise) — ₹500 */
 export const MATRIMONY_CONTACT_REVEAL_PAISE = 50_000;
 
-export const MATRIMONY_PLAN_CATALOG: {
+/** Global GST % applied for display / invoice helpers (0 = none). Charge amount remains priceInr. */
+export const MATRIMONY_DEFAULT_GST_PERCENT = 0;
+
+export type MatrimonyPlanCatalogItem = {
   plan: MatrimonyPlanCode;
   label: string;
   tagline: string;
@@ -18,8 +21,16 @@ export const MATRIMONY_PLAN_CATALOG: {
   canOpenOneStar: boolean;
   canOpenTwoStar: boolean;
   whoViewedMe: boolean;
-  popular?: boolean;
-}[] = [
+  /** Marketing / feature bullets for plan cards */
+  benefits: string[];
+  /** GST percent for this plan (falls back to global gst when omitted in overrides) */
+  gstPercent: number;
+  displayOrder: number;
+  isActive: boolean;
+  popular: boolean;
+};
+
+export const MATRIMONY_PLAN_CATALOG: MatrimonyPlanCatalogItem[] = [
   {
     plan: "FREE",
     label: "Free",
@@ -29,7 +40,12 @@ export const MATRIMONY_PLAN_CATALOG: {
     opensPerMonth: 0,
     canOpenOneStar: false,
     canOpenTwoStar: false,
-    whoViewedMe: false
+    whoViewedMe: false,
+    benefits: ["Browse profile cards", "No profile opens", "No contact reveal"],
+    gstPercent: 0,
+    displayOrder: 10,
+    isActive: true,
+    popular: false
   },
   {
     plan: "GOLD",
@@ -41,6 +57,14 @@ export const MATRIMONY_PLAN_CATALOG: {
     canOpenOneStar: true,
     canOpenTwoStar: false,
     whoViewedMe: false,
+    benefits: [
+      "Open ★☆ profiles",
+      "10 profile opens per month",
+      "6-month subscription"
+    ],
+    gstPercent: MATRIMONY_DEFAULT_GST_PERCENT,
+    displayOrder: 20,
+    isActive: true,
     popular: true
   },
   {
@@ -52,7 +76,17 @@ export const MATRIMONY_PLAN_CATALOG: {
     opensPerMonth: MATRIMONY_MONTHLY_OPEN_QUOTA,
     canOpenOneStar: true,
     canOpenTwoStar: true,
-    whoViewedMe: true
+    whoViewedMe: true,
+    benefits: [
+      "Open ★☆ and ★★ profiles",
+      "10 profile opens per month",
+      "Who viewed me",
+      "6-month subscription"
+    ],
+    gstPercent: MATRIMONY_DEFAULT_GST_PERCENT,
+    displayOrder: 30,
+    isActive: true,
+    popular: false
   }
 ];
 

@@ -15,6 +15,7 @@ export class ModerationAction extends Model<
   declare id: number;
   declare action: ModerationActionType;
   declare targetUserId: number | null;
+  declare postId: number | null;
   declare reportKind: ReportKind | null;
   declare reportId: number | null;
   declare adminEmail: string;
@@ -33,6 +34,11 @@ ModerationAction.init(
       type: DataTypes.INTEGER.UNSIGNED,
       allowNull: true,
       field: "target_user_id"
+    },
+    postId: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "post_id"
     },
     reportKind: {
       type: DataTypes.ENUM(...REPORT_KINDS),

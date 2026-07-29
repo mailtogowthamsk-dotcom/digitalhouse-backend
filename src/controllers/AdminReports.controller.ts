@@ -20,7 +20,8 @@ const remarksSchema = z
   .object({
     remarks: z.string().trim().max(1000).optional(),
     message: z.string().trim().max(500).optional(),
-    reason: z.string().trim().max(500).optional()
+    reason: z.string().trim().max(500).optional(),
+    postId: z.coerce.number().int().positive().optional()
   })
   .strict();
 
@@ -155,7 +156,15 @@ export async function warnUser(req: Request, res: Response) {
   if (!Number.isFinite(id) || id <= 0) return error(res, "Invalid user id", 400);
   const body = remarksSchema.parse(req.body ?? {});
   try {
-    await AdminReports.warnUser(id, adminEmail(req), body.message, body.remarks);
+    await AdminReports.warnUser(
+      id,
+      adminEmail(req),
+      body.message,
+      body.remarks,
+      null,
+      null,
+      body.postId ?? null
+    );
     return success(res, { message: "Warning sent to user." });
   } catch (e: any) {
     if (e?.status) return error(res, e.message, e.status);
@@ -168,7 +177,14 @@ export async function suspendUser(req: Request, res: Response) {
   if (!Number.isFinite(id) || id <= 0) return error(res, "Invalid user id", 400);
   const body = remarksSchema.parse(req.body ?? {});
   try {
-    await AdminReports.suspendUser(id, adminEmail(req), body.reason || body.remarks);
+    await AdminReports.suspendUser(
+      id,
+      adminEmail(req),
+      body.reason || body.remarks,
+      null,
+      null,
+      body.postId ?? null
+    );
     return success(res, { message: "User suspended." });
   } catch (e: any) {
     if (e?.status) return error(res, e.message, e.status);
@@ -181,7 +197,7 @@ export async function reactivateUser(req: Request, res: Response) {
   if (!Number.isFinite(id) || id <= 0) return error(res, "Invalid user id", 400);
   const body = remarksSchema.parse(req.body ?? {});
   try {
-    await AdminReports.reactivateUser(id, adminEmail(req), body.remarks);
+    await AdminReports.reactivateUser(id, adminEmail(req), body.remarks, body.postId ?? null);
     return success(res, { message: "User reactivated." });
   } catch (e: any) {
     if (e?.status) return error(res, e.message, e.status);

@@ -24,6 +24,8 @@ import {
   type VersionStatus
 } from "../constants/platform.constants";
 import { adminBroadcast } from "./Notification.service";
+import { recordConfigChange, normalizeAuditRow } from "./PlatformConfigAudit.service";
+import * as SchedulerTracking from "./SystemSchedulerTracking.service";
 
 async function audit(
   adminEmail: string | null,
@@ -537,6 +539,14 @@ export async function updateMaintenance(
 
   const enabling = patch.enabled === true && !row.enabled;
   const disabling = patch.enabled === false && row.enabled;
+  const oldValue = {
+    enabled: Boolean(row.enabled),
+    title: row.title,
+    description: row.description,
+    expectedEndAt: row.expectedEndAt?.toISOString() ?? null,
+    contactInfo: row.contactInfo,
+    scheduledStartAt: row.scheduledStartAt?.toISOString() ?? null
+  };
 
   await row.update({
     enabled: patch.enabled ?? row.enabled,
@@ -561,12 +571,28 @@ export async function updateMaintenance(
     updatedAt: now()
   } as any);
 
-  await audit(
-    adminEmail,
-    enabling ? "MAINTENANCE_ENABLED" : disabling ? "MAINTENANCE_DISABLED" : "MAINTENANCE_UPDATED",
-    "maintenance",
-    { enabled: row.enabled }
-  );
+  const newValue = {
+    enabled: Boolean(row.enabled),
+    title: row.title,
+    description: row.description,
+    expectedEndAt: row.expectedEndAt?.toISOString() ?? null,
+    contactInfo: row.contactInfo,
+    scheduledStartAt: row.scheduledStartAt?.toISOString() ?? null
+  };
+
+  await recordConfigChange({
+    action: enabling
+      ? "MAINTENANCE_ENABLED"
+      : disabling
+        ? "MAINTENANCE_DISABLED"
+        : "MAINTENANCE_UPDATED",
+    auditModule: "maintenance",
+    settingModule: "platform",
+    setting: "maintenance",
+    oldValue,
+    newValue,
+    changedBy: adminEmail
+  });
   return getMaintenanceAdmin();
 }
 
@@ -904,8 +930,18 @@ export async function setFeatureFlag(
   await ensurePlatformDefaults();
   const row = await PlatformFeatureFlag.findOne({ where: { code } });
   if (!row) throw Object.assign(new Error("Feature flag not found"), { status: 404 });
+  const oldEnabled = Boolean(row.enabled);
   await row.update({ enabled, updatedBy: adminEmail, updatedAt: now() } as any);
-  await audit(adminEmail, enabled ? "FEATURE_ENABLED" : "FEATURE_DISABLED", "features", { code });
+  await recordConfigChange({
+    action: enabled ? "FEATURE_ENABLED" : "FEATURE_DISABLED",
+    auditModule: "features",
+    settingModule: "platform",
+    setting: code,
+    oldValue: oldEnabled,
+    newValue: enabled,
+    changedBy: adminEmail,
+    meta: { label: row.label }
+  });
   return listFeatureFlags();
 }
 
@@ -932,6 +968,12 @@ export async function setMenuItem(
   await ensurePlatformDefaults();
   const row = await PlatformMenuItem.findOne({ where: { code } });
   if (!row) throw Object.assign(new Error("Menu item not found"), { status: 404 });
+  const oldValue = {
+    enabled: Boolean(row.enabled),
+    sortOrder: row.sortOrder,
+    label: row.label,
+    platformScope: row.platformScope
+  };
   await row.update({
     enabled: patch.enabled ?? row.enabled,
     sortOrder: patch.sortOrder ?? row.sortOrder,
@@ -940,7 +982,21 @@ export async function setMenuItem(
     updatedBy: adminEmail,
     updatedAt: now()
   } as any);
-  await audit(adminEmail, "MENU_UPDATED", "menu", { code, enabled: row.enabled });
+  const newValue = {
+    enabled: Boolean(row.enabled),
+    sortOrder: row.sortOrder,
+    label: row.label,
+    platformScope: row.platformScope
+  };
+  await recordConfigChange({
+    action: "MENU_UPDATED",
+    auditModule: "menu",
+    settingModule: "platform",
+    setting: code,
+    oldValue,
+    newValue,
+    changedBy: adminEmail
+  });
   return listMenuItems();
 }
 
@@ -1039,9 +1095,28 @@ export async function getAdAnalytics() {
   };
 }
 
-export async function listAuditLogs(page = 1, limit = 50, module?: string) {
+export async function listAuditLogs(
+  page = 1,
+  limit = 50,
+  module?: string,
+  options?: { configOnly?: boolean; action?: string }
+) {
   const where: any = {};
-  if (module) where.module = module;
+  const configModules = [
+    "business_settings",
+    "maintenance",
+    "features",
+    "menu",
+    "subscriptions",
+    "version",
+    "settings"
+  ];
+  if (module) {
+    where.module = module;
+  } else if (options?.configOnly) {
+    where.module = { [Op.in]: configModules };
+  }
+  if (options?.action) where.action = options.action;
   const offset = (Math.max(1, page) - 1) * limit;
   const { rows, count } = await PlatformAuditLog.findAndCountAll({
     where,
@@ -1049,18 +1124,22 @@ export async function listAuditLogs(page = 1, limit = 50, module?: string) {
     limit: Math.min(100, limit),
     offset
   });
-  return {
-    items: rows.map((r) => ({
+  const items = rows.map((r) =>
+    normalizeAuditRow({
       id: r.id,
       adminEmail: r.adminEmail,
       action: r.action,
       module: r.module,
-      details: r.detailsJson,
-      createdAt: r.createdAt.toISOString()
-    })),
+      detailsJson: r.detailsJson,
+      createdAt: r.createdAt
+    })
+  );
+  return {
+    items,
     total: count,
     page,
-    limit
+    limit,
+    configModules
   };
 }
 
@@ -1068,52 +1147,89 @@ export async function listAuditLogs(page = 1, limit = 50, module?: string) {
 
 let platformNotifJobRunning = false;
 let platformNotifTimer: ReturnType<typeof setInterval> | null = null;
+const PLATFORM_NOTIF_SCHEDULER_KEY = "platform_scheduled_notifications" as const;
+
+export function getPlatformNotificationJobRuntimeStatus() {
+  const intervalMs = Math.max(
+    15_000,
+    Number(process.env.PLATFORM_NOTIF_JOB_INTERVAL_MS || 60_000)
+  );
+  return {
+    timerActive: platformNotifTimer != null,
+    running: platformNotifJobRunning,
+    intervalMs,
+    envEnabled: true
+  };
+}
 
 /** Send due SCHEDULED platform notifications (global + emergency). */
-export async function processScheduledPlatformNotifications(): Promise<number> {
+export async function processScheduledPlatformNotifications(opts?: {
+  trigger?: "automatic" | "manual";
+  executedBy?: string | null;
+}): Promise<number> {
+  const trigger = opts?.trigger ?? "automatic";
+  if (
+    trigger === "automatic" &&
+    !(await SchedulerTracking.isJobEnabled(PLATFORM_NOTIF_SCHEDULER_KEY))
+  ) {
+    return 0;
+  }
   if (platformNotifJobRunning) return 0;
   platformNotifJobRunning = true;
   let sent = 0;
   try {
-    const due = await PlatformNotification.findAll({
-      attributes: ["id", "kind", "title", "body", "audience", "createdBy", "scheduledAt"],
-      where: {
-        status: "SCHEDULED",
-        scheduledAt: { [Op.lte]: now() }
-      },
-      order: [["scheduled_at", "ASC"]],
-      limit: 50
-    });
-
-    for (const row of due) {
-      try {
-        // Claim row to avoid duplicate sends across overlapping ticks
-        const [claimed] = await PlatformNotification.update(
-          { status: "SENT", sentAt: now(), updatedAt: now() } as any,
-          { where: { id: row.id, status: "SCHEDULED" } }
-        );
-        if (!claimed) continue;
-
-        const userIds = await resolveAudienceUserIds(row.audience as PlatformAudience);
-        await adminBroadcast({
-          title: row.title,
-          body: row.body,
-          category: row.kind === "EMERGENCY" ? "SYSTEM" : "COMMUNITY",
-          userIds,
-          persistInApp: true
+    const tracked = await SchedulerTracking.trackExecution(
+      PLATFORM_NOTIF_SCHEDULER_KEY,
+      trigger,
+      opts?.executedBy ?? null,
+      async () => {
+        const due = await PlatformNotification.findAll({
+          attributes: ["id", "kind", "title", "body", "audience", "createdBy", "scheduledAt"],
+          where: {
+            status: "SCHEDULED",
+            scheduledAt: { [Op.lte]: now() }
+          },
+          order: [["scheduled_at", "ASC"]],
+          limit: 50
         });
-        await audit(row.createdBy, `${row.kind}_SCHEDULED_SENT`, "notifications", {
-          id: row.id,
-          scheduledAt: row.scheduledAt?.toISOString() ?? null
-        });
-        sent += 1;
-      } catch (e) {
-        console.error("[platform-notif-job] failed id=", row.id, e);
-        await PlatformNotification.update(
-          { status: "SCHEDULED", sentAt: null, updatedAt: now() } as any,
-          { where: { id: row.id } }
-        ).catch(() => undefined);
+
+        let count = 0;
+        for (const row of due) {
+          try {
+            // Claim row to avoid duplicate sends across overlapping ticks
+            const [claimed] = await PlatformNotification.update(
+              { status: "SENT", sentAt: now(), updatedAt: now() } as any,
+              { where: { id: row.id, status: "SCHEDULED" } }
+            );
+            if (!claimed) continue;
+
+            const userIds = await resolveAudienceUserIds(row.audience as PlatformAudience);
+            await adminBroadcast({
+              title: row.title,
+              body: row.body,
+              category: row.kind === "EMERGENCY" ? "SYSTEM" : "COMMUNITY",
+              userIds,
+              persistInApp: true
+            });
+            await audit(row.createdBy, `${row.kind}_SCHEDULED_SENT`, "notifications", {
+              id: row.id,
+              scheduledAt: row.scheduledAt?.toISOString() ?? null
+            });
+            count += 1;
+          } catch (e) {
+            console.error("[platform-notif-job] failed id=", row.id, e);
+            await PlatformNotification.update(
+              { status: "SCHEDULED", sentAt: null, updatedAt: now() } as any,
+              { where: { id: row.id } }
+            ).catch(() => undefined);
+          }
+        }
+        sent = count;
+        return { recordsProcessed: count };
       }
+    );
+    if (!tracked.ok && tracked.error) {
+      console.error("[platform-notif-job] failed", tracked.error);
     }
   } finally {
     platformNotifJobRunning = false;

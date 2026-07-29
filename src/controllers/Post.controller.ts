@@ -319,7 +319,8 @@ export async function reportPost(req: AuthRequest, res: Response) {
 
 const jobInterestSchema = z
   .object({
-    message: z.string().trim().max(500).nullable().optional()
+    message: z.string().trim().max(500).nullable().optional(),
+    resume_url: z.string().trim().url().max(500).nullable().optional()
   })
   .strict();
 
@@ -330,7 +331,7 @@ export async function expressJobInterest(req: AuthRequest, res: Response) {
   const body = jobInterestSchema.parse(req.body ?? {});
   try {
     const { expressJobInterest: express } = await import("../services/JobInterest.service");
-    const data = await express(req.user.id, postId, body.message);
+    const data = await express(req.user.id, postId, body.message, body.resume_url);
     return success(res, data, data.created ? 201 : 200);
   } catch (e: any) {
     if (e?.status) return error(res, e.message, e.status);

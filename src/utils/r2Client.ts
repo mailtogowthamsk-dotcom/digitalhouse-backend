@@ -13,7 +13,6 @@ const accessKeyId = process.env.R2_ACCESS_KEY_ID;
 const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
 const bucketName = process.env.R2_BUCKET_NAME;
 const region = "auto"; // R2 uses "auto" for region
-
 /** S3-compatible client for R2. Only used server-side; never expose to client. */
 function getR2Client(): S3Client {
   if (!accountId || !accessKeyId || !secretAccessKey) {

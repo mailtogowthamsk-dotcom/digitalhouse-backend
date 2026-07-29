@@ -41,6 +41,10 @@ export const JOB_EMPLOYMENT_TYPES = [
   "TEMPORARY"
 ] as const;
 export type JobEmploymentType = (typeof JOB_EMPLOYMENT_TYPES)[number];
+export const JOB_WORK_MODES = ["ON_SITE", "HYBRID", "REMOTE"] as const;
+export type JobWorkMode = (typeof JOB_WORK_MODES)[number];
+export const POST_MODERATION_STATUSES = ["ACTIVE", "HIDDEN", "SOFT_DELETED"] as const;
+export type PostModerationStatus = (typeof POST_MODERATION_STATUSES)[number];
 
 export type { MarketplaceStatus, MarketplaceIntent, MarketplaceCondition };
 
@@ -67,10 +71,17 @@ export class Post extends Model<InferAttributes<Post>, InferCreationAttributes<P
   declare meetupAt: Date | null;
   declare jobStatus: JobStatus | null;
   declare jobCompany: string | null;
+  declare jobCategory: string | null;
   declare jobLocation: string | null;
   declare jobEmploymentType: JobEmploymentType | null;
+  declare jobWorkMode: JobWorkMode | null;
+  declare jobExperience: string | null;
+  declare jobSkills: string[] | null;
   declare jobSalaryMin: number | null;
   declare jobSalaryMax: number | null;
+  declare jobVacancies: number | null;
+  declare jobApplicationDeadline: Date | null;
+  declare jobClosedAt: Date | null;
   declare marketplaceStatus: MarketplaceStatus | null;
   declare marketplaceIntent: MarketplaceIntent | null;
   declare marketplaceCategory: string | null;
@@ -102,6 +113,12 @@ export class Post extends Model<InferAttributes<Post>, InferCreationAttributes<P
   /** Denormalized engagement counters for popular-feed ORDER BY (no correlated COUNT). */
   declare likeCount: number;
   declare commentCount: number;
+  declare moderationStatus: PostModerationStatus;
+  declare moderationReason: string | null;
+  declare moderationNotes: string | null;
+  declare moderatedBy: string | null;
+  declare moderatedAt: Date | null;
+  declare deletedAt: Date | null;
   declare createdAt: Date;
   declare updatedAt: Date;
 }
@@ -144,13 +161,23 @@ Post.init(
       allowNull: true
     },
     jobCompany: { type: DataTypes.STRING(255), allowNull: true },
+    jobCategory: { type: DataTypes.STRING(128), allowNull: true },
     jobLocation: { type: DataTypes.STRING(255), allowNull: true },
     jobEmploymentType: {
       type: DataTypes.ENUM(...JOB_EMPLOYMENT_TYPES),
       allowNull: true
     },
+    jobWorkMode: {
+      type: DataTypes.ENUM(...JOB_WORK_MODES),
+      allowNull: true
+    },
+    jobExperience: { type: DataTypes.STRING(128), allowNull: true },
+    jobSkills: { type: DataTypes.JSON, allowNull: true },
     jobSalaryMin: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
     jobSalaryMax: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
+    jobVacancies: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
+    jobApplicationDeadline: { type: DataTypes.DATE, allowNull: true },
+    jobClosedAt: { type: DataTypes.DATE, allowNull: true },
     marketplaceStatus: { type: DataTypes.STRING(32), allowNull: true },
     marketplaceIntent: { type: DataTypes.STRING(32), allowNull: true },
     marketplaceCategory: { type: DataTypes.STRING(64), allowNull: true },
@@ -189,6 +216,17 @@ Post.init(
       allowNull: false,
       defaultValue: 0
     },
+    moderationStatus: {
+      type: DataTypes.ENUM(...POST_MODERATION_STATUSES),
+      allowNull: false,
+      defaultValue: "ACTIVE",
+      field: "moderation_status"
+    },
+    moderationReason: { type: DataTypes.TEXT, allowNull: true, field: "moderation_reason" },
+    moderationNotes: { type: DataTypes.TEXT, allowNull: true, field: "moderation_notes" },
+    moderatedBy: { type: DataTypes.STRING(191), allowNull: true, field: "moderated_by" },
+    moderatedAt: { type: DataTypes.DATE, allowNull: true, field: "moderated_at" },
+    deletedAt: { type: DataTypes.DATE, allowNull: true, field: "deleted_at" },
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }
   },

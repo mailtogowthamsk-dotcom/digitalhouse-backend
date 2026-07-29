@@ -4,6 +4,7 @@ import {
   PostReport,
   MatrimonyReport,
   User,
+  UserProfile,
   ModerationAction
 } from "../models";
 import type { AdminReportStatus, ReportKind } from "../constants/reports.constants";
@@ -231,6 +232,7 @@ async function fetchAdminReportCounts() {
 async function logAction(input: {
   action: "WARN" | "SUSPEND" | "REACTIVATE" | "ESCALATE" | "RESOLVE" | "DISMISS";
   targetUserId?: number | null;
+  postId?: number | null;
   reportKind?: ReportKind | null;
   reportId?: number | null;
   adminEmail: string;
@@ -239,6 +241,7 @@ async function logAction(input: {
   await ModerationAction.create({
     action: input.action,
     targetUserId: input.targetUserId ?? null,
+    postId: input.postId ?? null,
     reportKind: input.reportKind ?? null,
     reportId: input.reportId ?? null,
     adminEmail: input.adminEmail,
@@ -388,6 +391,18 @@ export async function getAdminReport(
       note: string | null;
       createdAt: string;
     }>;
+    relatedReports?: Array<{
+      id: number;
+      reason: string;
+      status: string;
+      createdAt: string;
+      reporterId: number;
+    }>;
+    matrimonyStatus?: {
+      profileActive: boolean;
+      suspended: boolean;
+      accountStatus: string;
+    };
   }
 > {
   if (kind === "POST") {
@@ -467,11 +482,31 @@ export async function getAdminReport(
     targetUser: userBrief(target, row.reportedUserId),
     post: null
   };
-  const actions = await ModerationAction.findAll({
-    where: { reportKind: kind, reportId: id },
-    order: [["createdAt", "DESC"]],
-    limit: 20
-  });
+  const [actions, priorReports, profile] = await Promise.all([
+    ModerationAction.findAll({
+      where: { reportKind: kind, reportId: id },
+      order: [["createdAt", "DESC"]],
+      limit: 20
+    }),
+    MatrimonyReport.findAll({
+      where: {
+        reportedUserId: row.reportedUserId,
+        id: { [Op.ne]: id }
+      },
+      order: [["createdAt", "DESC"]],
+      limit: 10,
+      attributes: ["id", "reason", "status", "createdAt", "reporterId"]
+    }),
+    UserProfile.findOne({
+      where: { userId: row.reportedUserId },
+      attributes: ["matrimony"]
+    }).catch(() => null)
+  ]);
+
+  const matrimony = profile?.matrimony as Record<string, unknown> | null;
+  const matrimonyProfileActive = matrimony?.matrimonyProfileActive === true;
+  const matrimonySuspended = matrimony?.matrimonySuspended === true;
+
   return {
     ...item,
     postDescription: null,
@@ -481,7 +516,19 @@ export async function getAdminReport(
       adminEmail: a.adminEmail,
       note: a.note,
       createdAt: a.createdAt.toISOString()
-    }))
+    })),
+    relatedReports: priorReports.map((r) => ({
+      id: r.id,
+      reason: r.reason,
+      status: r.status,
+      createdAt: r.createdAt.toISOString(),
+      reporterId: r.reporterId
+    })),
+    matrimonyStatus: {
+      profileActive: matrimonyProfileActive,
+      suspended: matrimonySuspended,
+      accountStatus: target?.status ?? "UNKNOWN"
+    }
   };
 }
 
@@ -504,7 +551,8 @@ export async function setAdminReportStatus(
   adminEmail: string,
   remarks?: string
 ): Promise<AdminReportListItem> {
-  const { row, targetUserId } = await loadReportRow(kind, id);
+  const { row, targetUserId, post } = await loadReportRow(kind, id);
+  const previousStatus = (row as any).status as string;
   await (row as any).update({
     status: nextStatus,
     adminRemarks: remarks?.trim() || (row as any).adminRemarks || null,
@@ -517,11 +565,31 @@ export async function setAdminReportStatus(
   await logAction({
     action,
     targetUserId,
+    postId: post?.id ?? null,
     reportKind: kind,
     reportId: id,
     adminEmail,
     note: remarks
   });
+
+  // Notify the reporter when a profile (matrimony) report is closed
+  if (
+    kind === "PROFILE" &&
+    (nextStatus === "RESOLVED" || nextStatus === "DISMISSED") &&
+    previousStatus !== nextStatus
+  ) {
+    const reporterId = (row as MatrimonyReport).reporterId;
+    const outcome = nextStatus === "RESOLVED" ? "resolved" : "dismissed";
+    const body =
+      nextStatus === "RESOLVED"
+        ? "Thank you for your report. Our team has reviewed it and taken appropriate action."
+        : "Thank you for your report. After review, no further action was needed at this time.";
+    await Notifications.createUserNotification(
+      reporterId,
+      `Report ${outcome}`,
+      remarks?.trim() ? `${body} Note: ${remarks.trim()}` : body
+    ).catch(() => {});
+  }
 
   const detail = await getAdminReport(kind, id);
   return detail;
@@ -534,9 +602,9 @@ export async function warnUserFromReport(
   message?: string,
   remarks?: string
 ): Promise<{ warnedUserId: number }> {
-  const { targetUserId } = await loadReportRow(kind, id);
+  const { targetUserId, post } = await loadReportRow(kind, id);
   if (!targetUserId) throw Object.assign(new Error("Target user not found"), { status: 404 });
-  await warnUser(targetUserId, adminEmail, message, remarks, kind, id);
+  await warnUser(targetUserId, adminEmail, message, remarks, kind, id, post?.id ?? null);
   return { warnedUserId: targetUserId };
 }
 
@@ -546,9 +614,9 @@ export async function suspendUserFromReport(
   adminEmail: string,
   reason?: string
 ): Promise<{ suspendedUserId: number }> {
-  const { targetUserId } = await loadReportRow(kind, id);
+  const { targetUserId, post } = await loadReportRow(kind, id);
   if (!targetUserId) throw Object.assign(new Error("Target user not found"), { status: 404 });
-  await suspendUser(targetUserId, adminEmail, reason, kind, id);
+  await suspendUser(targetUserId, adminEmail, reason, kind, id, post?.id ?? null);
   await setAdminReportStatus(kind, id, "RESOLVED", adminEmail, reason || "User suspended");
   return { suspendedUserId: targetUserId };
 }
@@ -559,7 +627,8 @@ export async function warnUser(
   message?: string,
   remarks?: string,
   reportKind?: ReportKind | null,
-  reportId?: number | null
+  reportId?: number | null,
+  postId?: number | null
 ): Promise<void> {
   const user = await User.findByPk(userId);
   if (!user) throw Object.assign(new Error("User not found"), { status: 404 });
@@ -572,6 +641,7 @@ export async function warnUser(
   await logAction({
     action: "WARN",
     targetUserId: userId,
+    postId: postId ?? null,
     reportKind: reportKind ?? null,
     reportId: reportId ?? null,
     adminEmail,
@@ -584,7 +654,8 @@ export async function suspendUser(
   adminEmail: string,
   reason?: string,
   reportKind?: ReportKind | null,
-  reportId?: number | null
+  reportId?: number | null,
+  postId?: number | null
 ): Promise<void> {
   const user = await User.findByPk(userId);
   if (!user) throw Object.assign(new Error("User not found"), { status: 404 });
@@ -600,6 +671,7 @@ export async function suspendUser(
   await logAction({
     action: "SUSPEND",
     targetUserId: userId,
+    postId: postId ?? null,
     reportKind: reportKind ?? null,
     reportId: reportId ?? null,
     adminEmail,
@@ -610,7 +682,8 @@ export async function suspendUser(
 export async function reactivateUser(
   userId: number,
   adminEmail: string,
-  note?: string
+  note?: string,
+  postId?: number | null
 ): Promise<void> {
   const user = await User.findByPk(userId);
   if (!user) throw Object.assign(new Error("User not found"), { status: 404 });
@@ -626,6 +699,7 @@ export async function reactivateUser(
   await logAction({
     action: "REACTIVATE",
     targetUserId: userId,
+    postId: postId ?? null,
     adminEmail,
     note
   });

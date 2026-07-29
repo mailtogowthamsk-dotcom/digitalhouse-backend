@@ -6,25 +6,37 @@ import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
 import { resolveMatrimonyCandidate } from "../utils/matrimonyCandidate.util";
 import type { MatrimonySection } from "../models/UserProfile.model";
 import * as Monetization from "./MatrimonyMonetization.service";
+import * as PlatformSettings from "./MatrimonyPlatformSettings.service";
 
 export type SubscriptionAdminOverview = {
   totalSubscribers: number;
   activeSubscribers: number;
   expiredSubscribers: number;
+  expiringSoonSubscribers: number;
   todayRevenueInr: number;
+  weekRevenueInr: number;
   monthRevenueInr: number;
+  yearRevenueInr: number;
   totalRevenueInr: number;
   paymentFailureRate: number;
   renewalRate: number;
   subscriptionGrowth30d: number;
+  pendingPayments: number;
+  refundRequests: number;
+  cancelledPlans: number;
+  renewalsToday: number;
+  averageRevenuePerUserInr: number;
 };
 
 export type SubscriptionAdminListItem = {
   subscriptionId: number;
   userId: number;
   userName: string;
+  profilePhoto: string | null;
   mobile: string | null;
   matrimonyProfileName: string;
+  community: string | null;
+  district: string | null;
   plan: string;
   planLabel: string;
   amountPaise: number | null;
@@ -33,10 +45,15 @@ export type SubscriptionAdminListItem = {
   subscriptionStatus: string;
   startsAt: string;
   endsAt: string;
+  remainingDays: number;
+  autoRenewal: boolean | null;
   paymentDate: string | null;
+  lastPaymentDate: string | null;
   paymentId: string | null;
   razorpayOrderId: string | null;
   paymentOrderId: number | null;
+  totalAmountPaidInr: number;
+  totalPurchases: number;
 };
 
 export type PaymentAdminListItem = {
@@ -71,11 +88,18 @@ type ListQuery = {
   dateTo?: string;
   amountMin?: number;
   amountMax?: number;
+  community?: string;
+  district?: string;
   sortDir?: "asc" | "desc";
 };
 
 function planLabel(plan: string): string {
-  return MATRIMONY_PLAN_CATALOG.find((p) => p.plan === plan)?.label ?? plan;
+  return (
+    PlatformSettings.getDynamicPlanCatalog({ includeInactive: true }).find((p) => p.plan === plan)
+      ?.label ??
+    MATRIMONY_PLAN_CATALOG.find((p) => p.plan === plan)?.label ??
+    plan
+  );
 }
 
 function startOfToday(): Date {
@@ -89,6 +113,30 @@ function startOfMonth(): Date {
   d.setDate(1);
   d.setHours(0, 0, 0, 0);
   return d;
+}
+
+function startOfWeek(): Date {
+  const d = new Date();
+  d.setDate(d.getDate() - 7);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function startOfYear(): Date {
+  const d = new Date();
+  d.setMonth(0, 1);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function daysRemaining(endsAt: Date): number {
+  return Math.max(0, Math.ceil((endsAt.getTime() - Date.now()) / (24 * 60 * 60 * 1000)));
+}
+
+function addMonths(base: Date, months: number): Date {
+  const next = new Date(base);
+  next.setMonth(next.getMonth() + months);
+  return next;
 }
 
 async function profileNamesByUserIds(userIds: number[]): Promise<Map<number, string>> {
@@ -110,6 +158,35 @@ async function profileNamesByUserIds(userIds: number[]): Promise<Map<number, str
       : {};
     const candidate = resolveMatrimonyCandidate(u, m);
     map.set(u.id, candidate.name);
+  }
+  return map;
+}
+
+type UserMeta = {
+  id: number;
+  fullName: string;
+  mobile: string | null;
+  district: string | null;
+  community: string | null;
+  profilePhoto: string | null;
+};
+
+async function usersByIds(userIds: number[]): Promise<Map<number, UserMeta>> {
+  const map = new Map<number, UserMeta>();
+  if (!userIds.length) return map;
+  const users = await User.findAll({
+    where: { id: { [Op.in]: userIds } },
+    attributes: ["id", "fullName", "mobile", "district", "community", "profilePhoto"]
+  });
+  for (const u of users) {
+    map.set(u.id, {
+      id: u.id,
+      fullName: u.fullName,
+      mobile: u.mobile ?? null,
+      district: u.district ?? null,
+      community: u.community ?? null,
+      profilePhoto: u.profilePhoto ?? null
+    });
   }
   return map;
 }
@@ -146,43 +223,197 @@ function paymentStatusForSub(sub: MatrimonySubscription, order: MatrimonyPayment
   return "—";
 }
 
-function buildSubscriptionWhere(query: ListQuery): WhereOptions {
-  const where: WhereOptions = {
-    plan: { [Op.in]: ["GOLD", "PLATINUM"] }
-  };
-  if (query.plan && query.plan !== "any") {
-    where.plan = query.plan;
+function pickCurrentSubscription(rows: MatrimonySubscription[]): MatrimonySubscription | null {
+  if (!rows.length) return null;
+  const active = rows
+    .filter((r) => deriveSubscriptionStatus(r) === "ACTIVE")
+    .sort((a, b) => b.endsAt.getTime() - a.endsAt.getTime())[0];
+  return (
+    active ??
+    [...rows].sort(
+      (a, b) =>
+        b.endsAt.getTime() - a.endsAt.getTime() || b.createdAt.getTime() - a.createdAt.getTime()
+    )[0]
+  );
+}
+
+async function buildCurrentSubscriberItems(query: ListQuery): Promise<SubscriptionAdminListItem[]> {
+  const baseSubs = await MatrimonySubscription.findAll({
+    where: { plan: { [Op.in]: ["GOLD", "PLATINUM"] } },
+    order: [["createdAt", "DESC"]]
+  });
+  if (!baseSubs.length) return [];
+
+  let candidateUserIds: number[] | null = null;
+  if (query.q?.trim()) {
+    const raw = query.q.trim();
+    const q = `%${raw}%`;
+    const [users, orderMatches, subMatches] = await Promise.all([
+      User.findAll({
+        where: {
+          [Op.or]: [
+            { fullName: { [Op.like]: q } },
+            { mobile: { [Op.like]: q } },
+            { email: { [Op.like]: q } }
+          ]
+        },
+        attributes: ["id"],
+        limit: 1000
+      }),
+      MatrimonyPaymentOrder.findAll({
+        where: {
+          [Op.or]: [{ razorpayOrderId: { [Op.like]: q } }, { razorpayPaymentId: { [Op.like]: q } }]
+        },
+        attributes: ["userId"],
+        limit: 500
+      }),
+      MatrimonySubscription.findAll({
+        where: {
+          [Op.or]: [
+            { paymentRef: { [Op.like]: q } },
+            ...(Number.isFinite(Number(raw)) ? [{ id: Number(raw) }] : [])
+          ]
+        },
+        attributes: ["userId"],
+        limit: 500
+      })
+    ]);
+    candidateUserIds = [
+      ...new Set([
+        ...users.map((u) => u.id),
+        ...orderMatches.map((o) => o.userId),
+        ...subMatches.map((s) => s.userId)
+      ])
+    ];
+    if (!candidateUserIds.length) return [];
   }
-  if (query.dateFrom || query.dateTo) {
-    where.createdAt = {};
-    if (query.dateFrom) (where.createdAt as any)[Op.gte] = new Date(query.dateFrom);
+
+  const allUserIds = [...new Set(baseSubs.map((s) => s.userId))].filter(
+    (id) => !candidateUserIds || candidateUserIds.includes(id)
+  );
+  const [userMap, profileNames, orders] = await Promise.all([
+    usersByIds(allUserIds),
+    profileNamesByUserIds(allUserIds),
+    MatrimonyPaymentOrder.findAll({
+      where: { userId: { [Op.in]: allUserIds } },
+      order: [["createdAt", "DESC"]]
+    }).catch(() => [] as MatrimonyPaymentOrder[])
+  ]);
+
+  const subsByUser = new Map<number, MatrimonySubscription[]>();
+  for (const sub of baseSubs) {
+    if (!allUserIds.includes(sub.userId)) continue;
+    const list = subsByUser.get(sub.userId) ?? [];
+    list.push(sub);
+    subsByUser.set(sub.userId, list);
+  }
+  const ordersByUser = new Map<number, MatrimonyPaymentOrder[]>();
+  for (const order of orders) {
+    const list = ordersByUser.get(order.userId) ?? [];
+    list.push(order);
+    ordersByUser.set(order.userId, list);
+  }
+
+  const items: SubscriptionAdminListItem[] = [];
+  for (const userId of allUserIds) {
+    const userSubs = subsByUser.get(userId) ?? [];
+    const current = pickCurrentSubscription(userSubs);
+    if (!current) continue;
+
+    const currentStatus = deriveSubscriptionStatus(current);
+    if (query.subscriptionStatus && query.subscriptionStatus !== "any" && currentStatus !== query.subscriptionStatus) {
+      continue;
+    }
+    if (query.plan && query.plan !== "any" && current.plan !== query.plan) continue;
+
+    const user = userMap.get(userId);
+    if (
+      query.community?.trim() &&
+      !(user?.community ?? "").toLowerCase().includes(query.community.trim().toLowerCase())
+    ) {
+      continue;
+    }
+    if (
+      query.district?.trim() &&
+      !(user?.district ?? "").toLowerCase().includes(query.district.trim().toLowerCase())
+    ) {
+      continue;
+    }
+    if (query.dateFrom && current.startsAt < new Date(query.dateFrom)) continue;
     if (query.dateTo) {
       const end = new Date(query.dateTo);
       end.setHours(23, 59, 59, 999);
-      (where.createdAt as any)[Op.lte] = end;
+      if (current.startsAt > end) continue;
     }
+
+    const userOrders = ordersByUser.get(userId) ?? [];
+    const currentOrder = await latestPaymentOrderForSubscription(current);
+    const currentPaymentStatus = paymentStatusForSub(current, currentOrder);
+    if (
+      query.paymentStatus &&
+      query.paymentStatus !== "any" &&
+      currentPaymentStatus !== query.paymentStatus
+    ) {
+      continue;
+    }
+
+    const paidOrders = userOrders.filter((o) => o.status === "PAID");
+    const lastPayment = [...paidOrders].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0] ?? null;
+    const totalAmountPaidInr = Math.round(
+      paidOrders.reduce((sum, o) => {
+        const meta = (o.meta ?? {}) as { refundedAt?: string };
+        return meta.refundedAt ? sum : sum + o.amountPaise / 100;
+      }, 0)
+    );
+    const amountInr =
+      current.amountPaise != null
+        ? current.amountPaise / 100
+        : currentOrder
+          ? currentOrder.amountPaise / 100
+          : null;
+    if (query.amountMin != null && ((amountInr ?? 0) * 100 < query.amountMin)) continue;
+    if (query.amountMax != null && ((amountInr ?? 0) * 100 > query.amountMax)) continue;
+
+    items.push({
+      subscriptionId: current.id,
+      userId,
+      userName: user?.fullName ?? `User #${userId}`,
+      profilePhoto: user?.profilePhoto ?? null,
+      mobile: user?.mobile ?? null,
+      matrimonyProfileName: profileNames.get(userId) ?? "—",
+      community: user?.community ?? null,
+      district: user?.district ?? null,
+      plan: current.plan,
+      planLabel: planLabel(current.plan),
+      amountPaise: current.amountPaise ?? currentOrder?.amountPaise ?? null,
+      amountInr,
+      paymentStatus: currentPaymentStatus,
+      subscriptionStatus: currentStatus,
+      startsAt: current.startsAt.toISOString(),
+      endsAt: current.endsAt.toISOString(),
+      remainingDays: daysRemaining(current.endsAt),
+      autoRenewal: null,
+      paymentDate: currentOrder?.status === "PAID" ? currentOrder.updatedAt.toISOString() : null,
+      lastPaymentDate: lastPayment?.updatedAt.toISOString() ?? null,
+      paymentId: current.paymentRef ?? currentOrder?.razorpayPaymentId ?? null,
+      razorpayOrderId: current.razorpayOrderId ?? currentOrder?.razorpayOrderId ?? null,
+      paymentOrderId: current.paymentOrderId ?? currentOrder?.id ?? null,
+      totalAmountPaidInr,
+      totalPurchases: paidOrders.length
+    });
   }
-  if (query.amountMin != null || query.amountMax != null) {
-    where.amountPaise = {};
-    if (query.amountMin != null) (where.amountPaise as any)[Op.gte] = query.amountMin;
-    if (query.amountMax != null) (where.amountPaise as any)[Op.lte] = query.amountMax;
-  }
-  const now = new Date();
-  if (query.subscriptionStatus === "ACTIVE") {
-    where.status = "ACTIVE";
-    where.endsAt = { [Op.gt]: now };
-  } else if (query.subscriptionStatus === "EXPIRED") {
-    (where as any)[Op.or] = [{ status: "EXPIRED" }, { endsAt: { [Op.lte]: now } }];
-  } else if (query.subscriptionStatus === "CANCELLED") {
-    where.status = "CANCELLED";
-  }
-  return where;
+
+  const dir = query.sortDir === "asc" ? 1 : -1;
+  items.sort((a, b) => (new Date(a.endsAt).getTime() - new Date(b.endsAt).getTime()) * dir);
+  return items;
 }
 
 export async function getSubscriptionAdminOverview(): Promise<SubscriptionAdminOverview> {
   const now = new Date();
   const today = startOfToday();
+  const weekStart = startOfWeek();
   const monthStart = startOfMonth();
+  const yearStart = startOfYear();
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
   const tablesOk = await Monetization.ensureMonetizationTables();
@@ -191,59 +422,84 @@ export async function getSubscriptionAdminOverview(): Promise<SubscriptionAdminO
       totalSubscribers: 0,
       activeSubscribers: 0,
       expiredSubscribers: 0,
+      expiringSoonSubscribers: 0,
       todayRevenueInr: 0,
+      weekRevenueInr: 0,
       monthRevenueInr: 0,
+      yearRevenueInr: 0,
       totalRevenueInr: 0,
       paymentFailureRate: 0,
       renewalRate: 0,
-      subscriptionGrowth30d: 0
+      subscriptionGrowth30d: 0,
+      pendingPayments: 0,
+      refundRequests: 0,
+      cancelledPlans: 0,
+      renewalsToday: 0,
+      averageRevenuePerUserInr: 0
     };
   }
 
-  const [totalRow] = await sequelize.query<{ cnt: number }>(
-    `SELECT COUNT(DISTINCT user_id) AS cnt FROM matrimony_subscriptions WHERE plan IN ('GOLD','PLATINUM')`,
-    { type: QueryTypes.SELECT }
-  );
-  const totalSubscribers = Number(totalRow?.cnt ?? 0);
-
-  const activeSubscribers = await MatrimonySubscription.count({
-    where: {
-      status: "ACTIVE",
-      plan: { [Op.in]: ["GOLD", "PLATINUM"] },
-      endsAt: { [Op.gt]: now }
-    }
+  const allSubs = await MatrimonySubscription.findAll({
+    where: { plan: { [Op.in]: ["GOLD", "PLATINUM"] } },
+    order: [["createdAt", "DESC"]]
   });
-
-  const expiredSubscribers = await MatrimonySubscription.count({
-    where: {
-      plan: { [Op.in]: ["GOLD", "PLATINUM"] },
-      [Op.or]: [{ status: "EXPIRED" }, { endsAt: { [Op.lte]: now } }]
-    }
-  });
+  const byUser = new Map<number, MatrimonySubscription[]>();
+  for (const sub of allSubs) {
+    const list = byUser.get(sub.userId) ?? [];
+    list.push(sub);
+    byUser.set(sub.userId, list);
+  }
+  const currentSubs = [...byUser.values()].map((rows) => pickCurrentSubscription(rows)).filter(Boolean) as MatrimonySubscription[];
+  const totalSubscribers = currentSubs.length;
+  const activeSubscribers = currentSubs.filter((s) => deriveSubscriptionStatus(s) === "ACTIVE").length;
+  const expiredSubscribers = currentSubs.filter((s) => deriveSubscriptionStatus(s) === "EXPIRED").length;
+  const expiringSoonSubscribers = currentSubs.filter(
+    (s) => deriveSubscriptionStatus(s) === "ACTIVE" && daysRemaining(s.endsAt) <= 7
+  ).length;
 
   let todayRevenueInr = 0;
+  let weekRevenueInr = 0;
   let monthRevenueInr = 0;
+  let yearRevenueInr = 0;
   let totalRevenueInr = 0;
   let paymentFailureRate = 0;
+  let pendingPayments = 0;
+  let refundRequests = 0;
+  let renewalsToday = 0;
   try {
     const [rev] = await sequelize.query<{
       total_paise: number;
       today_paise: number;
+      week_paise: number;
       month_paise: number;
+      year_paise: number;
     }>(
       `SELECT
          COALESCE(SUM(amount_paise), 0) AS total_paise,
          COALESCE(SUM(CASE WHEN updated_at >= :today THEN amount_paise ELSE 0 END), 0) AS today_paise,
-         COALESCE(SUM(CASE WHEN updated_at >= :monthStart THEN amount_paise ELSE 0 END), 0) AS month_paise
+         COALESCE(SUM(CASE WHEN updated_at >= :weekStart THEN amount_paise ELSE 0 END), 0) AS week_paise,
+         COALESCE(SUM(CASE WHEN updated_at >= :monthStart THEN amount_paise ELSE 0 END), 0) AS month_paise,
+         COALESCE(SUM(CASE WHEN updated_at >= :yearStart THEN amount_paise ELSE 0 END), 0) AS year_paise
        FROM matrimony_payment_orders
        WHERE status = 'PAID'`,
-      { replacements: { today, monthStart }, type: QueryTypes.SELECT }
+      { replacements: { today, weekStart, monthStart, yearStart }, type: QueryTypes.SELECT }
     );
     totalRevenueInr = Number(rev?.total_paise ?? 0) / 100;
     todayRevenueInr = Number(rev?.today_paise ?? 0) / 100;
+    weekRevenueInr = Number(rev?.week_paise ?? 0) / 100;
     monthRevenueInr = Number(rev?.month_paise ?? 0) / 100;
+    yearRevenueInr = Number(rev?.year_paise ?? 0) / 100;
     const totalOrders = await MatrimonyPaymentOrder.count();
     const failedOrders = await MatrimonyPaymentOrder.count({ where: { status: "FAILED" } });
+    pendingPayments = await MatrimonyPaymentOrder.count({ where: { status: "CREATED" } });
+    const refundRows = await MatrimonyPaymentOrder.findAll({ attributes: ["meta"], where: { status: "PAID" } });
+    refundRequests = refundRows.filter((row) => Boolean((row.meta as { refundedAt?: string } | null)?.refundedAt)).length;
+    renewalsToday = await MatrimonySubscription.count({
+      where: {
+        plan: { [Op.in]: ["GOLD", "PLATINUM"] },
+        createdAt: { [Op.gte]: today }
+      }
+    });
     paymentFailureRate = totalOrders > 0 ? Math.round((failedOrders / totalOrders) * 1000) / 10 : 0;
   } catch {
     /* payment orders table optional */
@@ -271,12 +527,20 @@ export async function getSubscriptionAdminOverview(): Promise<SubscriptionAdminO
     totalSubscribers,
     activeSubscribers,
     expiredSubscribers,
+    expiringSoonSubscribers,
     todayRevenueInr: Math.round(todayRevenueInr),
+    weekRevenueInr: Math.round(weekRevenueInr),
     monthRevenueInr: Math.round(monthRevenueInr),
+    yearRevenueInr: Math.round(yearRevenueInr),
     totalRevenueInr: Math.round(totalRevenueInr),
     paymentFailureRate,
     renewalRate,
-    subscriptionGrowth30d
+    subscriptionGrowth30d,
+    pendingPayments,
+    refundRequests,
+    cancelledPlans: currentSubs.filter((s) => deriveSubscriptionStatus(s) === "CANCELLED").length,
+    renewalsToday,
+    averageRevenuePerUserInr: totalSubscribers ? Math.round(totalRevenueInr / totalSubscribers) : 0
   };
 }
 
@@ -289,87 +553,15 @@ export async function listSubscriptionsAdmin(query: ListQuery): Promise<{
   if (!(await Monetization.ensureMonetizationTables())) {
     return { items: [], total: 0, page: query.page, limit: query.limit };
   }
-
-  const where = buildSubscriptionWhere(query);
-  const orderDir = query.sortDir === "asc" ? "ASC" : "DESC";
-
-  let userIdFilter: number[] | null = null;
-  if (query.q?.trim()) {
-    const q = `%${query.q.trim()}%`;
-    const users = await User.findAll({
-      where: {
-        [Op.or]: [{ fullName: { [Op.like]: q } }, { mobile: { [Op.like]: q } }, { email: { [Op.like]: q } }]
-      },
-      attributes: ["id"],
-      limit: 500
-    });
-    userIdFilter = users.map((u) => u.id);
-    const orderMatches = await MatrimonyPaymentOrder.findAll({
-      where: {
-        [Op.or]: [
-          { razorpayOrderId: { [Op.like]: q } },
-          { razorpayPaymentId: { [Op.like]: q } }
-        ]
-      },
-      attributes: ["userId"],
-      limit: 200
-    });
-    for (const o of orderMatches) userIdFilter.push(o.userId);
-    userIdFilter = [...new Set(userIdFilter)];
-    if (!userIdFilter.length) return { items: [], total: 0, page: query.page, limit: query.limit };
-    (where as any).userId = { [Op.in]: userIdFilter };
-  }
-
-  const { rows, count } = await MatrimonySubscription.findAndCountAll({
-    where,
-    order: [["createdAt", orderDir]],
-    limit: query.limit,
-    offset: (query.page - 1) * query.limit
-  });
-
-  const userIds = [...new Set(rows.map((r) => r.userId))];
-  const users = await User.findAll({
-    where: { id: { [Op.in]: userIds } },
-    attributes: ["id", "fullName", "mobile"]
-  });
-  const userMap = new Map(users.map((u) => [u.id, u]));
-  const profileNames = await profileNamesByUserIds(userIds);
-
-  const items: SubscriptionAdminListItem[] = [];
-  for (const sub of rows) {
-    const order = await latestPaymentOrderForSubscription(sub);
-    const subStatus = deriveSubscriptionStatus(sub);
-    const payStatus = paymentStatusForSub(sub, order);
-    if (query.paymentStatus !== "any" && payStatus !== query.paymentStatus) continue;
-
-    const u = userMap.get(sub.userId);
-    items.push({
-      subscriptionId: sub.id,
-      userId: sub.userId,
-      userName: u?.fullName ?? `User #${sub.userId}`,
-      mobile: u?.mobile ?? null,
-      matrimonyProfileName: profileNames.get(sub.userId) ?? "—",
-      plan: sub.plan,
-      planLabel: planLabel(sub.plan),
-      amountPaise: sub.amountPaise ?? order?.amountPaise ?? null,
-      amountInr:
-        sub.amountPaise != null
-          ? sub.amountPaise / 100
-          : order
-            ? order.amountPaise / 100
-            : null,
-      paymentStatus: payStatus,
-      subscriptionStatus: subStatus,
-      startsAt: sub.startsAt.toISOString(),
-      endsAt: sub.endsAt.toISOString(),
-      paymentDate: order?.status === "PAID" ? order.updatedAt.toISOString() : null,
-      paymentId: sub.paymentRef ?? order?.razorpayPaymentId ?? null,
-      razorpayOrderId: sub.razorpayOrderId ?? order?.razorpayOrderId ?? null,
-      paymentOrderId: sub.paymentOrderId ?? order?.id ?? null
-    });
-  }
-
-  return { items, total: count, page: query.page, limit: query.limit };
+  const allItems = await buildCurrentSubscriberItems(query);
+  const total = allItems.length;
+  const offset = (query.page - 1) * query.limit;
+  return {
+    items: allItems.slice(offset, offset + query.limit),
+    total,
+    page: query.page,
+    limit: query.limit
+  };
 }
 
 export async function listPaymentsAdmin(query: ListQuery): Promise<{
@@ -400,7 +592,7 @@ export async function listPaymentsAdmin(query: ListQuery): Promise<{
   if (query.amountMin != null || query.amountMax != null) {
     where.amountPaise = {};
     if (query.amountMin != null) (where.amountPaise as any)[Op.gte] = query.amountMin;
-    if (query.amountMax != null) (where.amountMax as any)[Op.lte] = query.amountMax;
+    if (query.amountMax != null) (where.amountPaise as any)[Op.lte] = query.amountMax;
   }
 
   if (query.q?.trim()) {
@@ -509,6 +701,47 @@ export async function getSubscriptionAdminDetail(subscriptionId: number) {
     paymentId: s.paymentRef
   }));
 
+  const currentSub = pickCurrentSubscription(allSubs) ?? sub;
+  const currentOrder = await latestPaymentOrderForSubscription(currentSub);
+  const paidPayments = paymentOrders.filter((o) => o.status === "PAID");
+  const refundedPayments = paymentOrders.filter((o) => Boolean((o.meta as { refundedAt?: string } | null)?.refundedAt));
+  const revenueSummary = {
+    lifetimeRevenueInr: Math.round(
+      paidPayments.reduce((sum, o) => {
+        const meta = (o.meta ?? {}) as { refundedAt?: string };
+        return meta.refundedAt ? sum : sum + o.amountPaise / 100;
+      }, 0)
+    ),
+    totalPurchases: paidPayments.length,
+    averagePurchaseValueInr: paidPayments.length
+      ? Math.round(paidPayments.reduce((sum, o) => sum + o.amountPaise / 100, 0) / paidPayments.length)
+      : 0,
+    refundAmountInr: Math.round(refundedPayments.reduce((sum, o) => sum + o.amountPaise / 100, 0)),
+    pendingAmountInr: Math.round(
+      paymentOrders.filter((o) => o.status === "CREATED").reduce((sum, o) => sum + o.amountPaise / 100, 0)
+    ),
+    successfulPayments: paidPayments.length,
+    failedPayments: paymentOrders.filter((o) => o.status === "FAILED").length,
+    cancelledPayments: allSubs.filter((s) => deriveSubscriptionStatus(s) === "CANCELLED").length
+  };
+  const timeline = [
+    ...allSubs.map((s) => ({
+      at: s.createdAt.toISOString(),
+      type: "SUBSCRIPTION",
+      label: `${planLabel(s.plan)} subscription created`,
+      remarks: `${deriveSubscriptionStatus(s)} · ${s.startsAt.toISOString()} to ${s.endsAt.toISOString()}`
+    })),
+    ...paymentOrders.map((o) => {
+      const meta = (o.meta ?? {}) as { refundedAt?: string; refundNote?: string };
+      return {
+        at: (meta.refundedAt ?? (o.status === "PAID" ? o.updatedAt.toISOString() : o.createdAt.toISOString())),
+        type: meta.refundedAt ? "REFUND" : `PAYMENT_${o.status}`,
+        label: meta.refundedAt ? "Payment refunded" : `Payment ${o.status.toLowerCase()}`,
+        remarks: meta.refundedAt ? meta.refundNote ?? null : o.razorpayPaymentId ?? o.razorpayOrderId
+      };
+    })
+  ].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+
   return {
     subscription: {
       id: sub.id,
@@ -524,6 +757,18 @@ export async function getSubscriptionAdminDetail(subscriptionId: number) {
       razorpayOrderId: sub.razorpayOrderId,
       paymentOrderId: sub.paymentOrderId,
       durationMonths: sub.durationMonths
+    },
+    currentSubscription: {
+      id: currentSub.id,
+      plan: currentSub.plan,
+      planLabel: planLabel(currentSub.plan),
+      subscriptionStatus: deriveSubscriptionStatus(currentSub),
+      startsAt: currentSub.startsAt.toISOString(),
+      endsAt: currentSub.endsAt.toISOString(),
+      remainingDays: daysRemaining(currentSub.endsAt),
+      amountInr: currentSub.amountPaise != null ? currentSub.amountPaise / 100 : null,
+      paymentStatus: paymentStatusForSub(currentSub, currentOrder),
+      transactionId: currentSub.paymentRef
     },
     user: user
       ? {
@@ -568,7 +813,9 @@ export async function getSubscriptionAdminDetail(subscriptionId: number) {
     refundHistory: paymentOrders.filter((o) => {
       const m = (o.meta ?? {}) as { refundedAt?: string };
       return !!m.refundedAt;
-    })
+    }),
+    revenueSummary,
+    timeline
   };
 }
 
@@ -643,10 +890,41 @@ export async function grantSubscriptionAdmin(
   if (!user) throw Object.assign(new Error("User not found"), { status: 404 });
 
   const ref = `admin-grant-${adminEmail}-${Date.now()}`;
+  const { planPricePaise } = await import("./MatrimonyPlatformSettings.service");
   await Monetization.subscribePlan(userId, plan, durationMonths, ref, {
-    amountPaise: MATRIMONY_PLAN_CATALOG.find((p) => p.plan === plan)!.priceInr * 100
+    amountPaise: planPricePaise(plan)
   });
 
+  void adminNote;
+}
+
+export async function extendSubscriptionAdmin(
+  subscriptionId: number,
+  durationMonths: number,
+  adminEmail: string,
+  adminNote?: string
+): Promise<void> {
+  const sub = await MatrimonySubscription.findByPk(subscriptionId);
+  if (!sub) throw Object.assign(new Error("Subscription not found"), { status: 404 });
+  const baseDate = sub.endsAt.getTime() > Date.now() ? sub.endsAt : new Date();
+  await sub.update({
+    status: "ACTIVE",
+    endsAt: addMonths(baseDate, durationMonths),
+    updatedAt: new Date()
+  } as any);
+  void adminEmail;
+  void adminNote;
+}
+
+export async function cancelSubscriptionAdmin(
+  subscriptionId: number,
+  adminEmail: string,
+  adminNote?: string
+): Promise<void> {
+  const sub = await MatrimonySubscription.findByPk(subscriptionId);
+  if (!sub) throw Object.assign(new Error("Subscription not found"), { status: 404 });
+  await sub.update({ status: "CANCELLED", endsAt: new Date(), updatedAt: new Date() } as any);
+  void adminEmail;
   void adminNote;
 }
 

@@ -16,5 +16,6 @@ export const resolveReportSchema = z.object({
 export const listReportsQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(50).optional(),
-  status: z.enum(["PENDING", "RESOLVED", "DISMISSED", "any"]).optional()
+  status: z.enum(["PENDING", "RESOLVED", "DISMISSED", "ESCALATED", "any"]).optional(),
+  q: z.string().max(120).optional()
 });

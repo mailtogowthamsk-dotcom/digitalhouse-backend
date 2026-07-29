@@ -1,11 +1,11 @@
 import { z } from "zod";
-import { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES } from "../models";
+import { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES, JOB_WORK_MODES } from "../models/Post.model";
 import {
   MARKETPLACE_STATUSES,
   MARKETPLACE_INTENTS,
   MARKETPLACE_CONDITIONS,
   MARKETPLACE_CATEGORIES,
-  MARKETPLACE_MAX_PHOTOS
+  MARKETPLACE_PHOTOS_ABSOLUTE_MAX
 } from "../constants/marketplace.constants";
 import {
   HELP_STATUSES,
@@ -49,6 +49,7 @@ const jobStatusSchema = z.enum(JOB_STATUSES as unknown as [string, ...string[]])
 const jobEmploymentTypeSchema = z.enum(
   JOB_EMPLOYMENT_TYPES as unknown as [string, ...string[]]
 );
+const jobWorkModeSchema = z.enum(JOB_WORK_MODES as unknown as [string, ...string[]]);
 const marketplaceStatusSchema = z.enum(
   MARKETPLACE_STATUSES as unknown as [string, ...string[]]
 );
@@ -78,10 +79,16 @@ const optionalPrice = z.preprocess(
 
 const jobFieldsSchema = {
   job_company: z.string().trim().max(255).nullable().optional(),
+  job_category: z.string().trim().max(128).nullable().optional(),
   job_location: z.string().trim().max(255).nullable().optional(),
   job_employment_type: jobEmploymentTypeSchema.nullable().optional(),
+  job_work_mode: jobWorkModeSchema.nullable().optional(),
+  job_experience: z.string().trim().max(128).nullable().optional(),
+  job_skills: z.array(z.string().trim().min(1).max(64)).max(25).optional(),
   job_salary_min: optionalSalary,
-  job_salary_max: optionalSalary
+  job_salary_max: optionalSalary,
+  job_vacancies: z.coerce.number().int().min(1).max(100000).nullable().optional(),
+  job_application_deadline: z.string().datetime().nullable().optional()
 };
 
 const marketplaceFieldsSchema = {
@@ -94,7 +101,7 @@ const marketplaceFieldsSchema = {
   marketplace_district: z.string().trim().max(255).nullable().optional(),
   marketplace_gallery: z
     .array(z.string().trim().url().max(500))
-    .max(MARKETPLACE_MAX_PHOTOS)
+    .max(MARKETPLACE_PHOTOS_ABSOLUTE_MAX)
     .optional()
 };
 
@@ -107,7 +114,13 @@ const helpFieldsSchema = {
   help_gallery: z.array(z.string().trim().url().max(500)).max(HELP_MAX_PHOTOS).optional()
 };
 
-function refineSalaryRange<T extends { job_salary_min?: number | null; job_salary_max?: number | null }>(
+function refineSalaryRange<
+  T extends {
+    job_salary_min?: number | null;
+    job_salary_max?: number | null;
+    job_application_deadline?: string | null;
+  }
+>(
   data: T,
   ctx: z.RefinementCtx
 ) {
@@ -121,6 +134,16 @@ function refineSalaryRange<T extends { job_salary_min?: number | null; job_salar
       message: "job_salary_max must be greater than or equal to job_salary_min",
       path: ["job_salary_max"]
     });
+  }
+  if (data.job_application_deadline) {
+    const deadline = new Date(data.job_application_deadline);
+    if (Number.isNaN(deadline.getTime())) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "job_application_deadline must be a valid datetime",
+        path: ["job_application_deadline"]
+      });
+    }
   }
 }
 

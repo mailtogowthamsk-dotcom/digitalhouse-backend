@@ -3,19 +3,28 @@
  */
 import { Op } from "sequelize";
 import { Post } from "../models";
-import {
-  MARKETPLACE_SOLD_RETENTION_DAYS
-} from "../constants/marketplace.constants";
 import type { MarketplaceStatus } from "../constants/marketplace.constants";
 import * as Notifications from "./Notification.service";
+import * as MarketplaceSettings from "./MarketplaceSettings.service";
+import * as SchedulerTracking from "./SystemSchedulerTracking.service";
 
 const JOB_INTERVAL_MS = Number(
   process.env.MARKETPLACE_EXPIRY_JOB_INTERVAL_MS || 60 * 60 * 1000
 );
 const JOB_ENABLED = process.env.MARKETPLACE_EXPIRY_JOB_ENABLED !== "false";
+const SCHEDULER_JOB_KEY = "marketplace_expiry" as const;
 
 let jobTimer: ReturnType<typeof setInterval> | null = null;
 let jobRunning = false;
+
+export function getMarketplaceExpiryJobRuntimeStatus() {
+  return {
+    timerActive: jobTimer != null,
+    running: jobRunning,
+    intervalMs: JOB_INTERVAL_MS,
+    envEnabled: JOB_ENABLED
+  };
+}
 
 function daysUntil(date: Date, now: Date): number {
   const ms = date.getTime() - now.getTime();
@@ -99,8 +108,9 @@ export async function sendMarketplaceExpiryReminders(): Promise<{ d3: number; d1
 
 /** Auto-archive SOLD listings older than retention window. */
 export async function archiveOldSoldMarketplaceListings(): Promise<number> {
+  const retentionDays = await MarketplaceSettings.getSoldArchiveDays();
   const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - MARKETPLACE_SOLD_RETENTION_DAYS);
+  cutoff.setDate(cutoff.getDate() - retentionDays);
   const rows = await Post.findAll({
     where: {
       postType: "MARKETPLACE",
@@ -119,18 +129,36 @@ export async function archiveOldSoldMarketplaceListings(): Promise<number> {
   return rows.length;
 }
 
-export async function runMarketplaceExpiryJobs(): Promise<void> {
+export async function runMarketplaceExpiryJobs(opts?: {
+  trigger?: "automatic" | "manual";
+  executedBy?: string | null;
+}): Promise<void> {
+  const trigger = opts?.trigger ?? "automatic";
+  if (trigger === "automatic" && !(await SchedulerTracking.isJobEnabled(SCHEDULER_JOB_KEY))) {
+    return;
+  }
   if (jobRunning) return;
   jobRunning = true;
   try {
-    const expired = await expireDueMarketplaceListings();
-    const reminders = await sendMarketplaceExpiryReminders();
-    const archived = await archiveOldSoldMarketplaceListings();
-    if (expired > 0 || reminders.d3 > 0 || reminders.d1 > 0 || archived > 0) {
-      console.log("[marketplace-expiry-job]", { expired, reminders, archived });
+    const tracked = await SchedulerTracking.trackExecution(
+      SCHEDULER_JOB_KEY,
+      trigger,
+      opts?.executedBy ?? null,
+      async () => {
+        const expired = await expireDueMarketplaceListings();
+        const reminders = await sendMarketplaceExpiryReminders();
+        const archived = await archiveOldSoldMarketplaceListings();
+        if (expired > 0 || reminders.d3 > 0 || reminders.d1 > 0 || archived > 0) {
+          console.log("[marketplace-expiry-job]", { expired, reminders, archived });
+        }
+        return {
+          recordsProcessed: expired + reminders.d3 + reminders.d1 + archived
+        };
+      }
+    );
+    if (!tracked.ok && tracked.error) {
+      console.error("[marketplace-expiry-job] failed", tracked.error);
     }
-  } catch (e) {
-    console.error("[marketplace-expiry-job] failed", e);
   } finally {
     jobRunning = false;
   }

@@ -1,79 +1,35 @@
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response } from "express";
 import { z } from "zod";
 import { error, success } from "../utils/response";
 import * as AdminRoles from "../services/AdminRoles.service";
+import * as AdminUsers from "../services/AdminUsers.service";
+import { ADMIN_ROLES, type AdminRole } from "../constants/adminRoles.constants";
 import {
-  ADMIN_ROLES,
-  roleHasAction,
-  roleHasModule,
-  type AdminAction,
-  type AdminModule,
-  type AdminRole
-} from "../constants/adminRoles.constants";
+  getAdminEmail,
+  getAdminRole,
+  resolveActorForRoleManagement,
+  requireAdminAction,
+  requireAdminModule,
+  requireAdminRoles
+} from "../middlewares/adminPermission.middleware";
 
-export function getAdminEmail(req: Request): string | null {
-  const email = (req as any).adminEmail;
-  return typeof email === "string" && email.trim() ? email.trim().toLowerCase() : null;
-}
-
-export function getAdminRole(req: Request): AdminRole {
-  const fromReq = (req as any).adminRole as AdminRole | undefined;
-  if (fromReq) return fromReq;
-  return AdminRoles.resolveAdminRole(getAdminEmail(req));
-}
-
-/** Require one of the given roles (after adminMiddleware). */
-export function requireAdminRoles(...allowed: AdminRole[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const role = getAdminRole(req);
-    if (!allowed.includes(role)) {
-      return error(res, "Insufficient permissions for this action.", 403);
-    }
-    return next();
-  };
-}
-
-export function requireAdminAction(action: AdminAction) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const role = getAdminRole(req);
-    if (!roleHasAction(role, action)) {
-      return error(res, "Insufficient permissions for this action.", 403);
-    }
-    return next();
-  };
-}
-
-export function requireAdminModule(module: AdminModule) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const role = getAdminRole(req);
-    if (!roleHasModule(role, module)) {
-      return error(res, "Insufficient permissions for this module.", 403);
-    }
-    return next();
-  };
-}
+/** Re-export guards so existing imports from this controller keep working. */
+export {
+  getAdminEmail,
+  getAdminRole,
+  requireAdminAction,
+  requireAdminModule,
+  requireAdminRoles
+};
 
 export async function getSettings(req: Request, res: Response) {
-  const data = AdminRoles.getSettingsOverview(getAdminEmail(req));
+  const data = await AdminRoles.getSettingsOverview(getAdminEmail(req));
   return success(res, data);
 }
 
 export async function getMe(req: Request, res: Response) {
-  const email = getAdminEmail(req);
-  const role = getAdminRole(req);
-  return success(res, {
-    admin: {
-      email,
-      role,
-      roleLabel: AdminRoles.getSettingsOverview(email).me.roleLabel,
-      modules: AdminRoles.getPermissionMatrix().modules
-        .filter((m) => m.access[role])
-        .map((m) => m.code),
-      actions: AdminRoles.getPermissionMatrix().actions
-        .filter((a) => a.access[role])
-        .map((a) => a.code)
-    }
-  });
+  const session = AdminRoles.getSessionPermissions(getAdminEmail(req));
+  return success(res, { admin: session });
 }
 
 const setRoleSchema = z
@@ -84,15 +40,130 @@ const setRoleSchema = z
   .strict();
 
 export async function setAdminRole(req: Request, res: Response) {
-  const actor = getAdminEmail(req);
-  if (!actor) return error(res, "Admin email required to change roles.", 400);
+  const actor = resolveActorForRoleManagement(req);
+  if (!actor) {
+    return error(
+      res,
+      "Admin login required to change roles (or set ADMIN_API_KEY_ALLOW_ROLE_MANAGEMENT=true).",
+      403
+    );
+  }
   const body = setRoleSchema.parse(req.body ?? {});
   try {
-    const result = AdminRoles.setAdminRole(body.email, body.role as AdminRole, actor);
+    const result = await AdminRoles.setAdminRole(body.email, body.role as AdminRole, actor);
     return success(res, {
-      admin: result,
-      message: `Role updated to ${result.role}.`,
-      overview: AdminRoles.getSettingsOverview(actor)
+      admin: { email: result.email, role: result.role },
+      previousRole: result.previousRole,
+      changed: result.changed,
+      message: result.changed
+        ? `Role updated to ${result.role}.`
+        : `Role unchanged (${result.role}).`,
+      overview: await AdminRoles.getSettingsOverview(getAdminEmail(req))
+    });
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+const createAdminSchema = z
+  .object({
+    name: z.string().min(2).max(120),
+    email: z.string().email(),
+    password: z.string().min(8).max(128),
+    role: z.enum(ADMIN_ROLES as unknown as [string, ...string[]]).default("ADMIN")
+  })
+  .strict();
+
+export async function createAdminUser(req: Request, res: Response) {
+  const actor = resolveActorForRoleManagement(req);
+  if (!actor) {
+    return error(
+      res,
+      "Admin login required to create admins (or set ADMIN_API_KEY_ALLOW_ROLE_MANAGEMENT=true).",
+      403
+    );
+  }
+  const body = createAdminSchema.parse(req.body ?? {});
+  try {
+    const admin = await AdminUsers.createAdminUser({
+      name: body.name,
+      email: body.email,
+      password: body.password,
+      role: body.role as AdminRole,
+      actorEmail: actor
+    });
+    try {
+      const { recordConfigChange } = await import("../services/PlatformConfigAudit.service");
+      await recordConfigChange({
+        action: "ADMIN_USER_CREATED",
+        auditModule: "settings",
+        settingModule: "settings",
+        setting: admin.email,
+        oldValue: null,
+        newValue: admin.role,
+        changedBy: actor,
+        meta: { adminUser: admin.email, role: admin.role, name: admin.name }
+      });
+    } catch {
+      /* non-fatal */
+    }
+    return success(
+      res,
+      {
+        admin,
+        message: `Admin ${admin.email} created.`,
+        overview: await AdminRoles.getSettingsOverview(getAdminEmail(req))
+      },
+      201
+    );
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+const updateAdminSchema = z
+  .object({
+    name: z.string().min(2).max(120).optional(),
+    role: z.enum(ADMIN_ROLES as unknown as [string, ...string[]]).optional(),
+    isActive: z.boolean().optional(),
+    password: z.string().min(8).max(128).optional()
+  })
+  .strict();
+
+export async function updateAdminUser(req: Request, res: Response) {
+  const actor = resolveActorForRoleManagement(req);
+  if (!actor) {
+    return error(
+      res,
+      "Admin login required to update admins (or set ADMIN_API_KEY_ALLOW_ROLE_MANAGEMENT=true).",
+      403
+    );
+  }
+  const email = String(req.params.email || "")
+    .trim()
+    .toLowerCase();
+  if (!email) return error(res, "Email required.", 400);
+  const body = updateAdminSchema.parse(req.body ?? {});
+  try {
+    if (body.role) {
+      await AdminRoles.setAdminRole(email, body.role as AdminRole, actor);
+    }
+    const admin = await AdminUsers.updateAdminUser(
+      email,
+      {
+        name: body.name,
+        role: body.role as AdminRole | undefined,
+        isActive: body.isActive,
+        password: body.password
+      },
+      actor
+    );
+    return success(res, {
+      admin,
+      message: `Admin ${admin.email} updated.`,
+      overview: await AdminRoles.getSettingsOverview(getAdminEmail(req))
     });
   } catch (e: any) {
     if (e?.status) return error(res, e.message, e.status);

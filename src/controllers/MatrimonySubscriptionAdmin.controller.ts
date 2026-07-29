@@ -6,7 +6,9 @@ import {
   subscriptionListQuerySchema,
   paymentListQuerySchema,
   grantSubscriptionSchema,
-  recordRefundSchema
+  recordRefundSchema,
+  extendSubscriptionSchema,
+  cancelSubscriptionSchema
 } from "../validations/matrimony-subscription-admin.validation";
 
 function formatZod(err: ZodError): string {
@@ -91,6 +93,34 @@ export async function recordRefund(req: Request, res: Response) {
       body.cancelSubscription
     );
     return success(res, { message: "Refund recorded." });
+  } catch (e: any) {
+    if (e instanceof ZodError) return error(res, formatZod(e), 400);
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function extendSubscription(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return error(res, "Invalid subscription id", 400);
+  try {
+    const body = extendSubscriptionSchema.parse(req.body);
+    await SubscriptionAdmin.extendSubscriptionAdmin(id, body.durationMonths, adminEmail(req), body.adminNote);
+    return success(res, { message: `Subscription extended by ${body.durationMonths} month(s).` });
+  } catch (e: any) {
+    if (e instanceof ZodError) return error(res, formatZod(e), 400);
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function cancelSubscription(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return error(res, "Invalid subscription id", 400);
+  try {
+    const body = cancelSubscriptionSchema.parse(req.body);
+    await SubscriptionAdmin.cancelSubscriptionAdmin(id, adminEmail(req), body.adminNote);
+    return success(res, { message: "Subscription cancelled." });
   } catch (e: any) {
     if (e instanceof ZodError) return error(res, formatZod(e), 400);
     if (e.status) return error(res, e.message, e.status);

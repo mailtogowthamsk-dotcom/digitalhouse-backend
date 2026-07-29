@@ -37,6 +37,7 @@ async function viewerCommunity(currentUserId: number): Promise<string | null> {
 function publicPostVisibilityFilter(): WhereOptions {
   return {
     [Op.and]: [
+      { moderationStatus: "ACTIVE" },
       {
         [Op.or]: [{ postType: { [Op.ne]: "MARKETPLACE" } }, { marketplaceStatus: "LIVE" }]
       },

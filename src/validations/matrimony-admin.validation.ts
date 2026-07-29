@@ -24,10 +24,15 @@ export const matrimonyListQuerySchema = z.object({
   gender: z.string().optional(),
   district: z.string().optional(),
   kulam: z.string().optional(),
+  community: z.string().optional(),
   ageMin: optionalInt(0, 120),
   ageMax: optionalInt(0, 120),
   submittedFrom: z.string().optional(),
   submittedTo: z.string().optional(),
+  period: z.preprocess(
+    (v) => (v === "" ? undefined : v),
+    z.enum(["today", "week", "month"]).optional()
+  ),
   completionMin: optionalInt(0, 100),
   verificationStatus: z.preprocess(
     (v) => (v === "" ? undefined : v),
@@ -41,7 +46,9 @@ export const matrimonyListQuerySchema = z.object({
   pendingReviewOnly: z
     .union([z.literal("true"), z.literal("false"), z.boolean()])
     .optional()
-    .transform((v) => v === true || v === "true")
+    .transform((v) => v === true || v === "true"),
+  subscriptionPlan: z.string().optional(),
+  versionMin: optionalInt(1, 999)
 });
 
 export const assignReviewerSchema = z.object({

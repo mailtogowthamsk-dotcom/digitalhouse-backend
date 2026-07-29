@@ -12,6 +12,11 @@ export const MODERATION_ACTIONS = [
   "REACTIVATE",
   "ESCALATE",
   "RESOLVE",
-  "DISMISS"
+  "DISMISS",
+  "HIDE_POST",
+  "RESTORE_POST",
+  "SOFT_DELETE_POST",
+  "HARD_DELETE_POST",
+  "EDIT_POST"
 ] as const;
 export type ModerationActionType = (typeof MODERATION_ACTIONS)[number];
