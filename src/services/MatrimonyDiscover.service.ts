@@ -10,6 +10,10 @@ import type { MatrimonySection } from "../models/UserProfile.model";
 import { getMatrimonyHub, matrimonyBrowseBlockedMessage } from "./Matrimony.service";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
 import { resolveCandidatePhotoUrl } from "../constants/matrimony-photo.constants";
+import {
+  isLifecycleDiscoverable,
+  normalizeMatrimonyLifecycle
+} from "../constants/matrimony-lifecycle.constants";
 import * as NotificationService from "./Notification.service";
 import * as MatrimonySafety from "./MatrimonySafety.service";
 import {
@@ -86,6 +90,13 @@ export type DiscoverDetailDto = MatrimonyCandidatePublic & {
   matchTags?: string[];
   profileOpened?: boolean;
   contactPaymentStatus?: "NONE" | "PENDING" | "PAID";
+  /** Gated last-seen / online (MATCHES_ONLY default). */
+  presence?: {
+    online: boolean;
+    lastSeenAt: string | null;
+    hidden: boolean;
+    label: string;
+  };
 };
 
 function assertCanBrowse(hub: Awaited<ReturnType<typeof getMatrimonyHub>>): void {
@@ -97,9 +108,26 @@ function assertCanBrowse(hub: Awaited<ReturnType<typeof getMatrimonyHub>>): void
   }
 }
 
+/** Matches / chats remain available while paused or closed. */
+function assertCanAccessRelationships(hub: Awaited<ReturnType<typeof getMatrimonyHub>>): void {
+  if (
+    hub.status === "APPROVED" ||
+    hub.status === "PAUSED" ||
+    hub.status === "CLOSED" ||
+    hub.lifecycle === "ACTIVE" ||
+    hub.lifecycle === "PAUSED" ||
+    hub.lifecycle === "CLOSED"
+  ) {
+    return;
+  }
+  assertCanBrowse(hub);
+}
+
 export function isDiscoverableMatrimony(m: MatrimonySection | null): boolean {
   if (!m || m.matrimonyProfileActive !== true) return false;
   if (m.matrimonySuspended === true) return false;
+  const lifecycle = normalizeMatrimonyLifecycle(m);
+  if (!isLifecycleDiscoverable(lifecycle)) return false;
   const photo = resolveCandidatePhotoUrl(m as Record<string, unknown>);
   if (!photo) return false;
   if (m.candidatePhotoStatus === "REJECTED" || m.candidatePhotoStatus === "REUPLOAD_REQUESTED") {
@@ -643,7 +671,7 @@ export async function getCandidateDetail(
   candidateUserId: number
 ): Promise<DiscoverDetailDto> {
   const hub = await getMatrimonyHub(viewerId);
-  assertCanBrowse(hub);
+  assertCanAccessRelationships(hub);
 
   if (candidateUserId === viewerId) {
     throw Object.assign(new Error("Cannot view your own matrimony card"), { status: 400 });
@@ -670,7 +698,8 @@ export async function getCandidateDetail(
     candidateUserId,
     viewerId
   );
-  if (!m || (!isDiscoverableMatrimony(m) && !theyViewedMe)) {
+  const existingMatch = await getActiveMatrimonyMatch(viewerId, candidateUserId);
+  if (!m || (!isDiscoverableMatrimony(m) && !theyViewedMe && !existingMatch)) {
     throw Object.assign(new Error("Matrimony profile not available"), { status: 404 });
   }
 
@@ -764,6 +793,9 @@ export async function getCandidateDetail(
   const contactVisible =
     mutualMatch && (match?.contactRevealed || contactPay.status === "PAID");
 
+  const { revealPresence } = await import("./LastSeen.service");
+  const presence = await revealPresence(viewerId, candidateUserId);
+
   return {
     ...candidate,
     photoUrl,
@@ -823,7 +855,8 @@ export async function getCandidateDetail(
     starLabel: starLabel(matchScore.starLevel),
     matchTags: matchScore.matchTags,
     profileOpened: true,
-    contactPaymentStatus: contactPay.status
+    contactPaymentStatus: contactPay.status,
+    presence
   };
 }
 
@@ -911,7 +944,13 @@ export async function respondToInterest(
   introMessage?: string
 ): Promise<{ interest: MatrimonyInterest; mutualMatch: boolean; match: MatrimonyMatch | null }> {
   const hub = await getMatrimonyHub(userId);
-  assertCanBrowse(hub);
+  assertCanAccessRelationships(hub);
+  if (action === "ACCEPT" && (hub.status === "CLOSED" || hub.lifecycle === "CLOSED")) {
+    throw Object.assign(
+      new Error("Reactivate your matrimony profile before accepting new interests."),
+      { status: 403, code: "MATRIMONY_CLOSED" }
+    );
+  }
 
   const interest = await MatrimonyInterest.findByPk(interestId);
   if (!interest || interest.toUserId !== userId) {
@@ -991,7 +1030,7 @@ export async function listInterests(
   direction: "sent" | "received"
 ): Promise<unknown[]> {
   const hub = await getMatrimonyHub(userId);
-  assertCanBrowse(hub);
+  assertCanAccessRelationships(hub);
 
   const where =
     direction === "sent" ? { fromUserId: userId } : { toUserId: userId, status: { [Op.ne]: "WITHDRAWN" } };
@@ -1038,7 +1077,7 @@ export async function listInterests(
 
 export async function listMatches(userId: number): Promise<unknown[]> {
   const hub = await getMatrimonyHub(userId);
-  assertCanBrowse(hub);
+  assertCanAccessRelationships(hub);
 
   const [asLow, asHigh] = await Promise.all([
     MatrimonyMatch.findAll({
@@ -1070,6 +1109,8 @@ export async function listMatches(userId: number): Promise<unknown[]> {
   });
   const userById = new Map(users.map((u) => [u.id, u]));
   const profileByUser = new Map(profiles.map((p) => [p.userId, p]));
+  const { revealPresenceBatch } = await import("./LastSeen.service");
+  const presenceByUser = await revealPresenceBatch(userId, otherIds);
 
   return Promise.all(
     rows.map(async (row) => {
@@ -1089,7 +1130,13 @@ export async function listMatches(userId: number): Promise<unknown[]> {
         candidate: { ...candidate, photoUrl },
         contact: row.contactRevealed
           ? { mobile: u.mobile, email: null }
-          : null
+          : null,
+        presence: presenceByUser[String(otherId)] ?? {
+          online: false,
+          lastSeenAt: null,
+          hidden: true,
+          label: "Last Seen Hidden"
+        }
       };
     })
   );
@@ -1248,7 +1295,7 @@ export async function removeMatch(viewerId: number, otherUserId: number): Promis
     throw Object.assign(new Error("Invalid match"), { status: 400 });
   }
   const hub = await getMatrimonyHub(viewerId);
-  assertCanBrowse(hub);
+  assertCanAccessRelationships(hub);
 
   const match = await getActiveMatrimonyMatch(viewerId, otherUserId);
   if (!match) {

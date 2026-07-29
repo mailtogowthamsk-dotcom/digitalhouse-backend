@@ -14,3 +14,16 @@ export function getIo(): Server | null {
 export function communityRoom(community: string | null): string {
   return `community:${community ?? "__null__"}`;
 }
+
+/** Private room delivering a user's own events (messages, receipts, notifications). */
+export function userRoom(userId: number): string {
+  return `user:${userId}`;
+}
+
+/**
+ * Watch room for one user's presence. Sockets join the rooms of the peers they
+ * display, so an online/offline transition only reaches interested clients.
+ */
+export function presenceRoom(userId: number): string {
+  return `presence:${userId}`;
+}

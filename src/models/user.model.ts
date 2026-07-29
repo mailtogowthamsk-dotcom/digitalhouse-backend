@@ -12,6 +12,7 @@ export type UserStatus =
   | "CHANGES_REQUESTED"
   | "DELETED";
 export type ProfileVisibility = "PUBLIC" | "PRIVATE";
+export type LastSeenVisibility = "EVERYONE" | "MATCHES_ONLY" | "NOBODY";
 
 export class User extends Model<InferAttributes<User>, InferCreationAttributes<User>> {
   declare id: number;
@@ -37,6 +38,10 @@ export class User extends Model<InferAttributes<User>, InferCreationAttributes<U
   declare googleId: string | null;
   declare emailVerified: boolean;
   declare lastLoginProvider: AuthProviderCode | null;
+  /** Durable last-seen (throttled writes on socket offline). */
+  declare lastSeenAt: Date | null;
+  /** Who can see last-seen / online for this user. Default MATCHES_ONLY. */
+  declare lastSeenVisibility: LastSeenVisibility;
   declare profileComplete: boolean;
   declare linkedProviders: AuthProviderCode[] | null;
   declare bloodGroup: string | null;
@@ -130,6 +135,17 @@ User.init(
       type: DataTypes.STRING(32),
       allowNull: true,
       field: "last_login_provider"
+    },
+    lastSeenAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "last_seen_at"
+    },
+    lastSeenVisibility: {
+      type: DataTypes.ENUM("EVERYONE", "MATCHES_ONLY", "NOBODY"),
+      allowNull: false,
+      defaultValue: "MATCHES_ONLY",
+      field: "last_seen_visibility"
     },
     profileComplete: {
       type: DataTypes.BOOLEAN,

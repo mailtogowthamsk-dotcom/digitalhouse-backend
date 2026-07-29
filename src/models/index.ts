@@ -76,6 +76,11 @@ import {
 } from "./ProminentPeople.models";
 import { SystemSchedulerJob, SystemSchedulerRun } from "./SystemScheduler.models";
 import { AdminUser } from "./AdminUser.model";
+import {
+  LegalDocumentType,
+  LegalDocument,
+  LegalDocumentAcceptance
+} from "./LegalDocument.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
@@ -179,6 +184,15 @@ ProminentGalleryItem.belongsTo(ProminentPerson, { foreignKey: "personId", as: "P
 ProminentPerson.hasMany(ProminentTimelineEntry, { foreignKey: "personId", as: "Timeline" });
 ProminentTimelineEntry.belongsTo(ProminentPerson, { foreignKey: "personId", as: "Person" });
 
+User.hasMany(LegalDocumentAcceptance, { foreignKey: "userId" });
+LegalDocumentAcceptance.belongsTo(User, { foreignKey: "userId" });
+LegalDocument.hasMany(LegalDocumentAcceptance, { foreignKey: "documentId" });
+LegalDocumentAcceptance.belongsTo(LegalDocument, { foreignKey: "documentId" });
+LegalDocumentType.hasMany(LegalDocument, {
+  foreignKey: "documentKey",
+  sourceKey: "documentKey"
+});
+
 export type { UserStatus } from "./user.model";
 export type { PostType, JobStatus, JobEmploymentType, JobWorkMode, PostVisibility } from "./Post.model";
 export { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES, JOB_WORK_MODES, POST_VISIBILITIES } from "./Post.model";
@@ -258,5 +272,8 @@ export {
   ProminentTimelineEntry,
   SystemSchedulerJob,
   SystemSchedulerRun,
-  AdminUser
+  AdminUser,
+  LegalDocumentType,
+  LegalDocument,
+  LegalDocumentAcceptance
 };

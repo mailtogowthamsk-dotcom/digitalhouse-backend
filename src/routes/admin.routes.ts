@@ -12,6 +12,7 @@ import * as AdminHelpingHandsController from "../controllers/AdminHelpingHands.c
 import * as AdminReportsController from "../controllers/AdminReports.controller";
 import * as AdminSupportController from "../controllers/AdminSupport.controller";
 import * as AdminSettingsController from "../controllers/AdminSettings.controller";
+import * as AdminLegalController from "../controllers/AdminLegal.controller";
 import * as AdminPostsController from "../controllers/AdminPosts.controller";
 import { requireAdminAction, requireAdminModule } from "../middlewares/adminPermission.middleware";
 import * as PlatformController from "../controllers/Platform.controller";
@@ -765,6 +766,74 @@ adminRouter.patch(
   requireAdminModule("settings"),
   requireAdminAction("settings.manage_roles"),
   asyncHandler(AdminSettingsController.updateAdminUser)
+);
+
+// ── Legal Documents (Settings) ─────────────────────────────
+adminRouter.get(
+  "/legal/documents",
+  requireAdminModule("settings"),
+  asyncHandler(AdminLegalController.listSummary)
+);
+adminRouter.get(
+  "/legal/types",
+  requireAdminModule("settings"),
+  asyncHandler(AdminLegalController.listTypes)
+);
+adminRouter.post(
+  "/legal/types",
+  requireAdminModule("settings"),
+  requireAdminAction("settings.legal_manage"),
+  asyncHandler(AdminLegalController.createType)
+);
+adminRouter.patch(
+  "/legal/types/:documentKey",
+  requireAdminModule("settings"),
+  requireAdminAction("settings.legal_manage"),
+  asyncHandler(AdminLegalController.updateType)
+);
+adminRouter.get(
+  "/legal/documents/:documentKey/latest",
+  requireAdminModule("settings"),
+  asyncHandler(AdminLegalController.getLatest)
+);
+adminRouter.get(
+  "/legal/documents/:documentKey/history",
+  requireAdminModule("settings"),
+  asyncHandler(AdminLegalController.history)
+);
+adminRouter.get(
+  "/legal/documents/:documentKey/compare",
+  requireAdminModule("settings"),
+  asyncHandler(AdminLegalController.compare)
+);
+adminRouter.post(
+  "/legal/documents",
+  requireAdminModule("settings"),
+  requireAdminAction("settings.legal_manage"),
+  asyncHandler(AdminLegalController.createDraft)
+);
+adminRouter.get(
+  "/legal/versions/:id",
+  requireAdminModule("settings"),
+  asyncHandler(AdminLegalController.getDocument)
+);
+adminRouter.patch(
+  "/legal/versions/:id",
+  requireAdminModule("settings"),
+  requireAdminAction("settings.legal_manage"),
+  asyncHandler(AdminLegalController.updateDraft)
+);
+adminRouter.post(
+  "/legal/documents/:documentKey/publish",
+  requireAdminModule("settings"),
+  requireAdminAction("settings.legal_manage"),
+  asyncHandler(AdminLegalController.publish)
+);
+adminRouter.post(
+  "/legal/documents/:documentKey/restore",
+  requireAdminModule("settings"),
+  requireAdminAction("settings.legal_manage"),
+  asyncHandler(AdminLegalController.restore)
 );
 
 // ── Platform Management ────────────────────────────────────

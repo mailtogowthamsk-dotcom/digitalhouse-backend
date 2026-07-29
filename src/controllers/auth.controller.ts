@@ -25,7 +25,23 @@ import { registrationStatusService } from "../services/RegistrationStatus.servic
 export async function register(req: Request, res: Response) {
   try {
     const body = registerSchema.parse(req.body);
+    const { legalService } = await import("../services/Legal.service");
+    await legalService.assertRegistrationAcceptances(body.legalAcceptances ?? []);
+
     const user = await userService.register(body);
+    if (body.legalAcceptances?.length) {
+      await legalService.acceptDocuments({
+        userId: user.id,
+        documentKeys: body.legalAcceptances.map((a) => a.documentKey),
+        source: "registration",
+        ipAddress: legalService.clientIp(req as any),
+        userAgent: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : null,
+        expectedVersions: Object.fromEntries(
+          body.legalAcceptances.map((a) => [a.documentKey, a.version])
+        )
+      });
+    }
+
     const accessToken = signAccessToken({ userId: user.id });
     return success(
       res,
@@ -105,7 +121,13 @@ export async function verifyOtp(req: Request, res: Response) {
  */
 export async function getMe(req: Request & { user?: import("../models").User }, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
-  return success(res, { user: userService.toAuthUser(req.user) });
+  try {
+    const { legalService } = await import("../services/Legal.service");
+    const legal = await legalService.getAcceptanceStatus(req.user.id);
+    return success(res, { user: userService.toAuthUser(req.user), legal });
+  } catch {
+    return success(res, { user: userService.toAuthUser(req.user) });
+  }
 }
 
 /** POST /auth/google — additional login method; existing OTP flow unchanged */
@@ -125,7 +147,24 @@ export async function completeGoogleProfile(req: Request & { user?: import("../m
   if (!req.user) return error(res, "Unauthorized", 401);
   const body = completeGoogleProfileSchema.parse(req.body);
   try {
+    const { legalService } = await import("../services/Legal.service");
+    await legalService.assertRegistrationAcceptances(body.legalAcceptances ?? []);
+
     const user = await GoogleAuth.completeGoogleProfile(req.user.id, body);
+
+    if (body.legalAcceptances?.length) {
+      await legalService.acceptDocuments({
+        userId: user.id,
+        documentKeys: body.legalAcceptances.map((a) => a.documentKey),
+        source: "registration",
+        ipAddress: legalService.clientIp(req as any),
+        userAgent: typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : null,
+        expectedVersions: Object.fromEntries(
+          body.legalAcceptances.map((a) => [a.documentKey, a.version])
+        )
+      });
+    }
+
     return success(res, { user });
   } catch (e: any) {
     return error(res, e?.message ?? "Failed to complete profile", e?.status ?? 400);

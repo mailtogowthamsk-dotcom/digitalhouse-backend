@@ -4,7 +4,7 @@ import { Message, User } from "../models";
 import { toSignedUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
 import { emitMessageEvents, emitMessageRead } from "../realtime/messageEvents";
-import * as NotificationService from "./Notification.service";
+import { scheduleMessagePush } from "../realtime/messagePushQueue";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
 import {
   assertCanSendMessage,
@@ -24,6 +24,12 @@ export type ThreadDto = {
   otherUser: { id: number; name: string; profileImage: string | null; online: boolean };
   chatLanes: ChatLane[];
   primaryLane: ChatLane | null;
+  /**
+   * Whether new messages may be sent. `chatLanes` cannot answer this: a
+   * read-only matrimony thread still reports a "matrimony" lane so history
+   * stays visible.
+   */
+  canSend: boolean;
   muted: boolean;
   archived: boolean;
   lastMessage: {
@@ -149,6 +155,7 @@ export async function listThreads(
         },
         chatLanes: access?.chatLanes ?? [],
         primaryLane: access?.primaryLane ?? null,
+        canSend: access?.allowed ?? false,
         muted: pref?.muted ?? false,
         archived: isArchived,
         lastMessage: lm
@@ -211,36 +218,38 @@ export async function sendMessage(
   await assertCanSendMessage(senderId, recipientId);
 
   const trimmed = body.trim();
+  // deliveredAt stays null until the recipient device acks `message:new`.
+  // Stamping it from `isOnline` reported "delivered" for sockets that were
+  // already dead, which is exactly when the message needed a push instead.
   const msg = await Message.create({
     senderId,
     recipientId,
     body: trimmed,
     clientId: (clientId ?? "").trim() || null,
-    deliveredAt: isOnline(recipientId) ? new Date() : null,
+    deliveredAt: null,
     readAt: null
   } as any);
 
   const dto = toMessageDto(msg);
   emitMessageEvents(dto);
 
-  if (!isOnline(recipientId)) {
-    void NotificationService.notifyNewMessage(recipientId, senderId, trimmed).catch(() => {});
-  }
+  scheduleMessagePush({ messageId: msg.id, recipientId, senderId, body: trimmed });
 
   return dto;
 }
 
 export async function markRead(me: number, otherUserId: number): Promise<{ readAt: string }> {
   const now = new Date();
+  // A read message is necessarily delivered; backfill it so the sender can
+  // never see a blue tick on a message still marked undelivered.
   const [updated] = await Message.update(
-    { readAt: now } as any,
+    { readAt: now, deliveredAt: sequelize.fn("COALESCE", sequelize.col("deliveredAt"), now) } as any,
     { where: { senderId: otherUserId, recipientId: me, readAt: null } }
   );
   const readAt = now.toISOString();
-  // Notify sender even when client used REST (or when socket:read delegates here).
-  if (updated > 0) {
-    emitMessageRead(me, otherUserId, readAt);
-  }
+  // Always emit, including on a no-op re-read: a sender that missed the first
+  // event (reconnect, backgrounded app) has no other way to correct its ticks.
+  emitMessageRead(me, otherUserId, readAt);
   return { readAt };
 }
 

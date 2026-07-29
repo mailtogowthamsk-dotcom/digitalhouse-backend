@@ -81,3 +81,50 @@ export function buildPresenceSnapshot(): {
     lastSeen: listLastSeenMap()
   };
 }
+
+/**
+ * Snapshot limited to the peers a client actually renders. Keeps the payload
+ * bounded instead of shipping the whole online registry to every socket.
+ */
+export function buildPresenceSnapshotFor(userIds: Iterable<number>): {
+  scoped: true;
+  userIds: number[];
+  onlineUserIds: number[];
+  lastSeen: Record<string, string>;
+} {
+  const requested: number[] = [];
+  const onlineUserIds: number[] = [];
+  const lastSeen: Record<string, string> = {};
+
+  for (const raw of userIds) {
+    const userId = Number(raw);
+    if (!Number.isFinite(userId) || userId <= 0) continue;
+    requested.push(userId);
+    if (isOnline(userId)) {
+      onlineUserIds.push(userId);
+      continue;
+    }
+    const ts = state.lastSeenAt.get(userId);
+    if (ts != null) lastSeen[String(userId)] = new Date(ts).toISOString();
+  }
+
+  // `scoped` tells the client to merge rather than replace its cache, so a
+  // per-conversation lookup cannot erase what it knows about other users.
+  return { scoped: true, userIds: requested, onlineUserIds, lastSeen };
+}
+
+/**
+ * Drop last-seen entries older than the retention window so the map cannot grow
+ * for the lifetime of the process. Called on a low-frequency interval.
+ */
+export function pruneLastSeen(maxAgeMs: number): number {
+  const cutoff = Date.now() - maxAgeMs;
+  let removed = 0;
+  for (const [userId, ts] of state.lastSeenAt.entries()) {
+    if (ts < cutoff && !isOnline(userId)) {
+      state.lastSeenAt.delete(userId);
+      removed += 1;
+    }
+  }
+  return removed;
+}

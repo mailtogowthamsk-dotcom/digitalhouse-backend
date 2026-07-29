@@ -690,11 +690,28 @@ export async function getMatrimonyRequestDetail(updateId: number) {
     meta?.changeRequest ??
     null;
 
+  const approvedLifecycle =
+    (approvedSigned as { matrimonyLifecycle?: string; matrimonyProfileActive?: boolean } | null)
+      ?.matrimonyLifecycle ??
+    ((approvedSigned as { matrimonyProfileActive?: boolean } | null)?.matrimonyProfileActive
+      ? "ACTIVE"
+      : null);
+
+  const { revealPresence } = await import("./LastSeen.service");
+  const presence = await revealPresence(null, user.id, { adminBypass: true });
+
   return {
     id: row.id,
     userId: user.id,
     workflowStatus,
     rowStatus: row.status,
+    lifecycleStatus: approvedLifecycle,
+    presence: {
+      online: presence.online,
+      lastSeenAt: presence.lastSeenAt,
+      label: presence.label,
+      lastSeenVisibility: user.lastSeenVisibility ?? "MATCHES_ONLY"
+    },
     submittedAt: row.submittedAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
     reviewedAt: row.reviewedAt?.toISOString() ?? null,
@@ -1020,6 +1037,21 @@ export async function approveMatrimonyRequest(updateId: number, adminEmail: stri
     await row.update({ data: syncMatrimonyPhotoFields(data), updatedAt: new Date() } as any);
   }
   await approveProfileUpdate(updateId, adminEmail, remarks ?? null);
+  // Ensure approved profiles start in ACTIVE lifecycle (discoverable).
+  const profile = await ensureUserProfile(row.userId);
+  const approvedMatrimony =
+    normalizeJsonColumn(profile.matrimony, SECTION_ALLOWED_KEYS.matrimony) ?? {};
+  await profile.update({
+    matrimony: {
+      ...approvedMatrimony,
+      matrimonyProfileActive: true,
+      matrimonyLifecycle: "ACTIVE",
+      matrimonySuspended: false,
+      pausedAt: null,
+      closedAt: null,
+      closeReason: null
+    }
+  } as any);
   const meta = await ensureMeta(row.id, row.userId, data, "APPROVED");
   if (meta) {
     await meta.update({

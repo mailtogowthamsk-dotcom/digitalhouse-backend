@@ -79,6 +79,16 @@ export type MatrimonySection = {
   horoscopeDocumentUrl?: string | null;
   /** Set by admin suspend action */
   matrimonySuspended?: boolean | null;
+  /**
+   * Visibility lifecycle for an approved profile.
+   * ACTIVE = discoverable; PAUSED/CLOSED = hidden but data + matches retained.
+   */
+  matrimonyLifecycle?: "ACTIVE" | "PAUSED" | "CLOSED" | null;
+  pausedAt?: string | null;
+  closedAt?: string | null;
+  /** Legacy close/withdraw timestamp (kept for audit compatibility) */
+  withdrawnAt?: string | null;
+  closeReason?: string | null;
 };
 
 export type BusinessSection = {

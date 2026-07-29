@@ -411,10 +411,18 @@ export async function getAdminUserDetail(userId: number) {
     activity: {
       lastLoginProvider: user.lastLoginProvider,
       accountCreated: user.createdAt.toISOString(),
-      lastActive: lastDevice?.lastUsedAt?.toISOString() ?? user.updatedAt.toISOString(),
+      lastActive:
+        (await import("../realtime/presence").then(({ getLastSeenAt, isOnline }) =>
+          isOnline(user.id) ? new Date().toISOString() : getLastSeenAt(user.id)
+        ).catch(() => null)) ??
+        user.lastSeenAt?.toISOString() ??
+        lastDevice?.lastUsedAt?.toISOString() ??
+        user.updatedAt.toISOString(),
       numberOfLogins: loginEventCount,
       deviceCount: devices.length,
-      onlineStatus: "unknown" as const
+      onlineStatus: (await import("../realtime/presence")
+        .then(({ isOnline }) => (isOnline(user.id) ? "online" : "offline"))
+        .catch(() => "unknown")) as "online" | "offline" | "unknown"
     },
     statistics: {
       totalPosts,
@@ -475,9 +483,14 @@ export async function getAdminUserDetail(userId: number) {
     matrimonyStats: {
       profileStatus: profile?.matrimony?.matrimonySuspended
         ? "SUSPENDED"
-        : profile?.matrimony?.matrimonyProfileActive
-          ? "ACTIVE"
-          : "INACTIVE",
+        : profile?.matrimony?.matrimonyLifecycle === "PAUSED"
+          ? "PAUSED"
+          : profile?.matrimony?.matrimonyLifecycle === "CLOSED"
+            ? "CLOSED"
+            : profile?.matrimony?.matrimonyProfileActive
+              ? "ACTIVE"
+              : "INACTIVE",
+      lifecycle: profile?.matrimony?.matrimonyLifecycle ?? null,
       interestSent,
       interestReceived,
       matches: matchesCount,

@@ -108,6 +108,30 @@ export async function updateConnectionRequests(req: AuthRequest, res: Response) 
   }
 }
 
+/** GET /api/users/me/last-seen-visibility */
+export async function getLastSeenVisibility(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const { getLastSeenVisibility: load } = await import("../services/LastSeen.service");
+  const visibility = await load(req.user.id);
+  return success(res, { visibility });
+}
+
+/** PATCH /api/users/me/last-seen-visibility */
+export async function updateLastSeenVisibility(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const raw = String(req.body?.visibility ?? "").toUpperCase();
+  if (!["EVERYONE", "MATCHES_ONLY", "NOBODY"].includes(raw)) {
+    return error(res, "visibility must be EVERYONE, MATCHES_ONLY, or NOBODY", 400);
+  }
+  try {
+    const { setLastSeenVisibility } = await import("../services/LastSeen.service");
+    const visibility = await setLastSeenVisibility(req.user.id, raw as any);
+    return success(res, { visibility });
+  } catch (e) {
+    return handleServiceError(res, e);
+  }
+}
+
 /** GET /api/users/me/blocks */
 export async function listBlockedUsers(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);

@@ -17,6 +17,10 @@ matrimonyRouter.get("/form-options", asyncHandler(MatrimonyController.getFormOpt
 matrimonyRouter.put("/draft", asyncHandler(MatrimonyController.saveDraft));
 matrimonyRouter.post("/submit", asyncHandler(MatrimonyController.submit));
 matrimonyRouter.post("/withdraw", asyncHandler(MatrimonyController.withdrawProfile));
+matrimonyRouter.post("/pause", asyncHandler(MatrimonyController.pauseProfile));
+matrimonyRouter.post("/resume", asyncHandler(MatrimonyController.resumeProfile));
+matrimonyRouter.post("/close", asyncHandler(MatrimonyController.closeProfile));
+matrimonyRouter.post("/reactivate", asyncHandler(MatrimonyController.reactivateProfile));
 
 matrimonyRouter.get("/discover", asyncHandler(MatrimonyController.discover));
 matrimonyRouter.get("/candidates/:userId", asyncHandler(MatrimonyController.candidateDetail));

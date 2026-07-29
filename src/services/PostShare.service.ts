@@ -1,8 +1,8 @@
 import { Op } from "sequelize";
 import { Post, User, Message } from "../models";
 import { assertCanSendMessage } from "./MessagePermission.service";
-import { isOnline } from "../realtime/presence";
 import { emitMessageEvents } from "../realtime/messageEvents";
+import { scheduleMessagePush } from "../realtime/messagePushQueue";
 import * as NotificationService from "./Notification.service";
 import { postService } from "./Post.service";
 import type { PostDetailDto } from "./Post.service";
@@ -71,7 +71,7 @@ export async function sharePostToConnections(
         body,
         sharedPostId: resolveOriginalPostId(post),
         clientId: null,
-        deliveredAt: isOnline(recipientId) ? new Date() : null,
+        deliveredAt: null,
         readAt: null
       } as any);
 
@@ -98,9 +98,7 @@ export async function sharePostToConnections(
         post.title
       ).catch(() => {});
 
-      if (!isOnline(recipientId)) {
-        void NotificationService.notifyNewMessage(recipientId, senderId, body).catch(() => {});
-      }
+      scheduleMessagePush({ messageId: msg.id, recipientId, senderId, body });
 
       sent += 1;
     } catch (e: unknown) {

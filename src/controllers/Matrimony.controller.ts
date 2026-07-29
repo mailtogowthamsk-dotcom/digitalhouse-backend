@@ -6,6 +6,10 @@ import {
   saveMatrimonyDraft,
   submitMatrimonyProfile,
   withdrawMatrimonyProfile,
+  pauseMatrimonyProfile,
+  resumeMatrimonyProfile,
+  closeMatrimonyProfile,
+  reactivateMatrimonyProfile,
   assertMatrimonyBrowseAllowed
 } from "../services/Matrimony.service";
 import { validateMatrimonyDraftBody, validateMatrimonySubmitBody } from "../validations/matrimony.validation";
@@ -427,7 +431,64 @@ export async function withdrawProfile(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
   try {
     const hub = await withdrawMatrimonyProfile(userId);
-    return success(res, { ...hub, message: "Matrimony profile withdrawn from discovery." });
+    return success(res, {
+      ...hub,
+      message:
+        "Matrimony profile closed. Existing matches and chats are preserved. You can reactivate later."
+    });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function pauseProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  try {
+    const hub = await pauseMatrimonyProfile(userId);
+    return success(res, {
+      ...hub,
+      message: "Profile paused. You are hidden from browse and will not receive new interests."
+    });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function resumeProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  try {
+    const hub = await resumeMatrimonyProfile(userId);
+    return success(res, { ...hub, message: "Profile resumed and visible in browse again." });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function closeProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  const reason =
+    typeof req.body?.reason === "string" ? req.body.reason : undefined;
+  try {
+    const hub = await closeMatrimonyProfile(userId, reason);
+    return success(res, {
+      ...hub,
+      message:
+        "Profile closed. Matches, chats, and subscription history are preserved. Reactivate anytime."
+    });
+  } catch (e: any) {
+    if (e.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function reactivateProfile(req: Request, res: Response) {
+  const userId = (req as any).user?.id as number;
+  try {
+    const hub = await reactivateMatrimonyProfile(userId);
+    return success(res, { ...hub, message: "Profile reactivated and visible in browse again." });
   } catch (e: any) {
     if (e.status) return error(res, e.message, e.status);
     throw e;

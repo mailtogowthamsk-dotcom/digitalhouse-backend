@@ -107,6 +107,12 @@ async function initDb() {
     await masterDataService.seedMasterDataIfNeeded();
     await ensurePlatformDefaults();
     try {
+      const { legalService } = await import("./services/Legal.service");
+      await legalService.ensureLegalDefaults();
+    } catch (e) {
+      console.warn("[startup] legal defaults failed:", e);
+    }
+    try {
       const PlanSettings = await import("./services/MatrimonyPlatformSettings.service");
       await PlanSettings.refreshPlanCatalogCache();
     } catch (e) {

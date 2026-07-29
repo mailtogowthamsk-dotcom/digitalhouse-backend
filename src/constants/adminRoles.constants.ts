@@ -74,6 +74,7 @@ export const ADMIN_ACTIONS = [
   "reports.escalate",
   "reports.manage",
   "settings.manage_roles",
+  "settings.legal_manage",
   "master_data.write",
   "prominent_people.write",
   "notifications.broadcast",
@@ -110,6 +111,7 @@ export const ADMIN_ACTION_LABELS: Record<AdminAction, string> = {
   "reports.escalate": "Escalate reports",
   "reports.manage": "Resolve / dismiss reports",
   "settings.manage_roles": "Assign admin roles",
+  "settings.legal_manage": "Manage legal documents",
   "master_data.write": "Create / edit master data",
   "prominent_people.write": "Create / edit Prominent People",
   "notifications.broadcast": "Broadcast notifications",
@@ -179,7 +181,8 @@ const ADMIN_ROLE_ACTIONS: AdminAction[] = [
   "platform.maintenance",
   "platform.versions",
   "platform.features",
-  "system_scheduler.manage"
+  "system_scheduler.manage",
+  "settings.legal_manage"
 ];
 
 const MODERATOR_ROLE_ACTIONS: AdminAction[] = [

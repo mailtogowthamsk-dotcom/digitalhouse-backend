@@ -213,7 +213,13 @@ export const SECTION_ALLOWED_KEYS: Record<string, Set<string>> = {
     "preferredDistrictIds",
     "preferredKulamIds",
     "partnerPreferences",
-    "horoscopeDocumentUrl"
+    "horoscopeDocumentUrl",
+    "matrimonySuspended",
+    "matrimonyLifecycle",
+    "pausedAt",
+    "closedAt",
+    "withdrawnAt",
+    "closeReason"
   ]),
   business: new Set(["businessProfileActive", "businessName", "businessType", "businessDescription", "businessAddress", "businessPhone", "businessWebsite"]),
   family: new Set(["familyMemberId1", "familyMemberId2", "familyMemberId3", "familyMemberId4", "familyMemberId5"])

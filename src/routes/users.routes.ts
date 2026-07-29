@@ -25,6 +25,8 @@ usersRouter.post("/username", asyncHandler(UsersDirectoryController.setUsername)
 usersRouter.put("/username", asyncHandler(UsersDirectoryController.changeUsername));
 usersRouter.patch("/me/visibility", asyncHandler(UsersDirectoryController.updateVisibility));
 usersRouter.patch("/me/connection-requests", asyncHandler(UsersDirectoryController.updateConnectionRequests));
+usersRouter.get("/me/last-seen-visibility", asyncHandler(UsersDirectoryController.getLastSeenVisibility));
+usersRouter.patch("/me/last-seen-visibility", asyncHandler(UsersDirectoryController.updateLastSeenVisibility));
 usersRouter.get("/me/blocks", asyncHandler(UsersDirectoryController.listBlockedUsers));
 usersRouter.post("/:userId/block", asyncHandler(UsersDirectoryController.blockUser));
 usersRouter.delete("/:userId/block", asyncHandler(UsersDirectoryController.unblockUser));
