@@ -1,10 +1,10 @@
 import { Op, literal, type WhereOptions } from "sequelize";
 import { User, Post, PostLike, SavedPost, HelpOffer } from "../models";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 import type { FeedAuthorDto, FeedItemDto, FeedResultDto } from "./Home.service";
 import { resolvePostMediaType } from "../constants/postMedia.constants";
-import { parseMarketplaceGallery, signMarketplaceGallery } from "../utils/marketplaceGallery";
-import { parseHelpGallery, signHelpGallery } from "../utils/helpGallery";
+import { parseMarketplaceGallery, publicMarketplaceGallery } from "../utils/marketplaceGallery";
+import { parseHelpGallery, publicHelpGallery } from "../utils/helpGallery";
 import { audienceVisibilityWhere, andWhere } from "./PostVisibility.service";
 import { deriveImageVariantUrls } from "../utils/mediaVariants";
 
@@ -103,7 +103,7 @@ function toFeedAuthor(user: User): FeedAuthorDto {
     userId: user.id,
     username: user.username ?? null,
     name: user.fullName,
-    profileImage: user.profilePhoto ?? null,
+    profileImage: toPublicUrlIfR2(user.profilePhoto ?? null),
     verified: user.status === APPROVED
   };
 }
@@ -475,13 +475,13 @@ export async function buildFeedItemsFromPosts(
             ? parseHelpGallery(p.helpGallery, p.mediaUrl ?? null)
             : [];
       const [mediaUrl, thumbnailUrl, profileImage, gallery] = await Promise.all([
-        toSignedUrlIfR2(p.mediaUrl ?? null),
-        toSignedUrlIfR2(p.thumbnailUrl ?? null),
-        author ? toSignedUrlIfR2(author.profilePhoto ?? null) : Promise.resolve(null),
+        toPublicUrlIfR2(p.mediaUrl ?? null),
+        toPublicUrlIfR2(p.thumbnailUrl ?? null),
+        author ? toPublicUrlIfR2(author.profilePhoto ?? null) : Promise.resolve(null),
         galleryRaw.length
           ? p.postType === "MARKETPLACE"
-            ? signMarketplaceGallery(galleryRaw)
-            : signHelpGallery(galleryRaw)
+            ? publicMarketplaceGallery(galleryRaw)
+            : publicHelpGallery(galleryRaw)
           : Promise.resolve([] as string[])
       ]);
       const mediaType = resolvePostMediaType({
@@ -501,9 +501,9 @@ export async function buildFeedItemsFromPosts(
         const derived = deriveImageVariantUrls(p.mediaUrl);
         if (derived) {
           const [t, m, f] = await Promise.all([
-            toSignedUrlIfR2(derived.thumb),
-            toSignedUrlIfR2(derived.medium),
-            toSignedUrlIfR2(derived.full)
+            toPublicUrlIfR2(derived.thumb),
+            toPublicUrlIfR2(derived.medium),
+            toPublicUrlIfR2(derived.full)
           ]);
           mediaUrlThumb = t;
           mediaUrlMedium = m;
@@ -519,7 +519,7 @@ export async function buildFeedItemsFromPosts(
       const original = p.originalPostId ? originalById.get(p.originalPostId) : null;
       const originalUser = original ? ((original as any).User as User) : null;
       const originalProfileImage = originalUser
-        ? (await toSignedUrlIfR2(originalUser.profilePhoto ?? null)) ??
+        ? (await toPublicUrlIfR2(originalUser.profilePhoto ?? null)) ??
           originalUser.profilePhoto ??
           null
         : null;

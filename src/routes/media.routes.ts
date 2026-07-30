@@ -14,11 +14,22 @@ const mediaLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+const mediaStatusLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 240,
+  message: { ok: false, message: "Too many media status requests" },
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
-mediaRouter.use(mediaLimiter);
 // Allow APPROVED + registration correction / Google profile-completion uploads.
 mediaRouter.use(registrationMediaAuthMiddleware);
 
-mediaRouter.post("/upload-url", asyncHandler(MediaController.getUploadUrl));
-mediaRouter.post("/finalize", asyncHandler(MediaController.finalizeUpload));
-mediaRouter.post("/delete", asyncHandler(MediaController.deleteMedia));
+mediaRouter.post("/upload-url", mediaLimiter, asyncHandler(MediaController.getUploadUrl));
+mediaRouter.post("/finalize", mediaLimiter, asyncHandler(MediaController.finalizeUpload));
+mediaRouter.get(
+  "/:mediaFileId/status",
+  mediaStatusLimiter,
+  asyncHandler(MediaController.getFinalizeStatus)
+);
+mediaRouter.post("/delete", mediaLimiter, asyncHandler(MediaController.deleteMedia));

@@ -6,7 +6,7 @@ import { resolveLoginSource } from "../utils/authProvider.util";
 import type { MatrimonySection, BusinessSection } from "../models/UserProfile.model";
 import { signAdminToken } from "../utils/jwt.util";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2, toPrivateSignedUrlIfR2 } from "../utils/r2Client";
 import { getPendingReportCount } from "./AdminReports.service";
 import { resolveAdminRole } from "./AdminRoles.service";
 import { ADMIN_ROLE_LABELS } from "../constants/adminRoles.constants";
@@ -15,7 +15,7 @@ import { dummyPasswordVerify, safeEqualString } from "../utils/adminPassword.uti
 
 const MATRIMONY_MEDIA_URL_KEYS = ["candidatePhotoUrl", "profilePhotoUrl", "horoscopeDocumentUrl"] as const;
 
-/** R2 bucket is private; admin UI needs time-limited signed GET URLs to view uploads. */
+/** Public photos use the CDN; sensitive documents use time-limited signed GET URLs. */
 async function signMatrimonyMediaUrls(
   data: Record<string, unknown> | null
 ): Promise<Record<string, unknown> | null> {
@@ -25,7 +25,10 @@ async function signMatrimonyMediaUrls(
     MATRIMONY_MEDIA_URL_KEYS.map(async (key) => {
       const v = out[key];
       if (typeof v === "string" && v.trim()) {
-        out[key] = (await toSignedUrlIfR2(v)) ?? v;
+        out[key] =
+          key === "horoscopeDocumentUrl"
+            ? await toPrivateSignedUrlIfR2(v)
+            : toPublicUrlIfR2(v) ?? v;
       }
     })
   );
@@ -225,7 +228,7 @@ export async function listUsers(
       rows.map(async (u) => {
         const sub = subByUser.get(u.id);
         const photo = u.profilePhoto
-          ? (await toSignedUrlIfR2(u.profilePhoto)) ?? u.profilePhoto
+          ? toPublicUrlIfR2(u.profilePhoto) ?? u.profilePhoto
           : null;
         return {
           id: u.id,

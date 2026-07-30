@@ -17,7 +17,7 @@ import {
   type NotificationCategory,
   type NotificationType
 } from "../constants/notification.constants";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { sendExpoPush } from "./ExpoPush.service";
 import { isFcmConfigured, sendFcmPush } from "./FcmPush.service";
 import { isExpoPushToken, isFcmPushToken } from "../utils/pushToken.util";
@@ -80,7 +80,7 @@ async function actorProfile(userId: number | null | undefined): Promise<{
   if (!userId) return { name: null, image: null };
   const u = await User.findByPk(userId, { attributes: ["fullName", "profilePhoto"] });
   const raw = u?.profilePhoto ?? null;
-  const image = raw ? (await toSignedUrlIfR2(raw)) ?? raw : null;
+  const image = raw ? (await toPublicUrlIfR2(raw)) ?? raw : null;
   return { name: u?.fullName?.trim() || null, image };
 }
 

@@ -2,10 +2,16 @@ import { Response } from "express";
 import { mediaService } from "../services/Media.service";
 import { success, error } from "../utils/response";
 import { validateUploadUrlBody, validateFinalizeMediaBody, validateDeleteMediaBody } from "../validations/media.validation";
-import { mediaProcessingService } from "../services/MediaProcessing.service";
+import { mediaJobService } from "../services/MediaJob.service";
 import type { User, MediaModule } from "../models";
 
-type AuthRequest = { user?: User; body?: unknown };
+type AuthRequest = { user?: User; body?: unknown; params?: Record<string, string> };
+
+function httpError(errorValue: unknown): (Error & { status?: number }) | null {
+  return errorValue instanceof Error
+    ? (errorValue as Error & { status?: number })
+    : null;
+}
 
 /**
  * POST /api/media/upload-url
@@ -25,28 +31,53 @@ export async function getUploadUrl(req: AuthRequest, res: Response) {
       body.purpose
     );
     return success(res, data, 201);
-  } catch (e: any) {
-    if (e?.status === 400) return error(res, e.message, 400);
+  } catch (e: unknown) {
+    const cause = httpError(e);
+    if (cause?.status === 400) return error(res, cause.message, 400);
     throw e;
   }
 }
 
 /**
  * POST /api/media/finalize
- * After client PUT to R2, optimize image and store WebP variants.
+ * Validate the direct R2 upload and enqueue processing. No Sharp/FFmpeg work
+ * runs in the Express request lifecycle.
  */
 export async function finalizeUpload(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const body = validateFinalizeMediaBody(req.body);
   try {
-    const data = await mediaProcessingService.finalizeMediaFile(
+    const data = await mediaJobService.enqueueMediaFinalize(
       body.mediaFileId,
       req.user.id
     );
     return success(res, data);
-  } catch (e: any) {
-    const status = e?.status ?? 500;
-    if (status >= 400 && status < 500) return error(res, e.message, status);
+  } catch (e: unknown) {
+    const cause = httpError(e);
+    const status = cause?.status ?? 500;
+    if (status >= 400 && status < 500) {
+      return error(res, cause?.message ?? "Request failed", status);
+    }
+    throw e;
+  }
+}
+
+/** Poll the durable processing state until the worker completes the job. */
+export async function getFinalizeStatus(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const mediaFileId = Number(req.params?.mediaFileId);
+  if (!Number.isInteger(mediaFileId) || mediaFileId <= 0) {
+    return error(res, "Invalid media file id", 400);
+  }
+  try {
+    const data = await mediaJobService.getMediaFinalizeStatus(mediaFileId, req.user.id);
+    return success(res, data);
+  } catch (e: unknown) {
+    const cause = httpError(e);
+    const status = cause?.status ?? 500;
+    if (status >= 400 && status < 500) {
+      return error(res, cause?.message ?? "Request failed", status);
+    }
     throw e;
   }
 }
@@ -61,8 +92,9 @@ export async function deleteMedia(req: AuthRequest, res: Response) {
     const body = validateDeleteMediaBody(req.body);
     const data = await mediaService.deleteUserMediaUrls(req.user.id, body.urls);
     return success(res, data);
-  } catch (e: any) {
-    if (e?.status) return error(res, e.message, e.status);
+  } catch (e: unknown) {
+    const cause = httpError(e);
+    if (cause?.status) return error(res, cause.message, cause.status);
     throw e;
   }
 }

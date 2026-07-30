@@ -8,7 +8,7 @@ import {
   resolveHelpActiveHours,
   type HelpCategory
 } from "../constants/helpingHands.constants";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 import * as Notifications from "./Notification.service";
 
 async function ensureSameCommunity(post: Post, userId: number): Promise<void> {
@@ -199,7 +199,7 @@ export async function listHelpersForPost(
     rows.map(async (r) => {
       const author = (r as any).FromUser as User;
       const profile_image =
-        (await toSignedUrlIfR2(author.profilePhoto ?? null)) ?? author.profilePhoto ?? null;
+        (await toPublicUrlIfR2(author.profilePhoto ?? null)) ?? author.profilePhoto ?? null;
       return {
         id: r.id,
         from_user_id: r.fromUserId,
@@ -357,7 +357,7 @@ export async function getCommunityHeroes(
     ranked.map(async ([id, count]) => {
       const u = userMap.get(id);
       const profileImage =
-        (await toSignedUrlIfR2(u?.profilePhoto ?? null)) ?? u?.profilePhoto ?? null;
+        (await toPublicUrlIfR2(u?.profilePhoto ?? null)) ?? u?.profilePhoto ?? null;
       const categories = [...(cats.get(id) || [])].map(
         (c) => HELP_CATEGORY_LABELS[c as HelpCategory] || c.replace(/_/g, " ")
       );

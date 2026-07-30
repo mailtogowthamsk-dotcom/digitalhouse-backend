@@ -1,5 +1,5 @@
 import { HELP_MAX_PHOTOS } from "../constants/helpingHands.constants";
-import { toSignedUrlIfR2 } from "./r2Client";
+import { toPublicUrlIfR2, toStorageKeyIfR2 } from "./r2Client";
 
 /** Normalize raw gallery JSON + optional cover into a unique URL list. */
 export function parseHelpGallery(raw: unknown, mediaUrl?: string | null): string[] {
@@ -20,7 +20,10 @@ export function parseHelpGallery(raw: unknown, mediaUrl?: string | null): string
       /* ignore */
     }
   }
-  const cover = mediaUrl?.trim() || null;
+  // Compare and store as object keys so a legacy CDN URL and its key form
+  // cannot both survive de-duplication.
+  arr = arr.map((u) => toStorageKeyIfR2(u) ?? u);
+  const cover = toStorageKeyIfR2(mediaUrl ?? null);
   if (cover) {
     arr = [cover, ...arr.filter((u) => u !== cover)];
   }
@@ -38,6 +41,6 @@ export function resolveHelpMedia(
   return { mediaUrl: urls[0], helpGallery: urls };
 }
 
-export async function signHelpGallery(urls: string[]): Promise<string[]> {
-  return Promise.all(urls.map(async (u) => (await toSignedUrlIfR2(u)) ?? u));
+export async function publicHelpGallery(urls: string[]): Promise<string[]> {
+  return Promise.all(urls.map(async (u) => (await toPublicUrlIfR2(u)) ?? u));
 }

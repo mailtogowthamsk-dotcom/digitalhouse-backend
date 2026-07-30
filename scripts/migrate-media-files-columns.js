@@ -9,7 +9,7 @@ const mysql = require("mysql2/promise");
 const COLUMNS = [
   ["objectKey", "VARCHAR(500) NULL"],
   ["variantsJson", "TEXT NULL"],
-  ["processingStatus", "ENUM('pending_upload','processing','ready','failed') NOT NULL DEFAULT 'pending_upload'"],
+  ["processingStatus", "ENUM('pending','processing','completed','failed') NOT NULL DEFAULT 'pending'"],
   ["byteSize", "INT UNSIGNED NULL"],
   ["width", "INT UNSIGNED NULL"],
   ["height", "INT UNSIGNED NULL"]

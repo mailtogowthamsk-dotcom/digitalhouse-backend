@@ -23,7 +23,7 @@ import {
   resolveMatrimonyCandidate,
   type MatrimonyCandidatePublic
 } from "../utils/matrimonyCandidate.util";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2, toPrivateSignedUrlIfR2 } from "../utils/r2Client";
 import { Location } from "../models";
 import { computeMatrimonyMatchScore, starLabel } from "../utils/matrimonyMatchScore.util";
 import * as Monetization from "./MatrimonyMonetization.service";
@@ -482,7 +482,7 @@ export async function discoverProfiles(
     let photoUrl: string | null = null;
     if (!photoBlurred) {
       const photoRaw = resolveCandidatePhotoUrl(m as Record<string, unknown>);
-      photoUrl = photoRaw ? (await toSignedUrlIfR2(photoRaw)) ?? photoRaw : null;
+      photoUrl = photoRaw ? (await toPublicUrlIfR2(photoRaw)) ?? photoRaw : null;
     }
     const gate = Monetization.resolveOpenGate(
       viewerPlan,
@@ -720,7 +720,7 @@ export async function getCandidateDetail(
   }
 
   const photoRaw = resolveCandidatePhotoUrl(m as Record<string, unknown>);
-  const photoUrl = photoRaw ? (await toSignedUrlIfR2(photoRaw)) ?? photoRaw : null;
+  const photoUrl = photoRaw ? (await toPublicUrlIfR2(photoRaw)) ?? photoRaw : null;
 
   const match = await getActiveMatrimonyMatch(viewerId, candidateUserId);
 
@@ -1062,7 +1062,7 @@ export async function listInterests(
       const m = normalizeJsonColumn(prof?.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection;
       const candidate = resolveMatrimonyCandidate(u, m ?? {});
       const photoRaw = resolveCandidatePhotoUrl((m ?? {}) as Record<string, unknown>);
-      const photoUrl = photoRaw ? (await toSignedUrlIfR2(photoRaw)) ?? photoRaw : null;
+      const photoUrl = photoRaw ? (await toPublicUrlIfR2(photoRaw)) ?? photoRaw : null;
       return {
         id: row.id,
         status: row.status,
@@ -1120,7 +1120,7 @@ export async function listMatches(userId: number): Promise<unknown[]> {
       const m = normalizeJsonColumn(prof?.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection;
       const candidate = resolveMatrimonyCandidate(u, m ?? {});
       const photoRaw = resolveCandidatePhotoUrl((m ?? {}) as Record<string, unknown>);
-      const photoUrl = photoRaw ? (await toSignedUrlIfR2(photoRaw)) ?? photoRaw : null;
+      const photoUrl = photoRaw ? (await toPublicUrlIfR2(photoRaw)) ?? photoRaw : null;
       return {
         matchId: row.id,
         matchedAt: row.matchedAt.toISOString(),
@@ -1198,8 +1198,8 @@ export async function getHoroscopeForMatch(
   const m = normalizeJsonColumn(profile?.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection;
   const raw = m?.horoscopeDocumentUrl;
   if (!raw?.trim()) return { url: null, available: false };
-  const url = (await toSignedUrlIfR2(raw)) ?? raw;
-  return { url, available: true };
+  const url = await toPrivateSignedUrlIfR2(raw);
+  return { url, available: url != null };
 }
 
 export async function bothUsersHaveActiveMatrimony(userA: number, userB: number): Promise<boolean> {

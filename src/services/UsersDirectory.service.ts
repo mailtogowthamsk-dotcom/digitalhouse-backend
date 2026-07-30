@@ -1,6 +1,6 @@
 import { Op } from "sequelize";
 import { User, MemberProfessionalIdentity, MemberExpertiseSelection, MasterDataItem } from "../models";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
 import { normalizeUsername } from "./Username.service";
@@ -40,7 +40,7 @@ async function toDto(
   }
 ): Promise<DirectoryUserDto> {
   const profileImage =
-    u.profilePhoto ? (await toSignedUrlIfR2(u.profilePhoto)) ?? u.profilePhoto : null;
+    u.profilePhoto ? (await toPublicUrlIfR2(u.profilePhoto)) ?? u.profilePhoto : null;
 
   const profession = opts?.profession ?? u.occupation ?? u.jobTitle ?? null;
   return {

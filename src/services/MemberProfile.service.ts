@@ -10,7 +10,7 @@ import {
   MemberExpertiseSelection,
   MasterDataItem
 } from "../models";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
 import {
   getRelationshipStatus,
@@ -252,7 +252,7 @@ export async function getMemberProfile(
   }
 
   const profileImage = target.profilePhoto
-    ? (await toSignedUrlIfR2(target.profilePhoto)) ?? target.profilePhoto
+    ? (await toPublicUrlIfR2(target.profilePhoto)) ?? target.profilePhoto
     : null;
 
   const isSelf = viewerId === target.id;
@@ -597,8 +597,8 @@ export async function getMemberPosts(
   const items: MemberPostItemDto[] = await Promise.all(
     posts.map(async (p) => {
       const [mediaUrl, thumbnailUrl] = await Promise.all([
-        toSignedUrlIfR2(p.mediaUrl ?? null),
-        toSignedUrlIfR2(p.thumbnailUrl ?? null)
+        toPublicUrlIfR2(p.mediaUrl ?? null),
+        toPublicUrlIfR2(p.thumbnailUrl ?? null)
       ]);
       const mediaType = resolvePostMediaType({
         mediaUrl: p.mediaUrl,

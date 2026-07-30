@@ -19,7 +19,11 @@ import {
 } from "../constants/support.constants";
 import { NOTIFICATION_ACTIONS, NOTIFICATION_TYPES } from "../constants/notification.constants";
 import { dispatchNotification } from "./NotificationPlatform.service";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import {
+  toPrivateSignedUrlIfR2,
+  toPublicUrlIfR2,
+  toStorageKeyIfR2
+} from "../utils/r2Client";
 
 function err(message: string, status = 400): never {
   throw Object.assign(new Error(message), { status });
@@ -87,8 +91,8 @@ function ticketRef(id: number): string {
 
 async function toTicketDto(ticket: SupportTicket, includeMessages = false) {
   const [screenshotUrl, recordingUrl] = await Promise.all([
-    toSignedUrlIfR2(ticket.screenshotUrl),
-    toSignedUrlIfR2(ticket.recordingUrl)
+    toPrivateSignedUrlIfR2(ticket.screenshotUrl),
+    toPrivateSignedUrlIfR2(ticket.recordingUrl)
   ]);
 
   let messages: Array<{
@@ -123,8 +127,8 @@ async function toTicketDto(ticket: SupportTicket, includeMessages = false) {
     description: ticket.description,
     status: ticket.status,
     priority: ticket.priority,
-    screenshotUrl: screenshotUrl ?? ticket.screenshotUrl,
-    recordingUrl: recordingUrl ?? ticket.recordingUrl,
+    screenshotUrl,
+    recordingUrl,
     metadata: ticket.metadata,
     assignedAdminId: ticket.assignedAdminId,
     createdAt: ticket.createdAt.toISOString(),
@@ -203,7 +207,7 @@ export async function getGuide(guideId: number) {
       sortOrder: s.sortOrder,
       title: s.title,
       body: s.body,
-      imageUrl: (await toSignedUrlIfR2(s.imageUrl)) ?? s.imageUrl
+      imageUrl: (await toPublicUrlIfR2(s.imageUrl)) ?? s.imageUrl
     }))
   );
   return {
@@ -240,6 +244,18 @@ export type CreateTicketInput = {
   metadata?: Record<string, unknown> | null;
 };
 
+function supportEvidenceKey(
+  userId: number,
+  value: string | null | undefined
+): string | null {
+  if (!value?.trim()) return null;
+  const key = toStorageKeyIfR2(value);
+  if (!key?.startsWith(`digital-house/private/support/${userId}/`)) {
+    err("Support evidence must be uploaded through the private support uploader.", 400);
+  }
+  return key;
+}
+
 export async function createTicket(userId: number, input: CreateTicketInput) {
   const user = await User.findByPk(userId, {
     attributes: ["id", "fullName", "community", "username"]
@@ -252,6 +268,8 @@ export async function createTicket(userId: number, input: CreateTicketInput) {
     community: (input.metadata as any)?.community ?? user.community ?? null,
     submittedAt: new Date().toISOString()
   };
+  const screenshotKey = supportEvidenceKey(userId, input.screenshotUrl);
+  const recordingKey = supportEvidenceKey(userId, input.recordingUrl);
 
   const ticket = await SupportTicket.create({
     userId,
@@ -261,8 +279,8 @@ export async function createTicket(userId: number, input: CreateTicketInput) {
     description: input.description.trim(),
     status: "OPEN",
     priority: input.priority ?? "NORMAL",
-    screenshotUrl: input.screenshotUrl?.trim() || null,
-    recordingUrl: input.recordingUrl?.trim() || null,
+    screenshotUrl: screenshotKey,
+    recordingUrl: recordingKey,
     metadata,
     assignedAdminId: null,
     createdAt: new Date(),
@@ -278,6 +296,13 @@ export async function createTicket(userId: number, input: CreateTicketInput) {
     createdAt: new Date(),
     updatedAt: new Date()
   } as any);
+
+  if (screenshotKey || recordingKey) {
+    const { mediaService } = await import("./Media.service");
+    await mediaService
+      .markMediaUrlsAttached(userId, [screenshotKey, recordingKey])
+      .catch(() => undefined);
+  }
 
   return toTicketDto(ticket, true);
 }

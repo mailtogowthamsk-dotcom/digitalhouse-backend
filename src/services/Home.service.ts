@@ -1,6 +1,6 @@
 import { Op } from "sequelize";
 import { User, Post, Notification, Message, PostLike, Comment } from "../models";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 
 // --- DTOs (type-safe, no email/mobile) ---
 
@@ -130,7 +130,7 @@ function toHomeUserBasic(user: User): HomeUserBasic {
     typeof user.kulam === "string" && user.kulam.trim() ? user.kulam.trim() : null;
   return {
     name: user.fullName,
-    profileImage: user.profilePhoto ?? null,
+    profileImage: toPublicUrlIfR2(user.profilePhoto ?? null),
     verified: user.status === APPROVED,
     community,
     kulam
@@ -142,7 +142,7 @@ function toFeedAuthor(user: User): FeedAuthorDto {
     userId: user.id,
     username: user.username ?? null,
     name: user.fullName,
-    profileImage: user.profilePhoto ?? null,
+    profileImage: toPublicUrlIfR2(user.profilePhoto ?? null),
     verified: user.status === APPROVED
   };
 }
@@ -160,7 +160,7 @@ export async function getSummary(userId: number): Promise<HomeSummaryDto> {
 
   if (!user) throw new Error("User not found");
 
-  const profileImage = (await toSignedUrlIfR2(user.profileImage ?? null)) ?? user.profileImage ?? null;
+  const profileImage = (await toPublicUrlIfR2(user.profileImage ?? null)) ?? user.profileImage ?? null;
   return {
     user: { ...user, profileImage },
     quickActionCounts,
@@ -311,7 +311,7 @@ export async function getHighlights(): Promise<HighlightsDto> {
     postType: p.postType,
     title: p.title,
     description: p.description ?? null,
-    mediaUrl: p.mediaUrl ?? null,
+    mediaUrl: toPublicUrlIfR2(p.mediaUrl ?? null),
     createdAt: p.createdAt.toISOString(),
     pinned: p.pinned,
     urgent: p.urgent,

@@ -1,4 +1,10 @@
-import { DataTypes, InferAttributes, InferCreationAttributes, Model } from "sequelize";
+import {
+  CreationOptional,
+  DataTypes,
+  InferAttributes,
+  InferCreationAttributes,
+  Model
+} from "sequelize";
 import { sequelize } from "../config/db";
 
 /** Media file status: PENDING = awaiting admin; APPROVED = visible; REJECTED = hidden */
@@ -21,28 +27,28 @@ export const MEDIA_MODULES = [
 export type MediaModule = (typeof MEDIA_MODULES)[number];
 
 export const MEDIA_PROCESSING_STATUSES = [
-  "pending_upload",
+  "pending",
   "processing",
-  "ready",
+  "completed",
   "failed"
 ] as const;
 export type MediaProcessingStatus = (typeof MEDIA_PROCESSING_STATUSES)[number];
 
 export class MediaFile extends Model<InferAttributes<MediaFile>, InferCreationAttributes<MediaFile>> {
-  declare id: number;
+  declare id: CreationOptional<number>;
   declare userId: number;
   declare module: MediaModule;
   declare fileUrl: string;
   declare fileType: MediaFileType;
-  declare status: MediaStatus;
-  declare objectKey: string | null;
-  declare variantsJson: string | null;
-  declare processingStatus: MediaProcessingStatus;
-  declare byteSize: number | null;
-  declare width: number | null;
-  declare height: number | null;
-  declare createdAt: Date;
-  declare updatedAt: Date;
+  declare status: CreationOptional<MediaStatus>;
+  declare objectKey: CreationOptional<string | null>;
+  declare variantsJson: CreationOptional<string | null>;
+  declare processingStatus: CreationOptional<MediaProcessingStatus>;
+  declare byteSize: CreationOptional<number | null>;
+  declare width: CreationOptional<number | null>;
+  declare height: CreationOptional<number | null>;
+  declare createdAt: CreationOptional<Date>;
+  declare updatedAt: CreationOptional<Date>;
 }
 
 MediaFile.init(
@@ -68,7 +74,7 @@ MediaFile.init(
     processingStatus: {
       type: DataTypes.ENUM(...MEDIA_PROCESSING_STATUSES),
       allowNull: false,
-      defaultValue: "pending_upload"
+      defaultValue: "pending"
     },
     byteSize: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
     width: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },

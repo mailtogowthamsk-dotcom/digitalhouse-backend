@@ -10,6 +10,7 @@ import { trackAuthEvent } from "./authAnalytics.service";
 import { mergeLinkedProvider, ensureLinkedProviders } from "../utils/authProvider.util";
 import { toAuthUser } from "./user.service";
 import { registrationStatusService } from "./RegistrationStatus.service";
+import { toStorageKeyIfR2 } from "../utils/r2Client";
 
 export type GoogleTokenPayload = {
   sub: string;
@@ -227,7 +228,7 @@ export async function completeGoogleProfile(
     community: input.community?.trim() || null,
     location: input.location?.trim() || district,
     mobile: input.mobile?.trim() || null,
-    profilePhoto: input.profilePhoto?.trim() || user.profilePhoto,
+    profilePhoto: toStorageKeyIfR2(input.profilePhoto ?? null) || user.profilePhoto,
     profileComplete: true
   } as any);
 

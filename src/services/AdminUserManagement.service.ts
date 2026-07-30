@@ -51,7 +51,11 @@ import {
 import type { MatrimonySection } from "../models/UserProfile.model";
 import { userService } from "./user.service";
 import { registrationStatusService } from "./RegistrationStatus.service";
-import { toSignedUrlIfR2, deleteR2ImageVariants } from "../utils/r2Client";
+import {
+  toPublicUrlIfR2,
+  toPrivateSignedUrlIfR2,
+  deleteR2ImageVariants
+} from "../utils/r2Client";
 import { resolveLoginSource } from "../utils/authProvider.util";
 
 function ageFromDob(dob: Date | string | null | undefined): number | null {
@@ -270,30 +274,27 @@ export async function getAdminUserDetail(userId: number) {
   const totalStorageBytes = storageRows.reduce((sum, r) => sum + Number(r.bytes || 0), 0);
 
   const profilePhotoSigned = user.profilePhoto
-    ? (await toSignedUrlIfR2(user.profilePhoto)) ?? user.profilePhoto
+    ? toPublicUrlIfR2(user.profilePhoto) ?? user.profilePhoto
     : null;
   const pendingPhotoSigned = user.pendingProfilePhoto
-    ? (await toSignedUrlIfR2(user.pendingProfilePhoto)) ?? user.pendingProfilePhoto
+    ? toPublicUrlIfR2(user.pendingProfilePhoto) ?? user.pendingProfilePhoto
     : null;
-  const govtIdSigned = user.govtIdFile
-    ? (await toSignedUrlIfR2(user.govtIdFile)) ?? user.govtIdFile
-    : null;
+  const govtIdSigned = await toPrivateSignedUrlIfR2(user.govtIdFile);
 
   let matrimonySigned = profile?.matrimony ?? null;
   if (matrimonySigned) {
     const m = { ...matrimonySigned };
     if (m.candidatePhotoUrl) {
-      m.candidatePhotoUrl = (await toSignedUrlIfR2(m.candidatePhotoUrl)) ?? m.candidatePhotoUrl;
+      m.candidatePhotoUrl = toPublicUrlIfR2(m.candidatePhotoUrl) ?? m.candidatePhotoUrl;
     }
     if (m.horoscopeDocumentUrl) {
-      m.horoscopeDocumentUrl =
-        (await toSignedUrlIfR2(m.horoscopeDocumentUrl)) ?? m.horoscopeDocumentUrl;
+      m.horoscopeDocumentUrl = await toPrivateSignedUrlIfR2(m.horoscopeDocumentUrl);
     }
     if (Array.isArray(m.candidatePhotos)) {
       m.candidatePhotos = await Promise.all(
         m.candidatePhotos.map(async (p) => ({
           ...p,
-          url: p.url ? ((await toSignedUrlIfR2(p.url)) ?? p.url) : p.url
+          url: p.url ? (toPublicUrlIfR2(p.url) ?? p.url) : p.url
         }))
       );
     }
@@ -369,7 +370,7 @@ export async function getAdminUserDetail(userId: number) {
   }
   timeline.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
 
-  const base = userService.toAdminUser(user);
+  const base = await userService.toAdminUser(user);
 
   return {
     user: {

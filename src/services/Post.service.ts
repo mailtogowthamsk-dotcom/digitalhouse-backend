@@ -1,7 +1,7 @@
 import { Op } from "sequelize";
 import { sequelize } from "../config/db";
 import { User, Post, PostLike, Comment, Notification, PostReport, SavedPost } from "../models";
-import { toSignedUrlIfR2, deleteR2ImageVariants } from "../utils/r2Client";
+import { toPublicUrlIfR2, toStorageKeyIfR2, deleteR2ImageVariants } from "../utils/r2Client";
 import type { PostType, JobStatus, JobEmploymentType, JobWorkMode } from "../models";
 import type {
   MarketplaceStatus,
@@ -14,11 +14,11 @@ import { logFeedEvent } from "../utils/feedAnalytics";
 import {
   parseMarketplaceGallery,
   resolveMarketplaceMedia,
-  signMarketplaceGallery
+  publicMarketplaceGallery
 } from "../utils/marketplaceGallery";
 import * as MarketplaceSettings from "./MarketplaceSettings.service";
 import * as JobsSettings from "./JobsSettings.service";
-import { parseHelpGallery, resolveHelpMedia, signHelpGallery } from "../utils/helpGallery";
+import { parseHelpGallery, resolveHelpMedia, publicHelpGallery } from "../utils/helpGallery";
 import {
   resolvePostMediaType,
   type PostMediaType,
@@ -247,7 +247,9 @@ function jobFieldsFromPost(post: Post) {
 function marketplaceFieldsFromPost(post: Post, gallerySigned?: string[]) {
   const gallery =
     gallerySigned ??
-    parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null);
+    parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null).map(
+      (u) => toPublicUrlIfR2(u) ?? u
+    );
   return {
     marketplace_status: post.marketplaceStatus ?? null,
     marketplace_intent: post.marketplaceIntent ?? null,
@@ -267,7 +269,10 @@ function marketplaceFieldsFromPost(post: Post, gallerySigned?: string[]) {
 
 function helpFieldsFromPost(post: Post, gallerySigned?: string[]) {
   const gallery =
-    gallerySigned ?? parseHelpGallery(post.helpGallery, post.mediaUrl ?? null);
+    gallerySigned ??
+    parseHelpGallery(post.helpGallery, post.mediaUrl ?? null).map(
+      (u) => toPublicUrlIfR2(u) ?? u
+    );
   return {
     help_status: post.helpStatus ?? null,
     help_category: post.helpCategory ?? null,
@@ -286,7 +291,10 @@ function mediaMetaFromPost(
   signedMediaUrl?: string | null,
   signedThumbUrl?: string | null
 ) {
-  const mediaUrl = signedMediaUrl !== undefined ? signedMediaUrl : post.mediaUrl ?? null;
+  // Stored values are object keys; default to the public CDN URL when the caller
+  // has not already resolved one.
+  const mediaUrl =
+    signedMediaUrl !== undefined ? signedMediaUrl : toPublicUrlIfR2(post.mediaUrl ?? null);
   const mediaType = resolvePostMediaType({
     mediaUrl: post.mediaUrl,
     mediaType: (post.mediaType as PostMediaType) || undefined,
@@ -296,7 +304,7 @@ function mediaMetaFromPost(
     media_url: mediaUrl,
     media_type: mediaType,
     thumbnail_url:
-      signedThumbUrl !== undefined ? signedThumbUrl : post.thumbnailUrl ?? null,
+      signedThumbUrl !== undefined ? signedThumbUrl : toPublicUrlIfR2(post.thumbnailUrl ?? null),
     video_duration: post.videoDuration ?? null,
     mime_type: post.mimeType ?? null,
     file_size: post.fileSize ?? null
@@ -311,10 +319,12 @@ function buildMediaMetaForWrite(payload: {
   mime_type?: string | null;
   file_size?: number | null;
 }, forcedMediaUrl?: string | null) {
-  const mediaUrl =
+  // Persist the R2 object key, not a CDN URL, so stored rows survive a CDN domain change.
+  const mediaUrl = toStorageKeyIfR2(
     forcedMediaUrl !== undefined
       ? forcedMediaUrl?.trim() || null
-      : payload.media_url?.trim() || null;
+      : payload.media_url?.trim() || null
+  );
   const mediaType = resolvePostMediaType({
     mediaUrl,
     mediaType: payload.media_type,
@@ -356,8 +366,7 @@ function buildMediaMetaForWrite(payload: {
   return {
     mediaUrl,
     mediaType,
-    thumbnailUrl:
-      mediaType === "video" ? payload.thumbnail_url?.trim() || null : payload.thumbnail_url?.trim() || null,
+    thumbnailUrl: toStorageKeyIfR2(payload.thumbnail_url?.trim() || null),
     videoDuration: duration,
     mimeType: payload.mime_type?.trim() || null,
     fileSize: payload.file_size ?? null
@@ -477,22 +486,12 @@ const emptyMarketplaceFields = {
   marketplaceFeatured: false,
   marketplaceFeaturedAt: null as Date | null
 };
+/** Author DTO. profile_image is always a stable public CDN URL, never a stored key or legacy host. */
 function toAuthorDto(user: User): PostAuthorDto {
   return {
     id: user.id,
     name: user.fullName,
-    profile_image: user.profilePhoto ?? null,
-    verified: user.status === APPROVED
-  };
-}
-
-/** Like toAuthorDto but with profile_image as signed R2 URL so images load when bucket is private. */
-async function toAuthorDtoSigned(user: User): Promise<PostAuthorDto> {
-  const profile_image = (await toSignedUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
-  return {
-    id: user.id,
-    name: user.fullName,
-    profile_image,
+    profile_image: toPublicUrlIfR2(user.profilePhoto ?? null),
     verified: user.status === APPROVED
   };
 }
@@ -736,7 +735,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
   }
   logFeedEvent(userId, "post_impression", post.id, { action: "create" });
   const author = await User.findByPk(userId, { attributes: ["id", "fullName", "profilePhoto", "status"] });
-  const authorDto = author ? await toAuthorDtoSigned(author) : { id: userId, name: "Unknown", profile_image: null as string | null, verified: false };
+  const authorDto = author ? toAuthorDto(author) : { id: userId, name: "Unknown", profile_image: null as string | null, verified: false };
   return {
     id: post.id,
     user_id: post.userId,
@@ -1220,13 +1219,13 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
       Comment.count({ where: { postId } }),
       PostLike.findOne({ where: { postId, userId } }).then((r) => !!r),
       SavedPost.findOne({ where: { postId, userId } }).then((r) => !!r),
-      toSignedUrlIfR2(post.mediaUrl ?? null),
-      toSignedUrlIfR2(post.thumbnailUrl ?? null),
-      toAuthorDtoSigned(author),
+      toPublicUrlIfR2(post.mediaUrl ?? null),
+      toPublicUrlIfR2(post.thumbnailUrl ?? null),
+      toAuthorDto(author),
       post.postType === "MARKETPLACE"
-        ? signMarketplaceGallery(galleryRaw)
+        ? publicMarketplaceGallery(galleryRaw)
         : isHelp
-          ? signHelpGallery(galleryRaw)
+          ? publicHelpGallery(galleryRaw)
           : Promise.resolve([] as string[])
     ]);
 
@@ -1279,7 +1278,7 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     repostExtra = {
       is_repost: true,
       original_post_id: post.originalPostId,
-      original_author: originalUser ? await toAuthorDtoSigned(originalUser) : null
+      original_author: originalUser ? toAuthorDto(originalUser) : null
     };
   }
 
@@ -1415,7 +1414,7 @@ export async function addComment(
   });
   logFeedEvent(userId, "comment", postId, { parentId: parentId ?? null });
 
-  const authorDto = await toAuthorDtoSigned(author!);
+  const authorDto = toAuthorDto(author!);
   return {
     ...commentToDto(comment, author!, userId, 0),
     author: authorDto
@@ -1472,12 +1471,12 @@ export async function getComments(
   const items: CommentDto[] = await Promise.all(
     topLevel.map(async (c) => {
       const author = (c as any).User as User;
-      const authorDto = await toAuthorDtoSigned(author);
+      const authorDto = toAuthorDto(author);
       const childReplies = replies.filter((r) => r.parentId === c.id);
       const replyDtos = await Promise.all(
         childReplies.map(async (r) => {
           const ra = (r as any).User as User;
-          const raDto = await toAuthorDtoSigned(ra);
+          const raDto = toAuthorDto(ra);
           return { ...commentToDto(r, ra, currentUserId, 0), author: raDto };
         })
       );
@@ -1528,7 +1527,7 @@ export async function updateComment(
   }
   await comment.update({ body: body.trim() });
   const author = await User.findByPk(userId, { attributes: ["id", "fullName", "profilePhoto", "status"] });
-  const authorDto = await toAuthorDtoSigned(author!);
+  const authorDto = toAuthorDto(author!);
   return { ...commentToDto(comment, author!, userId, 0), author: authorDto };
 }
 
@@ -1706,7 +1705,7 @@ export async function getPostLikes(
     rows.map(async (row) => {
       const u = (row as any).User as User;
       const profilePhoto =
-        (await toSignedUrlIfR2(u.profilePhoto ?? null)) ?? u.profilePhoto ?? null;
+        (await toPublicUrlIfR2(u.profilePhoto ?? null)) ?? u.profilePhoto ?? null;
       return {
         userId: u.id,
         fullName: u.fullName,

@@ -10,7 +10,13 @@ import {
   Comment,
   FeedEngagementEvent
 } from "../models";
-import { getPresignedPutUrl, getCdnPublicUrl, toSignedUrlIfR2 } from "../utils/r2Client";
+import {
+  getPresignedPutUrl,
+  getCdnPublicUrl,
+  toPublicUrlIfR2,
+  toStorageKeyIfR2,
+  isPrivateR2Object
+} from "../utils/r2Client";
 import type {
   CommunitySection,
   PersonalSection,
@@ -351,6 +357,13 @@ export async function getProfile(userId: number): Promise<ProfileMeResponse> {
   const member_since = user.createdAt ? new Date(user.createdAt).getFullYear().toString() : "—";
   const { sections, completion_percentage, show_matrimony, show_business } = buildSectionsAndCompletion(user, profile);
 
+  // Owner-authenticated response: matrimony photos become public CDN URLs and the
+  // horoscope document is signed — it must never leave as a key or public CDN URL.
+  if (sections.matrimony) {
+    const { signMatrimonySection } = await import("./Matrimony.service");
+    sections.matrimony = await signMatrimonySection(sections.matrimony);
+  }
+
   // Latest rejected/approved pending for status chip (if user had submitted and it was rejected)
   const [lastMatrimony, lastBusiness] = await Promise.all([
     PendingProfileUpdate.findOne({
@@ -380,7 +393,7 @@ export async function getProfile(userId: number): Promise<ProfileMeResponse> {
           ? { status: "APPROVED" as const, admin_remarks: null as string | null }
           : null;
 
-  const profile_image = (await toSignedUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
+  const profile_image = (await toPublicUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
   return {
     id: user.id,
     name: user.fullName,
@@ -430,7 +443,7 @@ export async function updateProfile(userId: number, payload: ProfileUpdatePayloa
 
   const updates: Record<string, unknown> = {};
   if (payload.profile_image !== undefined) {
-    updates.profilePhoto = payload.profile_image?.trim() || null;
+    updates.profilePhoto = toStorageKeyIfR2(payload.profile_image ?? null);
   }
   if (payload.city !== undefined) updates.city = payload.city?.trim() || null;
   if (payload.district !== undefined) updates.district = payload.district?.trim() || null;
@@ -607,7 +620,7 @@ export async function getProfilePosts(
 
   const items: ProfilePostItemDto[] = await Promise.all(
     posts.map(async (p) => {
-      const mediaUrl = await toSignedUrlIfR2(p.mediaUrl ?? null);
+      const mediaUrl = await toPublicUrlIfR2(p.mediaUrl ?? null);
       return {
         postId: p.id,
         postType: POST_TYPE_LABELS[p.postType] ?? p.postType,
@@ -653,6 +666,31 @@ export async function updateProfileSection(
       where: { userId, section: section.toUpperCase() as "MATRIMONY" | "BUSINESS", status: "PENDING" }
     });
     const existingData = normalizeJsonColumn(existing?.data, allowedKeys) ?? {};
+    if (section === "matrimony" && payload.horoscopeDocumentUrl != null) {
+      const incomingKey = toStorageKeyIfR2(String(payload.horoscopeDocumentUrl));
+      let existingKey =
+        typeof existingData.horoscopeDocumentUrl === "string"
+          ? toStorageKeyIfR2(existingData.horoscopeDocumentUrl)
+          : null;
+      if (!existingKey) {
+        const approvedProfile = await ensureUserProfile(userId);
+        const approved = normalizeJsonColumn(
+          approvedProfile.matrimony,
+          SECTION_ALLOWED_KEYS.matrimony
+        );
+        existingKey =
+          typeof approved?.horoscopeDocumentUrl === "string"
+            ? toStorageKeyIfR2(approved.horoscopeDocumentUrl)
+            : null;
+      }
+      if (!incomingKey || (!isPrivateR2Object(incomingKey) && incomingKey !== existingKey)) {
+        throw Object.assign(
+          new Error("New horoscope uploads must use private horoscope storage"),
+          { status: 400 }
+        );
+      }
+      payload = { ...payload, horoscopeDocumentUrl: incomingKey };
+    }
     const merged = {
       ...existingData,
       ...payload,
@@ -753,12 +791,11 @@ export async function getHoroscopeUploadUrl(
     throw err;
   }
   const ext = path.extname(fileName).toLowerCase() || (mime.includes("pdf") ? ".pdf" : ".jpg");
-  const key = `digital-house/profile/${userId}/horoscope/${Date.now()}${ext}`;
-  const [uploadUrl, publicUrl] = await Promise.all([
-    getPresignedPutUrl(key, mime),
-    Promise.resolve(getCdnPublicUrl(key))
-  ]);
-  return { uploadUrl, publicUrl };
+  const key = `digital-house/private/horoscopes/${userId}/${Date.now()}${ext}`;
+  const uploadUrl = await getPresignedPutUrl(key, mime);
+  // Keep only the object key in profile data. Authorized read endpoints turn
+  // this into a short-lived signed GET; they never expose the public CDN URL.
+  return { uploadUrl, publicUrl: key };
 }
 
 const PROFILE_PHOTO_ALLOWED_TYPES = ["image/jpeg", "image/png"];

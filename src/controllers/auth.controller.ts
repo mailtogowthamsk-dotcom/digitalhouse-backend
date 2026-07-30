@@ -10,13 +10,15 @@ import {
   googleAuthSchema,
   completeGoogleProfileSchema,
   submitRegistrationCorrectionSchema,
-  registrationPhotoSchema
+  registrationPhotoSchema,
+  registrationIdentitySchema
 } from "../validations/auth.validation";
 import * as GoogleAuth from "../services/googleAuth.service";
 import { AUTH_PROVIDERS, AUTH_ANALYTICS_EVENTS } from "../constants/auth.constants";
 import { trackAuthEvent } from "../services/authAnalytics.service";
-import { mergeLinkedProvider, ensureLinkedProviders } from "../utils/authProvider.util";
+import { mergeLinkedProvider, ensureLinkedProviders, resolveLoginSource } from "../utils/authProvider.util";
 import { registrationStatusService } from "../services/RegistrationStatus.service";
+import { toStorageKeyIfR2 } from "../utils/r2Client";
 
 /**
  * REGISTRATION: Accept full details, save user with status PENDING.
@@ -208,7 +210,7 @@ export async function setRegistrationPhoto(
   if (status !== "PENDING" && status !== "PENDING_REVIEW" && status !== "CHANGES_REQUESTED") {
     return error(res, "Profile photo can only be set during registration review.", 403);
   }
-  const photo = body.profilePhoto.trim();
+  const photo = toStorageKeyIfR2(body.profilePhoto) ?? body.profilePhoto.trim();
   await req.user.update({ profilePhoto: photo } as any);
   try {
     const { mediaService } = await import("../services/Media.service");
@@ -223,9 +225,43 @@ export async function setRegistrationPhoto(
   });
 }
 
+/** POST /auth/registration-identity — attach a private ID upload during registration review. */
+export async function setRegistrationIdentity(
+  req: Request & { user?: import("../models").User },
+  res: Response
+) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const body = registrationIdentitySchema.parse(req.body);
+  const status = req.user.status;
+  if (status !== "PENDING" && status !== "PENDING_REVIEW" && status !== "CHANGES_REQUESTED") {
+    return error(res, "Identity documents can only be set during registration review.", 403);
+  }
+
+  const key = toStorageKeyIfR2(body.govtIdFile);
+  const ownedPrefix = `digital-house/private/ids/${req.user.id}/`;
+  if (!key?.startsWith(ownedPrefix)) {
+    return error(res, "Invalid private identity document reference.", 400);
+  }
+
+  await req.user.update({
+    govtIdType: body.govtIdType,
+    govtIdFile: key
+  } as any);
+  try {
+    const { mediaService } = await import("../services/Media.service");
+    await mediaService.markMediaUrlsAttached(req.user.id, [key]);
+  } catch {
+    /* best-effort */
+  }
+  return success(res, {
+    message: "Identity document saved.",
+    user: userService.toAuthUser(await req.user.reload())
+  });
+}
+
 /** GET /auth/linked-accounts — account security section */
 export async function linkedAccounts(req: Request & { user?: import("../models").User }, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const accounts = GoogleAuth.getLinkedAccountsForUser(req.user);
-  return success(res, { ...accounts, loginSource: userService.toAdminUser(req.user).loginSource });
+  return success(res, { ...accounts, loginSource: resolveLoginSource(req.user) });
 }

@@ -1,10 +1,18 @@
 /**
  * Cloudflare R2 client (S3-compatible API).
- * Bucket remains PRIVATE; uploads only via pre-signed PUT URLs.
+ * Uploads remain private writes via pre-signed PUT URLs.
+ * Public media is delivered through the configured Cloudflare custom domain.
+ * Private media uses time-limited pre-signed GET URLs.
  * Do NOT expose R2 credentials to client.
  */
 
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  HeadObjectCommand,
+  DeleteObjectCommand
+} from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { R2_CACHE_CONTROL_IMMUTABLE } from "../config/r2Cache.config";
 
@@ -12,6 +20,9 @@ const accountId = process.env.R2_ACCOUNT_ID;
 const accessKeyId = process.env.R2_ACCESS_KEY_ID;
 const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
 const bucketName = process.env.R2_BUCKET_NAME;
+export const MEDIA_DELIVERY_MODE = (process.env.MEDIA_DELIVERY_MODE || "public")
+  .trim()
+  .toLowerCase();
 const region = "auto"; // R2 uses "auto" for region
 /** S3-compatible client for R2. Only used server-side; never expose to client. */
 function getR2Client(): S3Client {
@@ -61,6 +72,49 @@ export function getCdnPublicUrl(key: string): string {
   const trimmed = base.replace(/\/$/, "");
   const normalizedKey = key.startsWith("/") ? key.slice(1) : key;
   return `${trimmed}/${normalizedKey}`;
+}
+
+/**
+ * Return a stable Cloudflare CDN URL for public media.
+ * This helper never generates a pre-signed GET URL.
+ */
+export function toPublicUrlIfR2(
+  url: string | null | undefined
+): string | null {
+  if (!url || typeof url !== "string" || !url.trim()) return null;
+  const u = url.trim();
+  let key = extractR2KeyFromUrl(u);
+  if (!key) return u;
+  key = normalizeR2ObjectKey(key);
+
+  return getCdnPublicUrl(key);
+}
+
+/**
+ * Canonical value to persist for R2-hosted media: the object key.
+ * Values we cannot map to a key (external avatars, unknown hosts) pass through
+ * unchanged so legacy rows and third-party URLs keep working.
+ */
+export function toStorageKeyIfR2(url: string | null | undefined): string | null {
+  if (!url || typeof url !== "string" || !url.trim()) return null;
+  const u = url.trim();
+  const cdnBase = process.env.R2_CDN_PUBLIC_URL?.replace(/\/$/, "");
+  if (cdnBase && u.startsWith(cdnBase)) {
+    const pathPart = u.slice(cdnBase.length).split("?")[0].replace(/^\//, "");
+    if (pathPart) return normalizeR2ObjectKey(decodeIfEncoded(pathPart));
+  }
+  const key = extractR2KeyFromUrl(u);
+  return key ? normalizeR2ObjectKey(key) : u;
+}
+
+/** Whether a stored key/URL is protected by the media-edge private-prefix rule. */
+export function isPrivateR2Object(url: string | null | undefined): boolean {
+  const key = toStorageKeyIfR2(url);
+  if (!key) return false;
+  return (
+    key.toLowerCase().startsWith("digital-house/private/") ||
+    /^digital-house\/profile\/[^/]+\/horoscope\//i.test(key)
+  );
 }
 
 /**
@@ -151,9 +205,9 @@ const SIGNED_URL_CACHE_TTL_MS = (() => {
 })();
 
 /**
- * Retrieve: turn stored R2 URL (or key) into a signed GET URL so the app can load the image.
- * Upload is separate (presigned PUT); this is only for display. Same bucket/key as upload
- * (e.g. digital-house/profile-photos/…). Requires R2_* env vars on the server.
+ * Private delivery only: turn a stored R2 URL/key into a signed GET URL.
+ * Do not use this for posts, profile photos, marketplace/help galleries, or
+ * prominent-people media; those must use toPublicUrlIfR2.
  */
 /** Best-effort delete of an R2 object referenced by CDN URL or key. */
 /** Download object bytes from R2 (server-side only). */
@@ -163,23 +217,61 @@ export async function getR2ObjectBuffer(
 ): Promise<Buffer> {
   if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
   const client = getR2Client();
-  const response = await client.send(
-    new GetObjectCommand({ Bucket: bucketName, Key: key })
-  );
-  const contentLength = response.ContentLength ?? 0;
-  if (contentLength > maxBytes) {
-    throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
+  const configuredTimeout = Number(process.env.R2_DOWNLOAD_TIMEOUT_MS || 120_000);
+  const timeoutMs = Number.isFinite(configuredTimeout)
+    ? Math.max(10_000, configuredTimeout)
+    : 120_000;
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+  timeout.unref();
+  try {
+    const response = await client.send(
+      new GetObjectCommand({ Bucket: bucketName, Key: key }),
+      { abortSignal: abortController.signal }
+    );
+    const contentLength = response.ContentLength ?? 0;
+    if (contentLength > maxBytes) {
+      throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
+    }
+    const body = response.Body;
+    const byteArrayBody = body as
+      | { transformToByteArray?: () => Promise<Uint8Array> }
+      | undefined;
+    if (typeof byteArrayBody?.transformToByteArray !== "function") {
+      throw new Error("Empty R2 response body");
+    }
+    const bytes = await byteArrayBody.transformToByteArray();
+    const buf = Buffer.from(bytes);
+    if (buf.length > maxBytes) {
+      throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
+    }
+    return buf;
+  } finally {
+    clearTimeout(timeout);
   }
-  const body = response.Body;
-  if (!body || typeof (body as any).transformToByteArray !== "function") {
-    throw new Error("Empty R2 response body");
+}
+
+/** Validate that an uploaded R2 object exists without downloading its bytes. */
+export async function getR2ObjectMetadata(
+  key: string
+): Promise<{ byteSize: number; contentType: string | null }> {
+  if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
+  const client = getR2Client();
+  try {
+    const response = await client.send(
+      new HeadObjectCommand({ Bucket: bucketName, Key: normalizeR2ObjectKey(key) })
+    );
+    return {
+      byteSize: Number(response.ContentLength ?? 0),
+      contentType: response.ContentType ?? null
+    };
+  } catch (error: any) {
+    const status = Number(error?.$metadata?.httpStatusCode ?? 0);
+    if (status === 404 || error?.name === "NotFound" || error?.Code === "NoSuchKey") {
+      throw Object.assign(new Error("Uploaded media object not found"), { status: 400 });
+    }
+    throw error;
   }
-  const bytes = await (body as any).transformToByteArray();
-  const buf = Buffer.from(bytes);
-  if (buf.length > maxBytes) {
-    throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
-  }
-  return buf;
 }
 
 /** Upload buffer to R2 with Content-Type + long Cache-Control (immutable optimized assets). */
@@ -247,6 +339,10 @@ export async function deleteR2ObjectIfStored(url: string | null | undefined): Pr
   }
 }
 
+/**
+ * @internal Low-level signer used by toPrivateSignedUrlIfR2.
+ * Services must choose toPublicUrlIfR2 or toPrivateSignedUrlIfR2 explicitly.
+ */
 export async function toSignedUrlIfR2(url: string | null | undefined): Promise<string | null> {
   if (!url || typeof url !== "string" || !url.trim()) return null;
   const u = url.trim();
@@ -280,4 +376,22 @@ export async function toSignedUrlIfR2(url: string | null | undefined): Promise<s
     );
     return u;
   }
+}
+
+/**
+ * Sensitive-media delivery: return only a verifiably presigned R2 GET URL.
+ * Invalid/external values and signing failures become null rather than leaking a
+ * stored key or public-CDN URL through a private response field.
+ */
+export async function toPrivateSignedUrlIfR2(
+  url: string | null | undefined
+): Promise<string | null> {
+  const key = toStorageKeyIfR2(url);
+  // Legacy private records can live under an older public prefix, so private
+  // response fields may sign any Digital House key. New writes are separately
+  // constrained to digital-house/private/*.
+  if (!key?.startsWith("digital-house/")) return null;
+  const signed = await toSignedUrlIfR2(url);
+  if (!signed || !/[?&]X-Amz-Signature=/i.test(signed)) return null;
+  return signed;
 }

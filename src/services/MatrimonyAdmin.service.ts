@@ -19,7 +19,7 @@ import type { MatrimonyNoteType } from "../models/MatrimonyAdminNote.model";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
 import { computeMatrimonyCompletion } from "./Matrimony.service";
 import { approveProfileUpdate, rejectProfileUpdate } from "./admin.service";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2, toPrivateSignedUrlIfR2 } from "../utils/r2Client";
 import {
   MATRIMONY_REJECTION_REASONS,
   MATRIMONY_VERIFICATION_KEYS,
@@ -237,16 +237,21 @@ async function ensureMeta(
 
 const MATRIMONY_MEDIA_KEYS = ["candidatePhotoUrl", "profilePhotoUrl", "horoscopeDocumentUrl"] as const;
 
-async function signMediaUrl(value: unknown): Promise<unknown> {
+function publicMediaUrl(value: unknown): unknown {
   if (typeof value !== "string" || !value.trim()) return value;
-  return (await toSignedUrlIfR2(value)) ?? value;
+  return toPublicUrlIfR2(value) ?? value;
 }
 
 async function signMatrimonyMedia(data: Record<string, unknown> | null): Promise<Record<string, unknown> | null> {
   if (!data) return null;
   const out = { ...data };
   for (const key of MATRIMONY_MEDIA_KEYS) {
-    out[key] = await signMediaUrl(out[key]);
+    out[key] =
+      key === "horoscopeDocumentUrl"
+        ? await toPrivateSignedUrlIfR2(
+            typeof out[key] === "string" ? (out[key] as string) : null
+          )
+        : publicMediaUrl(out[key]);
   }
   return out;
 }
@@ -261,16 +266,26 @@ async function signFieldChangesMedia(
       }
       return {
         field: c.field,
-        oldValue: await signMediaUrl(c.oldValue),
-        newValue: await signMediaUrl(c.newValue)
+        oldValue:
+          c.field === "horoscopeDocumentUrl"
+            ? await toPrivateSignedUrlIfR2(
+                typeof c.oldValue === "string" ? c.oldValue : null
+              )
+            : publicMediaUrl(c.oldValue),
+        newValue:
+          c.field === "horoscopeDocumentUrl"
+            ? await toPrivateSignedUrlIfR2(
+                typeof c.newValue === "string" ? c.newValue : null
+              )
+            : publicMediaUrl(c.newValue)
       };
     })
   );
 }
 
-async function signUserPhoto(url: string | null): Promise<string | null> {
+function publicUserPhoto(url: string | null): string | null {
   if (!url) return null;
-  return (await toSignedUrlIfR2(url)) ?? url;
+  return toPublicUrlIfR2(url) ?? url;
 }
 
 export async function writeAudit(
@@ -615,7 +630,7 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
   await Promise.all(
     pageItems.map(async (item) => {
       const url = item._candidateUrl;
-      item.profilePhotoUrl = url ? await signUserPhoto(url) : null;
+      item.profilePhotoUrl = url ? publicUserPhoto(url) : null;
       delete item._candidateUrl;
     })
   );
@@ -645,9 +660,9 @@ export async function getMatrimonyRequestDetail(updateId: number) {
 
   const pendingSigned = await signMatrimonyMedia(data);
   const approvedSigned = await signMatrimonyMedia(currentApproved as Record<string, unknown>);
-  const accountOwnerPhoto = await signUserPhoto(user.profilePhoto ?? null);
+  const accountOwnerPhoto = publicUserPhoto(user.profilePhoto ?? null);
   const candidateRaw = resolveCandidatePhotoUrl(data as Record<string, unknown>);
-  const matrimonyCandidatePhoto = candidateRaw ? await signUserPhoto(candidateRaw) : null;
+  const matrimonyCandidatePhoto = candidateRaw ? publicUserPhoto(candidateRaw) : null;
   const profileFor = String(data.lookingFor ?? "").toUpperCase();
 
   const { percentage, missing } = computeMatrimonyCompletion(

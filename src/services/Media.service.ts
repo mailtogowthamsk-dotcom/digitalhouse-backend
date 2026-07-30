@@ -5,8 +5,16 @@
 
 import path from "path";
 import { Op } from "sequelize";
-import { getPresignedPutUrl, getCdnPublicUrl, extractR2KeyFromUrl, deleteR2ImageVariants } from "../utils/r2Client";
-import { MediaFile, Post, User } from "../models";
+import {
+  getPresignedPutUrl,
+  getCdnPublicUrl,
+  extractR2KeyFromUrl,
+  deleteR2ImageVariants,
+  toPublicUrlIfR2,
+  isPrivateR2Object,
+  toPrivateSignedUrlIfR2
+} from "../utils/r2Client";
+import { MediaFile, MediaJob, Post, User } from "../models";
 import type { MediaModule, MediaFileType } from "../models";
 import {
   ALLOWED_IMAGE_MIMES,
@@ -27,7 +35,17 @@ function inferFileType(mime: string): MediaFileType {
   throw new Error("Unsupported file type");
 }
 
-export type MediaUploadPurpose = "image" | "video" | "video_thumbnail" | "profile" | "hero" | "gallery";
+export type MediaUploadPurpose =
+  | "image"
+  | "video"
+  | "video_thumbnail"
+  | "profile"
+  | "hero"
+  | "gallery"
+  | "horoscope"
+  | "identity"
+  | "support"
+  | "chat";
 
 /** Build R2 object key from module and user; prevents path traversal. */
 function buildKey(
@@ -39,14 +57,23 @@ function buildKey(
   purpose?: MediaUploadPurpose
 ): string {
   const safeName = path.basename(uniqueName).replace(/[^a-zA-Z0-9._-]/g, "_");
+  const now = new Date();
+  const yyyy = String(now.getUTCFullYear());
+  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
+
+  if (purpose === "horoscope") {
+    return `${R2_PREFIX}/private/horoscopes/${userId}/${yyyy}/${mm}/${safeName}`;
+  }
+  if (purpose === "identity") {
+    return `${R2_PREFIX}/private/ids/${userId}/${yyyy}/${mm}/${safeName}`;
+  }
+  if (purpose === "support" || purpose === "chat") {
+    return `${R2_PREFIX}/private/${purpose}/${userId}/${yyyy}/${mm}/${safeName}`;
+  }
   if (module === "profile") {
     // Keep legacy folder so existing profile-photo-upload-url and media/upload-url stay aligned.
     return `${R2_PREFIX}/profile-photos/${userId}/${safeName}`;
   }
-
-  const now = new Date();
-  const yyyy = String(now.getUTCFullYear());
-  const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
 
   if (module === "prominent") {
     const kind =
@@ -110,34 +137,35 @@ export async function generateUploadUrl(
   const mime = fileType.toLowerCase().trim();
   const fileTypeKind = inferFileType(mime);
   if (fileTypeKind === "image" && fileSize > IMAGE_MAX_BYTES) {
-    const err = new Error("Image size exceeds 2 MB (compress before upload)");
-    (err as any).status = 400;
-    throw err;
+    throw Object.assign(new Error("Image size exceeds 2 MB (compress before upload)"), {
+      status: 400
+    });
   }
   if (fileTypeKind === "video" && fileSize > VIDEO_MAX_BYTES) {
-    const err = new Error("Video size exceeds 50 MB (compress before upload)");
-    (err as any).status = 400;
-    throw err;
+    throw Object.assign(new Error("Video size exceeds 50 MB (compress before upload)"), {
+      status: 400
+    });
   }
 
   const uploadMime =
     fileTypeKind === "image" && !mime.includes("webp") ? "image/webp" : mime;
   const uniqueName = uniqueFileName(fileName, uploadMime);
   const key = buildKey(module, userId, uniqueName, fileTypeKind, fileName, purpose);
-  const [uploadUrl, publicUrl] = await Promise.all([
-    getPresignedPutUrl(key, uploadMime),
-    Promise.resolve(getCdnPublicUrl(key))
-  ]);
+  const uploadUrl = await getPresignedPutUrl(key, uploadMime);
+  // Keep the response field for compatibility, but never construct a public-CDN
+  // URL for private media. Callers persist this object key and retrieval signs it.
+  const publicUrl = isPrivateR2Object(key) ? key : getCdnPublicUrl(key);
 
   const mediaFile = await MediaFile.create({
     userId,
     module,
-    fileUrl: publicUrl,
+    // Store the object key; the CDN URL is derived at read time.
+    fileUrl: key,
     fileType: fileTypeKind,
     status: "PENDING",
     objectKey: key,
-    processingStatus: fileTypeKind === "image" || fileTypeKind === "video" ? "pending_upload" : "ready"
-  } as any);
+    processingStatus: "pending"
+  });
 
   return {
     uploadUrl,
@@ -154,16 +182,20 @@ export async function listPendingMedia(): Promise<
   const rows = await MediaFile.findAll({
     where: { status: "PENDING" },
     order: [["createdAt", "DESC"]],
-    attributes: ["id", "userId", "module", "fileUrl", "fileType", "createdAt"]
+    attributes: ["id", "userId", "module", "fileUrl", "fileType", "objectKey", "createdAt"]
   });
-  return rows.map((r) => ({
-    id: r.id,
-    userId: r.userId,
-    module: r.module,
-    fileUrl: r.fileUrl,
-    fileType: r.fileType,
-    createdAt: r.createdAt
-  }));
+  return Promise.all(
+    rows.map(async (r) => ({
+      id: r.id,
+      userId: r.userId,
+      module: r.module,
+      fileUrl: isPrivateR2Object(r.objectKey ?? r.fileUrl)
+        ? (await toPrivateSignedUrlIfR2(r.objectKey ?? r.fileUrl)) ?? ""
+        : toPublicUrlIfR2(r.fileUrl) ?? r.fileUrl,
+      fileType: r.fileType,
+      createdAt: r.createdAt
+    }))
+  );
 }
 
 /** Admin: approve media (status → APPROVED) */
@@ -326,6 +358,10 @@ export async function cleanupOrphanPendingMedia(opts?: {
 
   let deleted = 0;
   for (const row of rows) {
+    const activeJob = await MediaJob.count({
+      where: { mediaId: row.id, status: { [Op.in]: ["pending", "processing"] } }
+    });
+    if (activeJob > 0) continue;
     const key = row.objectKey || extractR2KeyFromUrl(row.fileUrl);
     if (!key) {
       await row.destroy().catch(() => undefined);
@@ -369,9 +405,9 @@ export async function deleteUserMediaUrls(
     const postOwned = mediaRow || profileOwned ? true : await userReferencesMediaKey(userId, key);
 
     if (!profileOwned && !mediaRow && !postOwned) {
-      const err = new Error("Not allowed to delete this media");
-      (err as any).status = 403;
-      throw err;
+      throw Object.assign(new Error("Not allowed to delete this media"), {
+        status: 403
+      });
     }
 
     await deleteR2ImageVariants(key);

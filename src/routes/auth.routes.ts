@@ -23,5 +23,10 @@ authRouter.post(
   jwtAuthMiddleware,
   asyncHandler(AuthController.setRegistrationPhoto)
 );
+authRouter.post(
+  "/registration-identity",
+  jwtAuthMiddleware,
+  asyncHandler(AuthController.setRegistrationIdentity)
+);
 authRouter.get("/me", jwtAuthMiddleware, asyncHandler(AuthController.getMe));
 authRouter.get("/linked-accounts", authMiddleware, asyncHandler(AuthController.linkedAccounts));

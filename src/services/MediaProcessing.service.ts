@@ -1,6 +1,7 @@
 /**
  * Post-upload media processing: images → WebP variants; videos → H.264/AAC faststart + posters.
- * Existing ready media is returned as-is (idempotent / backward compatible).
+ * Runs only in the standalone media worker. Existing completed media is
+ * returned as-is (idempotent / backward compatible).
  */
 
 import { MediaFile } from "../models";
@@ -9,7 +10,7 @@ import {
   getR2ObjectBuffer,
   putR2ObjectBuffer,
   getCdnPublicUrl,
-  deleteR2ObjectByKey
+  isPrivateR2Object
 } from "../utils/r2Client";
 import {
   processImageBuffer,
@@ -28,32 +29,50 @@ import {
   probeVideoFile
 } from "../utils/videoProcessor";
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { R2_CACHE_CONTROL_IMMUTABLE } from "../config/r2Cache.config";
-
-export type MediaVariantsDto = {
-  thumb: string;
-  medium: string;
-  full: string;
-};
-
-export type FinalizeMediaResult = {
-  mediaFileId: number;
-  publicUrl: string;
-  variants: MediaVariantsDto;
-  width: number;
-  height: number;
-  byteSize: number;
-  /** Present for video finalize */
-  thumbnailUrl?: string | null;
-  durationSec?: number | null;
-  mediaType?: "image" | "video";
-};
-
-const processingLocks = new Set<number>();
+import {
+  getCompletedMediaResult,
+  toDeliveryVariants,
+  type FinalizeMediaResult,
+  type MediaVariantsDto
+} from "../utils/mediaProcessingResult";
+import {
+  createMediaTempDirectory,
+  removeMediaTempDirectory
+} from "../utils/mediaTempFiles";
 
 const VIDEO_DOWNLOAD_MAX = Math.max(POST_VIDEO_MAX_BYTES + 1024 * 1024, 55 * 1024 * 1024);
+
+export type MediaCompletionAttributes = {
+  fileUrl: string;
+  objectKey: string;
+  variantsJson: string;
+  processingStatus: "completed";
+  byteSize: number;
+  width: number | null;
+  height: number | null;
+};
+
+export type ProcessedMedia = {
+  result: FinalizeMediaResult;
+  mediaUpdates: MediaCompletionAttributes;
+};
+
+function completedMedia(row: MediaFile, result: FinalizeMediaResult): ProcessedMedia {
+  return {
+    result,
+    mediaUpdates: {
+      fileUrl: row.fileUrl,
+      objectKey: row.objectKey ?? row.fileUrl,
+      variantsJson: row.variantsJson ?? JSON.stringify(result.variants),
+      processingStatus: "completed",
+      byteSize: row.byteSize ?? result.byteSize,
+      width: row.width,
+      height: row.height
+    }
+  };
+}
 
 function videoOptimizedKey(stagingKey: string): string {
   const dir = path.posix.dirname(stagingKey);
@@ -72,21 +91,10 @@ function videoPosterKeys(stagingKey: string): { thumbKey: string; mediumKey: str
   };
 }
 
-async function finalizeImage(row: MediaFile, userId: number): Promise<FinalizeMediaResult> {
-  if (row.processingStatus === "ready" && row.variantsJson) {
-    const variants = JSON.parse(row.variantsJson) as MediaVariantsDto;
-    return {
-      mediaFileId: row.id,
-      publicUrl: row.fileUrl,
-      variants,
-      width: row.width ?? 0,
-      height: row.height ?? 0,
-      byteSize: row.byteSize ?? 0,
-      mediaType: "image"
-    };
-  }
-
-  await row.update({ processingStatus: "processing" });
+async function finalizeImage(row: MediaFile): Promise<ProcessedMedia> {
+  const isPrivate = isPrivateR2Object(row.objectKey ?? row.fileUrl);
+  const completed = getCompletedMediaResult(row);
+  if (completed) return completedMedia(row, completed);
 
   const stagingKey = row.objectKey ?? extractR2KeyFromUrl(row.fileUrl);
   if (!stagingKey) {
@@ -114,57 +122,35 @@ async function finalizeImage(row: MediaFile, userId: number): Promise<FinalizeMe
     })
   ]);
 
-  const variants: MediaVariantsDto = {
-    thumb: getCdnPublicUrl(thumbKey),
-    medium: getCdnPublicUrl(mediumKey),
-    full: getCdnPublicUrl(fullKey)
-  };
-
-  if (stagingKey !== fullKey && stagingKey !== thumbKey && stagingKey !== mediumKey) {
-    await deleteR2ObjectByKey(stagingKey);
-  }
-
-  await row.update({
-    fileUrl: variants.full,
-    objectKey: fullKey,
-    variantsJson: JSON.stringify(variants),
-    processingStatus: "ready",
-    byteSize: processed.full.bytes,
-    width: processed.full.width,
-    height: processed.full.height
-  });
+  const variantKeys: MediaVariantsDto = { thumb: thumbKey, medium: mediumKey, full: fullKey };
+  const variants = toDeliveryVariants(variantKeys, isPrivate);
 
   return {
-    mediaFileId: row.id,
-    publicUrl: variants.full,
-    variants,
-    width: processed.full.width,
-    height: processed.full.height,
-    byteSize: processed.full.bytes,
-    mediaType: "image"
+    result: {
+      mediaFileId: row.id,
+      publicUrl: variants.full,
+      variants,
+      width: processed.full.width,
+      height: processed.full.height,
+      byteSize: processed.full.bytes,
+      mediaType: "image"
+    },
+    mediaUpdates: {
+      fileUrl: fullKey,
+      objectKey: fullKey,
+      variantsJson: JSON.stringify(variantKeys),
+      processingStatus: "completed",
+      byteSize: processed.full.bytes,
+      width: processed.full.width,
+      height: processed.full.height
+    }
   };
 }
 
-async function finalizeVideo(row: MediaFile, userId: number): Promise<FinalizeMediaResult> {
-  if (row.processingStatus === "ready" && row.variantsJson) {
-    const variants = JSON.parse(row.variantsJson) as MediaVariantsDto & { video?: string };
-    return {
-      mediaFileId: row.id,
-      publicUrl: row.fileUrl,
-      variants: {
-        thumb: variants.thumb,
-        medium: variants.medium,
-        full: variants.full
-      },
-      width: row.width ?? 0,
-      height: row.height ?? 0,
-      byteSize: row.byteSize ?? 0,
-      thumbnailUrl: variants.medium || variants.thumb || null,
-      mediaType: "video"
-    };
-  }
-
-  await row.update({ processingStatus: "processing" });
+async function finalizeVideo(row: MediaFile): Promise<ProcessedMedia> {
+  const isPrivate = isPrivateR2Object(row.objectKey ?? row.fileUrl);
+  const completed = getCompletedMediaResult(row);
+  if (completed) return completedMedia(row, completed);
 
   const stagingKey = row.objectKey ?? extractR2KeyFromUrl(row.fileUrl);
   if (!stagingKey) {
@@ -191,13 +177,13 @@ async function finalizeVideo(row: MediaFile, userId: number): Promise<FinalizeMe
       await putR2ObjectBuffer(outKey, videoBuf, "video/mp4", {
         cacheControl: R2_CACHE_CONTROL_IMMUTABLE
       });
-      if (outKey !== stagingKey) {
-        await deleteR2ObjectByKey(stagingKey);
-      }
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Optimize failed — only keep original if it is already H.264/AAC/MP4-safe.
-      console.warn("[media] video optimize failed:", e?.message || e);
-      const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "dh-probe-"));
+      console.warn(
+        "[media] video optimize failed:",
+        e instanceof Error ? e.message : e
+      );
+      const tmp = await createMediaTempDirectory("dh-probe-");
       const p = path.join(tmp, "v.bin");
       try {
         await fs.promises.writeFile(p, raw);
@@ -207,7 +193,7 @@ async function finalizeVideo(row: MediaFile, userId: number): Promise<FinalizeMe
         height = probe.height;
         durationSec = probe.durationSec;
       } finally {
-        await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
+        await removeMediaTempDirectory(tmp);
       }
       await putR2ObjectBuffer(stagingKey, raw, "video/mp4", {
         cacheControl: R2_CACHE_CONTROL_IMMUTABLE
@@ -218,7 +204,7 @@ async function finalizeVideo(row: MediaFile, userId: number): Promise<FinalizeMe
   } else {
     // No server transcode: require H.264/AAC when ffprobe is available.
     if (await hasFfmpeg()) {
-      const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "dh-probe-"));
+      const tmp = await createMediaTempDirectory("dh-probe-");
       const p = path.join(tmp, "v.bin");
       try {
         await fs.promises.writeFile(p, raw);
@@ -228,7 +214,7 @@ async function finalizeVideo(row: MediaFile, userId: number): Promise<FinalizeMe
         height = probe.height;
         durationSec = probe.durationSec;
       } finally {
-        await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
+        await removeMediaTempDirectory(tmp);
       }
     } else if (isVideoOptimizeEnabled()) {
       console.warn(
@@ -240,12 +226,8 @@ async function finalizeVideo(row: MediaFile, userId: number): Promise<FinalizeMe
     });
   }
 
-  let variants: MediaVariantsDto = {
-    thumb: getCdnPublicUrl(outKey),
-    medium: getCdnPublicUrl(outKey),
-    full: getCdnPublicUrl(outKey)
-  };
-  let thumbnailUrl: string | null = null;
+  let variantKeys: MediaVariantsDto = { thumb: outKey, medium: outKey, full: outKey };
+  let posterMediumKey: string | null = null;
 
   if (await hasFfmpeg()) {
     try {
@@ -258,79 +240,66 @@ async function finalizeVideo(row: MediaFile, userId: number): Promise<FinalizeMe
         putR2ObjectBuffer(keys.mediumKey, processed.medium.buffer, IMAGE_OUTPUT_MIME),
         putR2ObjectBuffer(keys.fullKey, processed.full.buffer, IMAGE_OUTPUT_MIME)
       ]);
-      variants = {
-        thumb: getCdnPublicUrl(keys.thumbKey),
-        medium: getCdnPublicUrl(keys.mediumKey),
-        full: getCdnPublicUrl(keys.fullKey)
+      variantKeys = {
+        thumb: keys.thumbKey,
+        medium: keys.mediumKey,
+        full: keys.fullKey
       };
-      thumbnailUrl = variants.medium;
+      posterMediumKey = keys.mediumKey;
     } catch (e) {
       console.warn("[media] video poster failed:", e instanceof Error ? e.message : e);
     }
   }
 
-  const publicUrl = getCdnPublicUrl(outKey);
-  await row.update({
-    fileUrl: publicUrl,
-    objectKey: outKey,
-    variantsJson: JSON.stringify({ ...variants, video: publicUrl }),
-    processingStatus: "ready",
-    byteSize: videoBuf.length,
-    width: width || null,
-    height: height || null
+  const variants = toDeliveryVariants(variantKeys, isPrivate);
+  const thumbnailUrl = posterMediumKey
+    ? isPrivate
+      ? posterMediumKey
+      : getCdnPublicUrl(posterMediumKey)
+    : null;
+  const publicUrl = isPrivate ? outKey : getCdnPublicUrl(outKey);
+  const variantsJson = JSON.stringify({
+    ...variantKeys,
+    video: outKey,
+    durationSec: durationSec || null
   });
-
   return {
-    mediaFileId: row.id,
-    publicUrl,
-    variants,
-    width,
-    height,
-    byteSize: videoBuf.length,
-    thumbnailUrl,
-    durationSec: durationSec || null,
-    mediaType: "video"
+    result: {
+      mediaFileId: row.id,
+      publicUrl,
+      variants,
+      width,
+      height,
+      byteSize: videoBuf.length,
+      thumbnailUrl,
+      durationSec: durationSec || null,
+      mediaType: "video"
+    },
+    mediaUpdates: {
+      fileUrl: outKey,
+      objectKey: outKey,
+      variantsJson,
+      processingStatus: "completed",
+      byteSize: videoBuf.length,
+      width: width || null,
+      height: height || null
+    }
   };
 }
 
 /**
- * Process an uploaded image or video after client PUT to R2.
+ * Process an uploaded image or video in the standalone worker.
  */
-export async function finalizeMediaFile(
-  mediaFileId: number,
-  userId: number
-): Promise<FinalizeMediaResult> {
-  if (processingLocks.has(mediaFileId)) {
-    throw Object.assign(new Error("Processing already in progress"), { status: 409 });
+export async function processMediaFile(mediaFileId: number): Promise<ProcessedMedia> {
+  const row = await MediaFile.findByPk(mediaFileId);
+  if (!row) {
+    throw Object.assign(new Error("Media not found"), { status: 404 });
   }
-  processingLocks.add(mediaFileId);
-
-  try {
-    const row = await MediaFile.findByPk(mediaFileId);
-    if (!row) {
-      throw Object.assign(new Error("Media not found"), { status: 404 });
-    }
-    if (row.userId !== userId) {
-      throw Object.assign(new Error("Forbidden"), { status: 403 });
-    }
-    if (row.fileType === "image") {
-      return await finalizeImage(row, userId);
-    }
-    if (row.fileType === "video") {
-      return await finalizeVideo(row, userId);
-    }
-    throw Object.assign(new Error("Unsupported media type for finalize"), { status: 400 });
-  } catch (e) {
-    await MediaFile.update(
-      { processingStatus: "failed" },
-      { where: { id: mediaFileId, userId } }
-    ).catch(() => {});
-    throw e;
-  } finally {
-    processingLocks.delete(mediaFileId);
-  }
+  if (row.fileType === "image") return finalizeImage(row);
+  if (row.fileType === "video") return finalizeVideo(row);
+  throw Object.assign(new Error("Unsupported media type for processing"), { status: 400 });
 }
 
 export const mediaProcessingService = {
-  finalizeMediaFile
+  processMediaFile
 };

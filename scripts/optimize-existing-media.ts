@@ -122,7 +122,7 @@ async function main() {
           medium: getCdnPublicUrl(mediumKey),
           full: fullUrl
         }),
-        processingStatus: "ready",
+        processingStatus: "completed",
         byteSize: null
       });
     }

@@ -3,10 +3,10 @@ import { FeedEngagementEvent, ModerationAction, Post, PostReport, SavedPost, Use
 import type { ModerationActionType } from "../constants/reports.constants";
 import type { MarketplaceStatus } from "../constants/marketplace.constants";
 import * as MarketplaceSettings from "./MarketplaceSettings.service";
-import { deleteR2ImageVariants, toSignedUrlIfR2 } from "../utils/r2Client";
+import { deleteR2ImageVariants, toPublicUrlIfR2 } from "../utils/r2Client";
 import { emitFeedNewPost } from "../realtime/feedEvents";
 import * as Notifications from "./Notification.service";
-import { parseMarketplaceGallery, signMarketplaceGallery } from "../utils/marketplaceGallery";
+import { parseMarketplaceGallery, publicMarketplaceGallery } from "../utils/marketplaceGallery";
 
 /** Grouped COUNT() rows come back raw, outside the model's attribute types. */
 type CountByPostRow = { postId: number; cnt: number };
@@ -210,8 +210,8 @@ async function toAdminListingItem(
   const rawMedia = post.mediaUrl ?? null;
   const galleryRaw = parseMarketplaceGallery(post.marketplaceGallery, rawMedia);
   const [mediaUrl, gallery] = await Promise.all([
-    rawMedia ? toSignedUrlIfR2(rawMedia).then((u) => u ?? rawMedia) : Promise.resolve(null),
-    signMarketplaceGallery(galleryRaw)
+    Promise.resolve(rawMedia ? toPublicUrlIfR2(rawMedia) ?? rawMedia : null),
+    publicMarketplaceGallery(galleryRaw)
   ]);
   return {
     id: post.id,
@@ -797,7 +797,7 @@ export async function getAdminMarketplaceDetail(postId: number): Promise<AdminMa
       community: author.community ?? null,
       district: author.district ?? null,
       status: author.status,
-      profilePhoto: (await toSignedUrlIfR2(author.profilePhoto ?? null)) ?? author.profilePhoto ?? null,
+      profilePhoto: toPublicUrlIfR2(author.profilePhoto ?? null) ?? author.profilePhoto ?? null,
       liveListingCount,
       totalListingCount
     },

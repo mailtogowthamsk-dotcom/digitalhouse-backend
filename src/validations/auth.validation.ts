@@ -93,3 +93,10 @@ export const registrationPhotoSchema = z.object({
   profilePhoto: z.string().min(1).max(2000).trim()
 });
 export type RegistrationPhotoBody = z.infer<typeof registrationPhotoSchema>;
+
+/** Attach an already-uploaded private identity document during registration review. */
+export const registrationIdentitySchema = z.object({
+  govtIdType: z.string().min(1).max(40).trim(),
+  govtIdFile: z.string().min(1).max(2000).trim()
+});
+export type RegistrationIdentityBody = z.infer<typeof registrationIdentitySchema>;

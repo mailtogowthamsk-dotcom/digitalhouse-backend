@@ -1,7 +1,7 @@
 import { Op, QueryTypes } from "sequelize";
 import { sequelize } from "../config/db";
 import { Message, User } from "../models";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
 import { emitMessageEvents, emitMessageRead } from "../realtime/messageEvents";
 import { scheduleMessagePush } from "../realtime/messagePushQueue";
@@ -117,14 +117,14 @@ export async function listThreads(
   const includeArchived = opts?.includeArchived === true;
   const archivedOnly = opts?.archivedOnly === true;
 
-  const signedPhotos = new Map<number, string | null>();
+  const publicProfilePhotos = new Map<number, string | null>();
   await Promise.all(
     users.map(async (u) => {
       if (!u.profilePhoto) {
-        signedPhotos.set(u.id, null);
+        publicProfilePhotos.set(u.id, null);
         return;
       }
-      signedPhotos.set(u.id, (await toSignedUrlIfR2(u.profilePhoto)) ?? u.profilePhoto);
+      publicProfilePhotos.set(u.id, (await toPublicUrlIfR2(u.profilePhoto)) ?? u.profilePhoto);
     })
   );
 
@@ -144,7 +144,7 @@ export async function listThreads(
       const lm = lastById.get(Number((r as any).lastMessageId)) ?? null;
       const access = accessMap.get(otherUserId);
 
-      const profileImage = signedPhotos.get(otherUserId) ?? null;
+      const profileImage = publicProfilePhotos.get(otherUserId) ?? null;
 
       return {
         otherUser: {

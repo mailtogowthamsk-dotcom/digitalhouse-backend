@@ -5,6 +5,7 @@ import {
   notifyConnectionRequestAccepted,
   notifyConnectionRequestReceived
 } from "./Notification.service";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 
 export type RelationshipStatus =
   | "none"
@@ -150,7 +151,7 @@ async function toUserDto(userId: number): Promise<ConnectionUserDto> {
     id: u.id,
     fullName: u.fullName,
     username: u.username,
-    profileImage: u.profilePhoto ?? null
+    profileImage: toPublicUrlIfR2(u.profilePhoto ?? null)
   };
 }
 
@@ -168,7 +169,7 @@ async function toUserDtoMap(userIds: number[]): Promise<Map<number, ConnectionUs
       id: u.id,
       fullName: u.fullName,
       username: u.username,
-      profileImage: u.profilePhoto ?? null
+      profileImage: toPublicUrlIfR2(u.profilePhoto ?? null)
     });
   }
   return map;

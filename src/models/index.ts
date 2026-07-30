@@ -18,6 +18,7 @@ import { SavedPost } from "./SavedPost.model";
 import { PostReport } from "./PostReport.model";
 import { FeedEngagementEvent } from "./FeedEngagementEvent.model";
 import { MediaFile } from "./MediaFile.model";
+import { MediaJob } from "./MediaJob.model";
 import { MatrimonyRequestMeta } from "./MatrimonyRequestMeta.model";
 import { MatrimonyAdminNote } from "./MatrimonyAdminNote.model";
 import { MatrimonyReviewAudit } from "./MatrimonyReviewAudit.model";
@@ -164,6 +165,16 @@ User.hasMany(PostReport, { foreignKey: "reporterId" });
 PostReport.belongsTo(User, { foreignKey: "reporterId" });
 User.hasMany(MediaFile, { foreignKey: "userId" });
 MediaFile.belongsTo(User, { foreignKey: "userId" });
+MediaFile.hasOne(MediaJob, {
+  foreignKey: "mediaId",
+  as: "ProcessingJob",
+  onDelete: "CASCADE"
+});
+MediaJob.belongsTo(MediaFile, {
+  foreignKey: "mediaId",
+  as: "Media",
+  onDelete: "CASCADE"
+});
 
 MasterDataItem.belongsTo(MasterDataItem, { foreignKey: "parentId", as: "Parent" });
 MasterDataItem.hasMany(MasterDataItem, { foreignKey: "parentId", as: "Children" });
@@ -197,7 +208,13 @@ export type { UserStatus } from "./user.model";
 export type { PostType, JobStatus, JobEmploymentType, JobWorkMode, PostVisibility } from "./Post.model";
 export { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES, JOB_WORK_MODES, POST_VISIBILITIES } from "./Post.model";
 export type { ReportStatus } from "./PostReport.model";
-export type { MediaStatus, MediaFileType, MediaModule } from "./MediaFile.model";
+export type {
+  MediaStatus,
+  MediaFileType,
+  MediaModule,
+  MediaProcessingStatus
+} from "./MediaFile.model";
+export type { MediaJobStatus, MediaJobType } from "./MediaJob.model";
 export { MEDIA_MODULES } from "./MediaFile.model";
 export {
   User,
@@ -219,6 +236,7 @@ export {
   SavedPost,
   PostReport,
   MediaFile,
+  MediaJob,
   FeedEngagementEvent,
   MatrimonyRequestMeta,
   MatrimonyAdminNote,

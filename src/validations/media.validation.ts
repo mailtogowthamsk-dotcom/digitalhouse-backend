@@ -35,7 +35,18 @@ export const uploadUrlSchema = z
      * image (default) → images/posts/{module}/YYYY/MM/
      */
     purpose: z
-      .enum(["image", "video", "video_thumbnail", "profile", "hero", "gallery"])
+      .enum([
+        "image",
+        "video",
+        "video_thumbnail",
+        "profile",
+        "hero",
+        "gallery",
+        "horoscope",
+        "identity",
+        "support",
+        "chat"
+      ])
       .optional()
   })
   .strict()
@@ -79,6 +90,25 @@ export const uploadUrlSchema = z
       );
     },
     { message: "Prominent uploads require purpose profile|hero|gallery" }
+  )
+  .refine(
+    (data) => data.purpose !== "horoscope" || data.module === "matrimony",
+    { message: "Horoscope uploads require module matrimony" }
+  )
+  .refine(
+    (data) => data.purpose !== "identity" || data.module === "profile",
+    { message: "Identity-document uploads require module profile" }
+  )
+  .refine(
+    (data) => data.purpose !== "support" || data.module === "posts",
+    { message: "Support evidence uploads require module posts" }
+  )
+  .refine(
+    (data) => {
+      if (data.purpose !== "horoscope" && data.purpose !== "identity") return true;
+      return (ALLOWED_IMAGE_TYPES as readonly string[]).includes(data.fileType.toLowerCase());
+    },
+    { message: "Private image uploads require JPEG, PNG, or WebP" }
   );
 
 export type UploadUrlBody = z.infer<typeof uploadUrlSchema>;

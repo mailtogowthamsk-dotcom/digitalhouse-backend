@@ -22,10 +22,9 @@ import { mdmCacheGet, mdmCacheSet, mdmCacheInvalidateAll, mdmCacheKey } from "..
 import {
   extractR2KeyFromUrl,
   getCdnPublicUrl,
-  getPresignedGetUrl,
   getPresignedPutUrl,
   putR2ObjectBuffer,
-  toSignedUrlIfR2
+  toPublicUrlIfR2
 } from "../utils/r2Client";
 import { randomUUID } from "crypto";
 import path from "path";
@@ -42,10 +41,10 @@ function normalizeKey(raw: string | null | undefined): string | null {
   return extractR2KeyFromUrl(t) || t;
 }
 
-async function signKey(key: string | null | undefined): Promise<string | null> {
+async function publicMediaUrl(key: string | null | undefined): Promise<string | null> {
   if (!key) return null;
   const url = key.startsWith("http") ? key : getCdnPublicUrl(key);
-  return toSignedUrlIfR2(url);
+  return toPublicUrlIfR2(url);
 }
 
 export type TimelineInput = {
@@ -110,8 +109,8 @@ async function mapPersonCard(person: ProminentPerson & { Category?: ProminentCat
     currentDesignation: person.currentDesignation,
     shortDescription: person.shortDescription,
     category,
-    profileImageUrl: await signKey(person.profileImageKey),
-    heroImageUrl: await signKey(person.heroImageKey),
+    profileImageUrl: await publicMediaUrl(person.profileImageKey),
+    heroImageUrl: await publicMediaUrl(person.heroImageKey),
     isFeatured: !!person.isFeatured,
     isPublished: !!person.isPublished,
     verified: true
@@ -134,7 +133,7 @@ async function mapPersonDetail(
         id: g.id,
         caption: g.caption,
         sortOrder: g.sortOrder,
-        imageUrl: await signKey(g.imageKey),
+        imageUrl: await publicMediaUrl(g.imageKey),
         imageKey: g.imageKey
       }))
   );
@@ -540,7 +539,7 @@ export async function uploadProminentImageBuffer(input: {
   const built = buildProminentObjectKey(input.kind, input.fileName, input.fileType);
   await putR2ObjectBuffer(built.key, buffer, built.mime);
   const publicUrl = getCdnPublicUrl(built.key);
-  const previewUrl = await getPresignedGetUrl(built.key, 3600);
+  const previewUrl = await toPublicUrlIfR2(publicUrl);
   return {
     key: built.key,
     publicUrl,

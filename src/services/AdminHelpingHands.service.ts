@@ -1,6 +1,6 @@
 import { Op, type WhereOptions } from "sequelize";
 import { Post, User, HelpOffer, HelpAppreciation } from "../models";
-import { deleteR2ImageVariants } from "../utils/r2Client";
+import { deleteR2ImageVariants, toPublicUrlIfR2 } from "../utils/r2Client";
 import { parseHelpGallery } from "../utils/helpGallery";
 import {
   HELP_CATEGORY_LABELS,
@@ -68,7 +68,7 @@ async function toAdminItem(post: Post, helperCount: number): Promise<AdminHelpLi
     id: post.id,
     title: post.title,
     description: post.description ?? null,
-    mediaUrl: post.mediaUrl ?? null,
+    mediaUrl: toPublicUrlIfR2(post.mediaUrl ?? null),
     helpStatus: displayHelpStatus(post.helpStatus),
     helpCategory: post.helpCategory ?? null,
     helpCategoryLabel: categoryLabel(post.helpCategory),

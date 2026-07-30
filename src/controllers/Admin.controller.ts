@@ -71,7 +71,7 @@ export async function listPending(req: Request, res: Response) {
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
   const offset = (page - 1) * limit;
   const { users, total } = await adminService.listPendingUsers({ limit, offset });
-  const list = users.map((u) => userService.toAdminUser(u));
+  const list = await Promise.all(users.map((u) => userService.toAdminUser(u)));
   return success(res, { users: list, page, limit, total });
 }
 
@@ -91,7 +91,7 @@ export async function updateUser(req: Request, res: Response) {
   try {
     const body = updateAdminUserSchema.parse(req.body || {});
     const user = await adminUserManagement.updateAdminUser(id, body);
-    return success(res, { user: userService.toAdminUser(user), message: "User updated." });
+    return success(res, { user: await userService.toAdminUser(user), message: "User updated." });
   } catch (e: any) {
     if (e instanceof ZodError) return error(res, e.errors[0]?.message ?? "Invalid request", 400);
     return error(res, e?.message ?? "Failed to update", e?.status ?? 400);
@@ -106,7 +106,7 @@ export async function softDeleteUser(req: Request, res: Response) {
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
     const user = await adminUserManagement.softDeleteUser(id, adminId, body.reason);
-    return success(res, { message: "User soft-deleted.", user: userService.toAdminUser(user) });
+    return success(res, { message: "User soft-deleted.", user: await userService.toAdminUser(user) });
   } catch (e: any) {
     return error(res, e?.message ?? "Failed to soft-delete", e?.status ?? 400);
   }
@@ -119,7 +119,7 @@ export async function restoreUser(req: Request, res: Response) {
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
     const user = await adminUserManagement.restoreSoftDeletedUser(id, adminId);
-    return success(res, { message: "User restored.", user: userService.toAdminUser(user) });
+    return success(res, { message: "User restored.", user: await userService.toAdminUser(user) });
   } catch (e: any) {
     return error(res, e?.message ?? "Failed to restore", e?.status ?? 400);
   }

@@ -6,9 +6,12 @@
 
 import { spawn } from "child_process";
 import fs from "fs";
-import os from "os";
 import path from "path";
 import { POST_VIDEO_MAX_BYTES, POST_VIDEO_MAX_DURATION_SEC, POST_VIDEO_MIN_DURATION_SEC } from "../constants/postMedia.constants";
+import {
+  createMediaTempDirectory,
+  removeMediaTempDirectory
+} from "./mediaTempFiles";
 
 export type VideoProbeInfo = {
   durationSec: number;
@@ -223,10 +226,11 @@ export async function optimizeVideoBuffer(
     });
   }
   processingLocks.add(lockKey);
-  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "dh-vid-"));
-  const inPath = path.join(tmp, "in.bin");
-  const outPath = path.join(tmp, "out.mp4");
+  let tmp: string | null = null;
   try {
+    tmp = await createMediaTempDirectory("dh-vid-");
+    const inPath = path.join(tmp, "in.bin");
+    const outPath = path.join(tmp, "out.mp4");
     await fs.promises.writeFile(inPath, input);
     const probe = await probeVideoFile(inPath);
     assertVideoAllowed(probe, input.length, { requireCompliantCodecs: false });
@@ -306,7 +310,7 @@ export async function optimizeVideoBuffer(
     };
   } finally {
     processingLocks.delete(lockKey);
-    await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    if (tmp) await removeMediaTempDirectory(tmp);
   }
 }
 
@@ -319,7 +323,7 @@ export async function extractVideoFrameJpeg(
   if (!(await hasFfmpeg())) {
     throw Object.assign(new Error("ffmpeg not available for thumbnails"), { status: 503 });
   }
-  const tmp = await fs.promises.mkdtemp(path.join(os.tmpdir(), "dh-thumb-"));
+  const tmp = await createMediaTempDirectory("dh-thumb-");
   const inPath = path.join(tmp, "in.bin");
   const outPath = path.join(tmp, "frame.jpg");
   try {
@@ -345,6 +349,6 @@ export async function extractVideoFrameJpeg(
     }
     return await fs.promises.readFile(outPath);
   } finally {
-    await fs.promises.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    await removeMediaTempDirectory(tmp);
   }
 }

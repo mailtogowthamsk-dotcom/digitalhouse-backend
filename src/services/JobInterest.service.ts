@@ -3,6 +3,7 @@ import { Post, User, JobInterest, MemberConnection } from "../models";
 import * as Notifications from "./Notification.service";
 import { logJobAudit } from "./JobAudit.service";
 import * as JobsSettings from "./JobsSettings.service";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 
 export type JobInterestItem = {
   id: number;
@@ -190,7 +191,7 @@ export async function listJobInterestsForOwner(
       author: {
         id: author.id,
         name: author.fullName,
-        profile_image: author.profilePhoto ?? null
+        profile_image: toPublicUrlIfR2(author.profilePhoto ?? null)
       }
     };
   });

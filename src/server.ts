@@ -130,19 +130,6 @@ async function initDb() {
     }
     setDbReady(true);
     console.log("Database ready.");
-    try {
-      const { hasFfmpeg, isVideoOptimizeEnabled } = await import("./utils/videoProcessor");
-      const ff = await hasFfmpeg();
-      if (isVideoOptimizeEnabled() && !ff) {
-        console.warn(
-          "[media] VIDEO_OPTIMIZE_ENABLED but ffmpeg/ffprobe not found — install ffmpeg for 720p H.264 finalize + posters"
-        );
-      } else if (ff) {
-        console.log("[media] ffmpeg available — video optimize/finalize enabled");
-      }
-    } catch {
-      /* ignore */
-    }
     startMatrimonySubscriptionJobs();
     startMarketplaceExpiryJobs();
     startHelpingHandsExpiryJobs();

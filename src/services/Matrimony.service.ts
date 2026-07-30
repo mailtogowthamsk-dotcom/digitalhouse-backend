@@ -7,7 +7,12 @@ import {
 } from "../constants/matrimony.constants";
 import { fieldsForChangeSections } from "../constants/matrimony-changes.constants";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import {
+  toPublicUrlIfR2,
+  toPrivateSignedUrlIfR2,
+  toStorageKeyIfR2,
+  isPrivateR2Object
+} from "../utils/r2Client";
 import { writeAudit } from "./MatrimonyAdmin.service";
 import { computeFieldChanges } from "../utils/matrimonyChanges.util";
 import {
@@ -135,14 +140,55 @@ async function markMatrimonyMediaAttached(
   await mediaService.markMediaUrlsAttached(userId, urls).catch(() => undefined);
 }
 
-async function signMatrimonySection(section: MatrimonySection | null): Promise<MatrimonySection | null> {
+/**
+ * New horoscope references must use the edge-protected prefix. An unchanged
+ * legacy reference is accepted so old profiles remain editable.
+ */
+function normalizeHoroscopeWrite(
+  incoming: Record<string, unknown>,
+  existing: Record<string, unknown>
+): void {
+  if (!Object.prototype.hasOwnProperty.call(incoming, "horoscopeDocumentUrl")) return;
+  const value = incoming.horoscopeDocumentUrl;
+  if (value == null || value === "") return;
+  if (typeof value !== "string") {
+    throw Object.assign(new Error("Invalid horoscope document reference"), { status: 400 });
+  }
+
+  const key = toStorageKeyIfR2(value);
+  const existingKey =
+    typeof existing.horoscopeDocumentUrl === "string"
+      ? toStorageKeyIfR2(existing.horoscopeDocumentUrl)
+      : null;
+  if (!key || (!isPrivateR2Object(key) && key !== existingKey)) {
+    throw Object.assign(
+      new Error("New horoscope uploads must use private horoscope storage"),
+      { status: 400 }
+    );
+  }
+  incoming.horoscopeDocumentUrl = key;
+}
+
+/**
+ * Owner/admin matrimony payload: photos are public CDN URLs, the horoscope document
+ * is private and always returned as a short-lived signed GET URL.
+ */
+export async function signMatrimonySection(
+  section: MatrimonySection | null
+): Promise<MatrimonySection | null> {
   if (!section) return null;
   const out = { ...section } as Record<string, unknown>;
-  for (const key of ["candidatePhotoUrl", "profilePhotoUrl", "horoscopeDocumentUrl"]) {
-    const v = out[key];
-    if (typeof v === "string" && v.trim()) {
-      out[key] = (await toSignedUrlIfR2(v)) ?? v;
-    }
+  const profilePhotoUrl = out.profilePhotoUrl;
+  if (typeof profilePhotoUrl === "string" && profilePhotoUrl.trim()) {
+    out.profilePhotoUrl = (await toPublicUrlIfR2(profilePhotoUrl)) ?? profilePhotoUrl;
+  }
+  const candidatePhotoUrl = out.candidatePhotoUrl;
+  if (typeof candidatePhotoUrl === "string" && candidatePhotoUrl.trim()) {
+    out.candidatePhotoUrl = (await toPublicUrlIfR2(candidatePhotoUrl)) ?? candidatePhotoUrl;
+  }
+  const horoscopeDocumentUrl = out.horoscopeDocumentUrl;
+  if (typeof horoscopeDocumentUrl === "string" && horoscopeDocumentUrl.trim()) {
+    out.horoscopeDocumentUrl = await toPrivateSignedUrlIfR2(horoscopeDocumentUrl);
   }
   return out as MatrimonySection;
 }
@@ -263,7 +309,7 @@ async function getUserContext(userId: number) {
   const personal = normalizeJsonColumn(profile?.personal, SECTION_ALLOWED_KEYS.personal) as {
     fatherName?: string | null;
   } | null;
-  const profile_image = (await toSignedUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
+  const profile_image = (await toPublicUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
   return {
     full_name: user.fullName,
     gender: user.gender ?? null,
@@ -477,7 +523,7 @@ export async function getMatrimonyHub(userId: number): Promise<MatrimonyHubRespo
   const candidateRaw = resolveCandidatePhotoUrl(
     (draftForCompletion ?? approved ?? {}) as Record<string, unknown>
   );
-  const candidateSigned = candidateRaw ? await toSignedUrlIfR2(candidateRaw) : null;
+  const candidatePublicUrl = candidateRaw ? await toPublicUrlIfR2(candidateRaw) : null;
 
   return {
     status,
@@ -495,7 +541,7 @@ export async function getMatrimonyHub(userId: number): Promise<MatrimonyHubRespo
     pending,
     user_context: userContext,
     account_profile_photo: userContext.profile_image,
-    matrimony_candidate_photo: candidateSigned,
+    matrimony_candidate_photo: candidatePublicUrl,
     profile_for_self: profileForSelf
   };
 }
@@ -580,6 +626,7 @@ export async function saveMatrimonyDraft(
     if (v === null && base[k] != null && base[k] !== "") continue;
     incoming[k] = v;
   }
+  normalizeHoroscopeWrite(incoming, base);
   const merged = syncMatrimonyPhotoFields({
     ...base,
     ...incoming,
@@ -613,9 +660,11 @@ export async function submitMatrimonyProfile(
   const accountRow = await User.findByPk(userId, { attributes: ["profilePhoto"] });
   const accountPhotoRaw = accountRow?.profilePhoto?.trim() || null;
 
+  const incoming = { ...(optionalPayload ?? {}) };
+  normalizeHoroscopeWrite(incoming, (hub.draft ?? {}) as Record<string, unknown>);
   let merged: Record<string, unknown> = syncMatrimonyPhotoFields({
     ...(hub.draft ?? {}),
-    ...(optionalPayload ?? {}),
+    ...incoming,
     matrimonyProfileActive: true,
     kulamSnapshot: optionalPayload?.kulamSnapshot ?? hub.draft?.kulamSnapshot ?? ctx.kulam ?? null
   });

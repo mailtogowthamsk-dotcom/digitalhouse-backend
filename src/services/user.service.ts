@@ -4,6 +4,11 @@ import { ensureLinkedProviders, resolveLoginSource } from "../utils/authProvider
 import { usernameService } from "./Username.service";
 import { assertValidKulam } from "./kulamValidation.service";
 import { ensureUserProfile } from "./ensureUserProfile";
+import {
+  toPublicUrlIfR2,
+  toPrivateSignedUrlIfR2,
+  toStorageKeyIfR2
+} from "../utils/r2Client";
 
 export type RegisterInput = {
   fullName: string;
@@ -24,6 +29,14 @@ export type RegisterInput = {
 /** One account per email; one per mobile if provided */
 export async function register(data: RegisterInput): Promise<User> {
   const email = data.email.toLowerCase().trim();
+  if (data.govtIdFile?.trim()) {
+    throw Object.assign(
+      new Error(
+        "Upload the identity document after registration using private identity storage"
+      ),
+      { status: 400 }
+    );
+  }
 
   const existingEmail = await User.findOne({ where: { email } });
   if (existingEmail) {
@@ -71,9 +84,9 @@ export async function register(data: RegisterInput): Promise<User> {
       district: location,
       community: data.community?.trim() || null,
       kulam,
-      profilePhoto: data.profilePhoto?.trim() || null,
+      profilePhoto: toStorageKeyIfR2(data.profilePhoto ?? null),
       govtIdType: data.govtIdType?.trim() || null,
-      govtIdFile: data.govtIdFile?.trim() || null,
+      govtIdFile: null,
       status: "PENDING",
       signupProvider: AUTH_PROVIDERS.EXISTING_LOGIN,
       profileComplete: true,
@@ -154,11 +167,11 @@ export function toAuthUser(user: User) {
     signupProvider: user.signupProvider ?? AUTH_PROVIDERS.EXISTING_LOGIN,
     linkedProviders: ensureLinkedProviders(user),
     emailVerified: !!user.emailVerified,
-    profilePhoto: user.profilePhoto ?? null,
+    profilePhoto: toPublicUrlIfR2(user.profilePhoto ?? null),
     registrationAdminRemarks: user.registrationAdminRemarks ?? null,
     registrationRequestedFields: requested,
     pendingMobile: user.pendingMobile ?? null,
-    pendingProfilePhoto: user.pendingProfilePhoto ?? null,
+    pendingProfilePhoto: toPublicUrlIfR2(user.pendingProfilePhoto ?? null),
     community:
       typeof user.community === "string" && user.community.trim()
         ? user.community.trim()
@@ -168,8 +181,13 @@ export function toAuthUser(user: User) {
   };
 }
 
-/** Full profile for admin only (include all fields except sensitive file content if any) */
-export function toAdminUser(user: User) {
+/**
+ * Full profile for admin only.
+ * Identity documents are private: govtIdFile is only ever exposed as a short-lived
+ * signed GET URL, never a public CDN URL or a stored object key.
+ */
+export async function toAdminUser(user: User) {
+  const govtIdFile = await toPrivateSignedUrlIfR2(user.govtIdFile);
   return {
     id: user.id,
     fullName: user.fullName,
@@ -182,9 +200,9 @@ export function toAdminUser(user: User) {
     location: user.location,
     community: user.community,
     kulam: user.kulam,
-    profilePhoto: user.profilePhoto,
+    profilePhoto: toPublicUrlIfR2(user.profilePhoto ?? null),
     govtIdType: user.govtIdType,
-    govtIdFile: user.govtIdFile,
+    govtIdFile,
     status: user.status,
     signupProvider: user.signupProvider ?? AUTH_PROVIDERS.EXISTING_LOGIN,
     googleId: user.googleId ?? null,
@@ -209,7 +227,7 @@ export function toAdminUser(user: User) {
       ? user.registrationRequestedFields
       : [],
     pendingMobile: user.pendingMobile ?? null,
-    pendingProfilePhoto: user.pendingProfilePhoto ?? null,
+    pendingProfilePhoto: toPublicUrlIfR2(user.pendingProfilePhoto ?? null),
     registrationResubmittedAt: user.registrationResubmittedAt
       ? user.registrationResubmittedAt.toISOString()
       : null,

@@ -7,6 +7,7 @@ import { resolveMatrimonyCandidate } from "../utils/matrimonyCandidate.util";
 import type { MatrimonySection } from "../models/UserProfile.model";
 import * as Monetization from "./MatrimonyMonetization.service";
 import * as PlatformSettings from "./MatrimonyPlatformSettings.service";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 
 export type SubscriptionAdminOverview = {
   totalSubscribers: number;
@@ -185,7 +186,7 @@ async function usersByIds(userIds: number[]): Promise<Map<number, UserMeta>> {
       mobile: u.mobile ?? null,
       district: u.district ?? null,
       community: u.community ?? null,
-      profilePhoto: u.profilePhoto ?? null
+      profilePhoto: toPublicUrlIfR2(u.profilePhoto ?? null)
     });
   }
   return map;
@@ -378,7 +379,7 @@ async function buildCurrentSubscriberItems(query: ListQuery): Promise<Subscripti
       subscriptionId: current.id,
       userId,
       userName: user?.fullName ?? `User #${userId}`,
-      profilePhoto: user?.profilePhoto ?? null,
+      profilePhoto: toPublicUrlIfR2(user?.profilePhoto ?? null),
       mobile: user?.mobile ?? null,
       matrimonyProfileName: profileNames.get(userId) ?? "—",
       community: user?.community ?? null,

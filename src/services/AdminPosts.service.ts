@@ -11,7 +11,7 @@ import {
   User
 } from "../models";
 import { getTagsForPost, syncPostHashtags } from "./Hashtag.service";
-import { toSignedUrlIfR2, deleteR2ImageVariants } from "../utils/r2Client";
+import { toPublicUrlIfR2, deleteR2ImageVariants } from "../utils/r2Client";
 import { parseMarketplaceGallery } from "../utils/marketplaceGallery";
 import { parseHelpGallery } from "../utils/helpGallery";
 
@@ -101,13 +101,13 @@ async function toListItem(
     authorCommunity: author?.community ?? null,
     authorDistrict: author?.district ?? null,
     authorStatus: author?.status ?? "UNKNOWN",
-    authorProfilePhoto: await toSignedUrlIfR2(author?.profilePhoto ?? null),
+    authorProfilePhoto: toPublicUrlIfR2(author?.profilePhoto ?? null),
     postType: post.postType,
     visibility: post.visibility,
     title: post.title,
     description: post.description ?? null,
-    mediaUrl: await toSignedUrlIfR2(post.mediaUrl ?? null),
-    thumbnailUrl: await toSignedUrlIfR2(post.thumbnailUrl ?? null),
+    mediaUrl: toPublicUrlIfR2(post.mediaUrl ?? null),
+    thumbnailUrl: toPublicUrlIfR2(post.thumbnailUrl ?? null),
     moderationStatus: post.moderationStatus,
     moderationReason: post.moderationReason ?? null,
     reportCount: reportCounts.get(post.id) ?? 0,
@@ -263,9 +263,9 @@ export async function getAdminPostDetail(postId: number) {
       visibility: post.visibility,
       title: post.title,
       description: post.description ?? null,
-      mediaUrl: await toSignedUrlIfR2(post.mediaUrl ?? null),
-      thumbnailUrl: await toSignedUrlIfR2(post.thumbnailUrl ?? null),
-      mediaGallery: await Promise.all(mediaUrls.map((url) => toSignedUrlIfR2(url))),
+      mediaUrl: toPublicUrlIfR2(post.mediaUrl ?? null),
+      thumbnailUrl: toPublicUrlIfR2(post.thumbnailUrl ?? null),
+      mediaGallery: mediaUrls.map((url) => toPublicUrlIfR2(url)),
       moderationStatus: post.moderationStatus,
       moderationReason: post.moderationReason ?? null,
       moderationNotes: post.moderationNotes ?? null,
@@ -289,7 +289,7 @@ export async function getAdminPostDetail(postId: number) {
           community: author.community,
           district: author.district,
           status: author.status,
-          profilePhoto: await toSignedUrlIfR2(author.profilePhoto ?? null)
+          profilePhoto: toPublicUrlIfR2(author.profilePhoto ?? null)
         }
       : null,
     reports: reports.map((report) => ({

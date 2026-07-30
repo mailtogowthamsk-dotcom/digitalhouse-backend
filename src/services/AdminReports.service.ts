@@ -9,6 +9,7 @@ import {
 } from "../models";
 import type { AdminReportStatus, ReportKind } from "../constants/reports.constants";
 import * as Notifications from "./Notification.service";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 
 export type AdminReportListItem = {
   key: string;
@@ -155,7 +156,7 @@ async function hydratePostReports(rows: PostReport[]): Promise<AdminReportListIt
             id: post.id,
             title: post.title,
             postType: post.postType ?? null,
-            mediaUrl: post.mediaUrl ?? null
+            mediaUrl: toPublicUrlIfR2(post.mediaUrl ?? null)
           }
         : null
     };
@@ -436,7 +437,7 @@ export async function getAdminReport(
             id: post.id,
             title: post.title,
             postType: post.postType ?? null,
-            mediaUrl: post.mediaUrl ?? null
+            mediaUrl: toPublicUrlIfR2(post.mediaUrl ?? null)
           }
         : null
     };

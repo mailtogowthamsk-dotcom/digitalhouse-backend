@@ -18,7 +18,7 @@ import {
   notifyAccountRejected,
   notifyAccountChangesRequested
 } from "./Notification.service";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2, toStorageKeyIfR2 } from "../utils/r2Client";
 
 function httpError(message: string, status: number, code?: string): Error {
   const err = new Error(message);
@@ -174,7 +174,7 @@ export async function submitRegistrationCorrection(
     if (input.profilePhoto === undefined) {
       throw httpError("Please upload a replacement profile photo.", 400);
     }
-    const photo = input.profilePhoto?.trim() || null;
+    const photo = toStorageKeyIfR2(input.profilePhoto ?? null);
     if (!photo) throw httpError("Profile photo is required.", 400);
     updates.pendingProfilePhoto = photo;
   }
@@ -282,12 +282,10 @@ export async function rejectRegistration(
   return user;
 }
 
-/** Admin detail payload with signed photo URLs for side-by-side review. */
+/** Admin detail payload with public CDN photo URLs for side-by-side review. */
 export async function toAdminRegistrationReview(user: User) {
-  const [currentPhoto, pendingPhoto] = await Promise.all([
-    toSignedUrlIfR2(user.profilePhoto ?? null),
-    toSignedUrlIfR2(user.pendingProfilePhoto ?? null)
-  ]);
+  const currentPhoto = toPublicUrlIfR2(user.profilePhoto ?? null);
+  const pendingPhoto = toPublicUrlIfR2(user.pendingProfilePhoto ?? null);
   return {
     status: user.status,
     gate: getRegistrationGate(user),

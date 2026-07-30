@@ -13,7 +13,7 @@ import {
   resolveMatrimonyCandidate,
   type MatrimonyCandidatePublic
 } from "../utils/matrimonyCandidate.util";
-import { toSignedUrlIfR2 } from "../utils/r2Client";
+import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { MATRIMONY_REPORT_REASONS } from "../constants/matrimony-safety.constants";
 
 let tablesAvailable: boolean | null = null;
@@ -128,7 +128,7 @@ export async function listSavedProfiles(viewerId: number): Promise<
     if (!m || m.matrimonyProfileActive !== true) continue;
     const candidate = resolveMatrimonyCandidate(u, m);
     const photoRaw = resolveCandidatePhotoUrl(m as Record<string, unknown>);
-    const photoUrl = photoRaw ? (await toSignedUrlIfR2(photoRaw)) ?? photoRaw : null;
+    const photoUrl = photoRaw ? (await toPublicUrlIfR2(photoRaw)) ?? photoRaw : null;
     out.push({
       userId: row.savedUserId,
       name: candidate.name,
