@@ -1,10 +1,21 @@
 import { Otp, User } from "../models";
 import { generateOtp } from "../utils/generateOtp";
 import { hashEmailOtp } from "../utils/hash.util";
+import { timingSafeEqualHex } from "../utils/timingSafe.util";
+import {
+  clearOtpAttempts,
+  getOtpAttempts,
+  incrementOtpAttempts
+} from "../utils/otpAttempts";
+import { logSecurityEvent } from "../utils/securityLog";
 import { sendOtpEmail } from "./mail.service";
 
 const OTP_EXPIRES_MIN = Number(process.env.OTP_EXPIRES_MINUTES || 5);
 const RESEND_COOLDOWN_SEC = Number(process.env.OTP_RESEND_COOLDOWN_SECONDS || 60);
+const configuredMaxAttempts = Number(process.env.OTP_MAX_ATTEMPTS || 5);
+const OTP_MAX_ATTEMPTS = Number.isFinite(configuredMaxAttempts)
+  ? Math.max(1, Math.floor(configuredMaxAttempts))
+  : 5;
 
 export type CreateOtpResult =
   | { ok: true; sent: true; message: string }
@@ -79,7 +90,14 @@ export async function createAndSendOtp(user: User): Promise<CreateOtpResult> {
   }
 
   // Invalidate any prior unused codes so verify always uses the latest.
+  const prior = await Otp.findAll({
+    where: { userId: user.id, isUsed: false },
+    attributes: ["id"]
+  });
   await Otp.update({ isUsed: true }, { where: { userId: user.id, isUsed: false } });
+  for (const row of prior) {
+    await clearOtpAttempts(row.id).catch(() => undefined);
+  }
 
   await Otp.create({
     userId: user.id,
@@ -96,6 +114,7 @@ export async function createAndSendOtp(user: User): Promise<CreateOtpResult> {
 /**
  * Verify OTP for user: must match latest unused, non-expired OTP.
  * On success mark as used and return user.
+ * Enforces OTP_MAX_ATTEMPTS (Redis when available; in-process fallback).
  */
 export async function verifyOtpForUser(
   userId: number,
@@ -109,25 +128,61 @@ export async function verifyOtpForUser(
     order: [["id", "DESC"]]
   });
 
-  if (!record) return { valid: false, message: "OTP not found. Please request a new OTP." };
+  if (!record) {
+    logSecurityEvent("otp_verify_failed", { userId, reason: "not_found" });
+    return { valid: false, message: "OTP not found. Please request a new OTP." };
+  }
   if (record.isUsed) {
+    logSecurityEvent("otp_verify_failed", { userId, reason: "already_used" });
     return {
       valid: false,
       message: "This code was already used. Go back and request a new OTP."
     };
   }
   if (new Date(record.expiresAt).getTime() < now.getTime()) {
+    logSecurityEvent("otp_verify_failed", { userId, reason: "expired" });
     return { valid: false, message: "OTP expired. Go back and request a new OTP." };
   }
 
+  const existingAttempts = await getOtpAttempts(record.id);
+  if (existingAttempts >= OTP_MAX_ATTEMPTS) {
+    if (!record.isUsed) {
+      await record.update({ isUsed: true });
+    }
+    logSecurityEvent("otp_locked", { userId, attempts: existingAttempts });
+    return {
+      valid: false,
+      message: "Too many invalid attempts. Please request a new OTP."
+    };
+  }
+
   const expectedHash = hashEmailOtp(email.toLowerCase().trim(), otp);
-  if (expectedHash !== record.otpHash) return { valid: false, message: "Invalid OTP." };
+  const matched = timingSafeEqualHex(expectedHash, record.otpHash);
+  if (!matched) {
+    const ttlSec = Math.max(
+      1,
+      Math.ceil((new Date(record.expiresAt).getTime() - now.getTime()) / 1000)
+    );
+    const attempts = await incrementOtpAttempts(record.id, ttlSec);
+    if (attempts >= OTP_MAX_ATTEMPTS) {
+      await record.update({ isUsed: true });
+      logSecurityEvent("otp_locked", { userId, attempts });
+      return {
+        valid: false,
+        message: "Too many invalid attempts. Please request a new OTP."
+      };
+    }
+    logSecurityEvent("otp_verify_failed", { userId, reason: "mismatch", attempts });
+    return { valid: false, message: "Invalid OTP." };
+  }
 
   await record.update({ isUsed: true });
+  await clearOtpAttempts(record.id).catch(() => undefined);
 
   const user = await User.findByPk(userId);
   if (!user) return { valid: false, message: "User not found." };
 
+  logSecurityEvent("otp_verify_success", { userId });
   return { valid: true, user };
 }
 

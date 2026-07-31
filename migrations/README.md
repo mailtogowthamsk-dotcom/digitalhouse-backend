@@ -1,38 +1,48 @@
-# Database migrations (Matrimony)
+# Database migrations
 
-Run these **in order** on production MySQL (phpMyAdmin, cPanel SQL, or CLI).  
-Each file is idempotent where possible (`IF NOT EXISTS` / safe re-run).
+## Current system (required)
 
-| # | File | Required | Purpose |
-|---|------|----------|---------|
-| 1 | `matrimony-admin-module.sql` | **Yes** | Admin review tables, `matrimony_request_meta`, audit |
-| 2 | `matrimony-changes-requested.sql` | Recommended | `CHANGES_REQUESTED` / `RESUBMITTED` workflow columns |
-| 3 | `matrimony-candidate-photos.sql` | **Yes** (if using candidate photos) | `matrimony_candidate_photos` |
-| 4 | `matrimony-phase2.sql` | **Yes** (Phase 2 live) | `matrimony_interests`, `matrimony_matches` |
-| 5 | `matrimony-phase2-safety.sql` | **Yes** (Step 4.2) | `matrimony_saved_profiles`, `matrimony_blocks`, `matrimony_reports` |
-| 6 | `matrimony-phase5-monetization.sql` | **Yes** (Phase 5) | Subscriptions, profile opens, contact payments, profile views |
+Versioned migrations live under `db/migrations/`.
 
-## CLI example (production)
+**Policy:** [docs/DATABASE_POLICY.md](../docs/DATABASE_POLICY.md)  
+**Framework how-to:** [docs/MIGRATIONS.md](../docs/MIGRATIONS.md)  
+**Live audit:** [docs/DATABASE_LIVE_AUDIT.md](../docs/DATABASE_LIVE_AUDIT.md)
 
 ```bash
-cd backend
-mysql -h YOUR_HOST -u YOUR_USER -p YOUR_DATABASE < migrations/matrimony-admin-module.sql
-mysql -h YOUR_HOST -u YOUR_USER -p YOUR_DATABASE < migrations/matrimony-changes-requested.sql
-mysql -h YOUR_HOST -u YOUR_USER -p YOUR_DATABASE < migrations/matrimony-candidate-photos.sql
-mysql -h YOUR_HOST -u YOUR_USER -p YOUR_DATABASE < migrations/matrimony-phase2.sql
-mysql -h YOUR_HOST -u YOUR_USER -p YOUR_DATABASE < migrations/matrimony-phase2-safety.sql
-mysql -h YOUR_HOST -u YOUR_USER -p YOUR_DATABASE < migrations/matrimony-phase5-monetization.sql
+npm run db:migrate
+npm run db:migrate:status
+npm run db:migrate:new -- my_change
 ```
 
-## Verify after migrate
+Deploy runs `npm run db:migrate` only.
 
-```bash
-cd backend
-npm run db:verify-matrimony
-```
+### Schema freeze
 
-## After migrations
+Do not use this folder (or new ad-hoc SQL) to redesign tables, replace ENUMs, add CHECK constraints, rename columns, or split polymorphic posts.
 
-1. Restart Node backend (cPanel / PM2 / Railway).
-2. `npm run verify:health` (or curl health URL).
-3. Follow smoke tests in `/PRODUCTION_READINESS.md` → Step 1.
+### sequelize.sync()
+
+Allowed only on **local** empty development databases. **Never** on staging, production, or shared environments.
+
+---
+
+## Legacy SQL in this directory (deprecated)
+
+Files below are **historical reference**. They are **deprecated for apply**.
+
+Do **not** run them as part of normal deploy. Emergency use only:
+
+1. Ticket documenting the reason  
+2. Verified backup  
+3. `ALLOW_LEGACY_DB_SCRIPTS=1` when invoking related npm scripts  
+
+| # | File | Purpose (historical) |
+|---|------|----------------------|
+| 1 | `matrimony-admin-module.sql` | Admin review tables, audit |
+| 2 | `matrimony-changes-requested.sql` | CHANGES_REQUESTED workflow |
+| 3 | `matrimony-candidate-photos.sql` | Candidate photos |
+| 4 | `matrimony-phase2.sql` | Interests / matches |
+| 5 | `matrimony-phase2-safety.sql` | Saved / blocks / reports |
+| 6 | `matrimony-phase5-monetization.sql` | Subscriptions / payments |
+
+Prefer porting any still-needed DDL into `db/migrations/` (additive, reviewed) rather than re-applying these files.

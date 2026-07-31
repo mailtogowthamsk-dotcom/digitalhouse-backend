@@ -17,7 +17,8 @@ import { ensureUserProfile } from "./ensureUserProfile";
 import type { MatrimonyWorkflowStatus, MatrimonyVerificationState } from "../models/MatrimonyRequestMeta.model";
 import type { MatrimonyNoteType } from "../models/MatrimonyAdminNote.model";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
-import { computeMatrimonyCompletion } from "./Matrimony.service";
+import { computeMatrimonyCompletion } from "./MatrimonyCompletion.service";
+import { writeAudit } from "./MatrimonyAudit.service";
 import { approveProfileUpdate, rejectProfileUpdate } from "./admin.service";
 import { toPublicUrlIfR2, toPrivateSignedUrlIfR2 } from "../utils/r2Client";
 import {
@@ -32,6 +33,8 @@ import {
   type MatrimonyCandidatePhotoStatus
 } from "../constants/matrimony-photo.constants";
 
+/** Re-export for existing importers; implementation lives in MatrimonyAudit.service. */
+export { writeAudit };
 const SUBMITTED_FLAG = "_submittedForReview";
 const CHANGE_REQUEST_KEY = "_changeRequest";
 const SUBMISSION_SNAPSHOT_KEY = "_submissionSnapshot";
@@ -286,23 +289,6 @@ async function signFieldChangesMedia(
 function publicUserPhoto(url: string | null): string | null {
   if (!url) return null;
   return toPublicUrlIfR2(url) ?? url;
-}
-
-export async function writeAudit(
-  userId: number,
-  pendingUpdateId: number | null,
-  action: string,
-  createdBy: string,
-  payload?: Record<string, unknown>
-): Promise<void> {
-  await MatrimonyReviewAudit.create({
-    userId,
-    pendingUpdateId,
-    action,
-    payload: payload ?? null,
-    createdBy,
-    createdAt: new Date()
-  } as any);
 }
 
 export async function getMatrimonyAdminStats(): Promise<{

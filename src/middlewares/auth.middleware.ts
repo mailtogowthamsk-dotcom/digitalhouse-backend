@@ -1,9 +1,11 @@
 import { Request, Response, NextFunction } from "express";
 import { verifyAccessToken } from "../utils/jwt.util";
+import { isAccessTokenActive } from "../utils/tokenRevocation";
 import { User } from "../models";
 import { error } from "../utils/response";
+import { logSecurityEvent } from "../utils/securityLog";
 
-export type AuthPayload = { userId: number };
+export type AuthPayload = { userId: number; iat?: number };
 
 async function loadUserFromBearer(req: Request & { user?: User }, res: Response): Promise<User | null> {
   const authHeader = req.headers.authorization;
@@ -14,6 +16,11 @@ async function loadUserFromBearer(req: Request & { user?: User }, res: Response)
   }
   try {
     const payload = verifyAccessToken(token) as AuthPayload;
+    if (!(await isAccessTokenActive(payload.userId, payload.iat))) {
+      logSecurityEvent("jwt_invalid", { kind: "member", reason: "revoked", userId: payload.userId });
+      error(res, "Invalid or expired token", 401);
+      return null;
+    }
     const user = await User.findByPk(payload.userId, {
       attributes: [
         "id",
@@ -40,6 +47,11 @@ async function loadUserFromBearer(req: Request & { user?: User }, res: Response)
       error(res, "User not found", 401);
       return null;
     }
+    // Soft-deleted accounts cannot use any JWT-authenticated route
+    if (user.status === "DELETED") {
+      error(res, "Unauthorized", 401);
+      return null;
+    }
     return user;
   } catch {
     error(res, "Invalid or expired token", 401);
@@ -47,7 +59,7 @@ async function loadUserFromBearer(req: Request & { user?: User }, res: Response)
   }
 }
 
-/** JWT valid + user exists (any status). Used for profile completion & /me during setup. */
+/** JWT valid + user exists (registration /me / legal). Rejects DELETED. */
 export async function jwtAuthMiddleware(
   req: Request & { user?: User },
   res: Response,

@@ -1,0 +1,6 @@
+{
+  "description": "Durable media_jobs queue and media_files processingStatus (ported from legacy db:run-media-jobs-sql)",
+  "idempotent": true,
+  "rollback": false,
+  "destructive": false
+}

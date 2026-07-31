@@ -9,11 +9,17 @@ import {
   getPresignedPutUrl,
   getCdnPublicUrl,
   extractR2KeyFromUrl,
-  deleteR2ImageVariants,
+  deleteMediaArtifacts,
+  deleteR2ObjectByKey,
   toPublicUrlIfR2,
   isPrivateR2Object,
   toPrivateSignedUrlIfR2
 } from "../utils/r2Client";
+import {
+  imageStagingCandidatesFromFullKey,
+  videoStagingKeyFromOptimized,
+  collectMediaArtifactKeys
+} from "../utils/mediaArtifactKeys";
 import { MediaFile, MediaJob, Post, User } from "../models";
 import type { MediaModule, MediaFileType } from "../models";
 import {
@@ -336,18 +342,29 @@ export async function markMediaUrlsAttached(
 }
 
 /**
- * Delete abandoned PENDING uploads older than `olderThanHours` that are not
- * referenced by the owner's profile, matrimony, or posts. Best-effort R2 + DB cleanup.
+ * Delete abandoned / leftover media safely.
+ *
+ * 1) PENDING rows older than threshold, no active job, unreferenced → full artifact delete + row
+ * 2) FAILED processing leftovers (PENDING/REJECTED), same gates → full artifact delete + row
+ * 3) COMPLETED rows: best-effort delete derived staging leftovers (_full.webp → .webp/.jpg…,
+ *    *_opt.mp4 → original .mp4) when those keys are not the live objectKey / variants
+ *
+ * Never deletes processing/pending jobs' objects. Prefer leaving an object over deleting
+ * valid data. Does not list the whole R2 bucket — only DB-derived candidate keys.
  */
 export async function cleanupOrphanPendingMedia(opts?: {
   olderThanHours?: number;
   limit?: number;
-}): Promise<{ scanned: number; deleted: number }> {
+}): Promise<{ scanned: number; deleted: number; stagingCleared: number }> {
   const olderThanHours = Math.max(1, opts?.olderThanHours ?? 24);
   const limit = Math.min(Math.max(opts?.limit ?? 100, 1), 500);
   const cutoff = new Date(Date.now() - olderThanHours * 60 * 60 * 1000);
 
-  const rows = await MediaFile.findAll({
+  let scanned = 0;
+  let deleted = 0;
+  let stagingCleared = 0;
+
+  const pendingRows = await MediaFile.findAll({
     where: {
       status: "PENDING",
       createdAt: { [Op.lt]: cutoff }
@@ -355,33 +372,118 @@ export async function cleanupOrphanPendingMedia(opts?: {
     order: [["createdAt", "ASC"]],
     limit
   });
+  scanned += pendingRows.length;
 
-  let deleted = 0;
-  for (const row of rows) {
+  for (const row of pendingRows) {
+    const removed = await tryDeleteOrphanMediaRow(row);
+    if (removed) deleted += 1;
+  }
+
+  const failedRows = await MediaFile.findAll({
+    where: {
+      processingStatus: "failed",
+      status: { [Op.in]: ["PENDING", "REJECTED"] },
+      updatedAt: { [Op.lt]: cutoff }
+    },
+    order: [["updatedAt", "ASC"]],
+    limit
+  });
+  scanned += failedRows.length;
+
+  for (const row of failedRows) {
+    const removed = await tryDeleteOrphanMediaRow(row);
+    if (removed) deleted += 1;
+  }
+
+  // Historical staging leftovers after successful optimize (pre-hardening or failed delete).
+  const completedRows = await MediaFile.findAll({
+    where: {
+      processingStatus: "completed",
+      updatedAt: { [Op.lt]: cutoff }
+    },
+    order: [["updatedAt", "ASC"]],
+    limit
+  });
+  scanned += completedRows.length;
+
+  for (const row of completedRows) {
     const activeJob = await MediaJob.count({
       where: { mediaId: row.id, status: { [Op.in]: ["pending", "processing"] } }
     });
     if (activeJob > 0) continue;
-    const key = row.objectKey || extractR2KeyFromUrl(row.fileUrl);
-    if (!key) {
-      await row.destroy().catch(() => undefined);
-      deleted += 1;
-      continue;
+
+    const objectKey = row.objectKey || extractR2KeyFromUrl(row.fileUrl);
+    const keep = new Set<string>();
+    if (objectKey) keep.add(objectKey);
+    if (row.fileUrl) {
+      const fk = extractR2KeyFromUrl(row.fileUrl);
+      if (fk) keep.add(fk);
+    }
+    if (row.variantsJson) {
+      try {
+        const parsed = JSON.parse(row.variantsJson) as Record<string, unknown>;
+        for (const v of Object.values(parsed)) {
+          if (typeof v === "string" && v.startsWith("digital-house/")) keep.add(v);
+        }
+      } catch {
+        /* ignore */
+      }
     }
 
-    const referenced = await userReferencesMediaKey(row.userId, key);
-    if (referenced) {
-      // Attached but status never flipped — heal instead of deleting.
-      await row.update({ status: "APPROVED" }).catch(() => undefined);
-      continue;
+    const candidates: string[] = [];
+    if (objectKey?.endsWith("_full.webp")) {
+      for (const s of imageStagingCandidatesFromFullKey(objectKey)) {
+        if (!keep.has(s)) candidates.push(s);
+      }
+    }
+    if (objectKey?.endsWith("_opt.mp4")) {
+      const staging = videoStagingKeyFromOptimized(objectKey);
+      if (staging && !keep.has(staging)) candidates.push(staging);
     }
 
-    await deleteR2ImageVariants(key);
-    await row.destroy().catch(() => undefined);
-    deleted += 1;
+    for (const key of [...new Set(candidates)]) {
+      await deleteR2ObjectByKey(key);
+      stagingCleared += 1;
+    }
   }
 
-  return { scanned: rows.length, deleted };
+  return { scanned, deleted, stagingCleared };
+}
+
+async function tryDeleteOrphanMediaRow(row: MediaFile): Promise<boolean> {
+  const activeJob = await MediaJob.count({
+    where: { mediaId: row.id, status: { [Op.in]: ["pending", "processing"] } }
+  });
+  if (activeJob > 0) return false;
+
+  const key = row.objectKey || extractR2KeyFromUrl(row.fileUrl);
+  if (!key) {
+    await row.destroy().catch(() => undefined);
+    return true;
+  }
+
+  const referenced = await userReferencesMediaKey(row.userId, key);
+  if (referenced) {
+    if (row.status === "PENDING") {
+      await row.update({ status: "APPROVED" }).catch(() => undefined);
+    }
+    return false;
+  }
+
+  // Also refuse if any variant/staging candidate is referenced.
+  for (const artifact of collectMediaArtifactKeys(key, row.variantsJson)) {
+    if (artifact === key) continue;
+    if (await userReferencesMediaKey(row.userId, artifact)) {
+      if (row.status === "PENDING") {
+        await row.update({ status: "APPROVED" }).catch(() => undefined);
+      }
+      return false;
+    }
+  }
+
+  await deleteMediaArtifacts(key, row.variantsJson);
+  await row.destroy().catch(() => undefined);
+  return true;
 }
 
 /**
@@ -410,7 +512,7 @@ export async function deleteUserMediaUrls(
       });
     }
 
-    await deleteR2ImageVariants(key);
+    await deleteMediaArtifacts(key, mediaRow?.variantsJson);
     if (mediaRow) {
       await mediaRow.destroy();
     } else {
@@ -450,7 +552,7 @@ export async function deleteRemovedMediaUrls(oldUrls: string[], newUrls: string[
     if (!key || newKeys.has(key)) continue;
     if (!toDelete.includes(key)) toDelete.push(key);
   }
-  await Promise.all(toDelete.map((key) => deleteR2ImageVariants(key)));
+  await Promise.all(toDelete.map((key) => deleteMediaArtifacts(key)));
   for (const key of toDelete) {
     const fileName = path.basename(key);
     const baseName = fileName.replace(/_(full|md|thumb)\.webp$/i, "").replace(/\.webp$/i, "");

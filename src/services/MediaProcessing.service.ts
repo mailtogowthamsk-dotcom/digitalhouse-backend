@@ -2,12 +2,16 @@
  * Post-upload media processing: images → WebP variants; videos → H.264/AAC faststart + posters.
  * Runs only in the standalone media worker. Existing completed media is
  * returned as-is (idempotent / backward compatible).
+ *
+ * Staging originals are NOT deleted here. The media job layer deletes them only
+ * after the DB completion transaction succeeds and the worker still owns the claim.
  */
 
 import { MediaFile } from "../models";
 import {
   extractR2KeyFromUrl,
   getR2ObjectBuffer,
+  getR2ObjectMetadata,
   putR2ObjectBuffer,
   getCdnPublicUrl,
   isPrivateR2Object
@@ -15,9 +19,13 @@ import {
 import {
   processImageBuffer,
   sniffImageMime,
-  variantKeysFromUploadKey,
   IMAGE_OUTPUT_MIME
 } from "../utils/imageProcessor";
+import {
+  imageVariantKeys,
+  videoOptimizedKey,
+  videoPosterKeys
+} from "../utils/mediaArtifactKeys";
 import { IMAGE_PROCESS_DOWNLOAD_MAX_BYTES } from "../config/image.config";
 import { POST_VIDEO_MAX_BYTES } from "../constants/postMedia.constants";
 import {
@@ -57,7 +65,21 @@ export type MediaCompletionAttributes = {
 export type ProcessedMedia = {
   result: FinalizeMediaResult;
   mediaUpdates: MediaCompletionAttributes;
+  /** Deleted by MediaJob only after successful DB commit + ownership check. */
+  keysToDeleteAfterCommit: string[];
 };
+
+function isMissingObjectError(error: unknown): boolean {
+  const e = error as { name?: string; Code?: string; $metadata?: { httpStatusCode?: number } };
+  const status = Number(e?.$metadata?.httpStatusCode ?? 0);
+  return (
+    status === 404 ||
+    e?.name === "NotFound" ||
+    e?.name === "NoSuchKey" ||
+    e?.Code === "NoSuchKey" ||
+    /not found|NoSuchKey/i.test(error instanceof Error ? error.message : String(error))
+  );
+}
 
 function completedMedia(row: MediaFile, result: FinalizeMediaResult): ProcessedMedia {
   return {
@@ -70,24 +92,8 @@ function completedMedia(row: MediaFile, result: FinalizeMediaResult): ProcessedM
       byteSize: row.byteSize ?? result.byteSize,
       width: row.width,
       height: row.height
-    }
-  };
-}
-
-function videoOptimizedKey(stagingKey: string): string {
-  const dir = path.posix.dirname(stagingKey);
-  const base = path.posix.basename(stagingKey).replace(/\.[^.]+$/, "");
-  return `${dir}/${base}_opt.mp4`;
-}
-
-function videoPosterKeys(stagingKey: string): { thumbKey: string; mediumKey: string; fullKey: string } {
-  const base = path.posix.basename(stagingKey).replace(/\.[^.]+$/, "");
-  const m = stagingKey.match(/^(.*\/videos\/)posts\/(\d{4}\/\d{2}\/)(.+)$/);
-  const root = m ? `${m[1]}thumbnails/${m[2]}` : `${path.posix.dirname(stagingKey)}/`;
-  return {
-    thumbKey: `${root}${base}_poster_thumb.webp`,
-    mediumKey: `${root}${base}_poster_md.webp`,
-    fullKey: `${root}${base}_poster_full.webp`
+    },
+    keysToDeleteAfterCommit: []
   };
 }
 
@@ -101,14 +107,47 @@ async function finalizeImage(row: MediaFile): Promise<ProcessedMedia> {
     throw Object.assign(new Error("Invalid media storage key"), { status: 400 });
   }
 
-  const raw = await getR2ObjectBuffer(stagingKey, IMAGE_PROCESS_DOWNLOAD_MAX_BYTES);
+  const { thumbKey, mediumKey, fullKey } = imageVariantKeys(stagingKey);
+
+  let raw: Buffer | null = null;
+  try {
+    raw = await getR2ObjectBuffer(stagingKey, IMAGE_PROCESS_DOWNLOAD_MAX_BYTES);
+  } catch (error) {
+    if (!isMissingObjectError(error)) throw error;
+    // Retry-safe: a prior attempt may have written variants and deleted staging.
+    const meta = await getR2ObjectMetadata(fullKey).catch(() => null);
+    if (!meta || meta.byteSize <= 0) throw error;
+    const variantKeys: MediaVariantsDto = { thumb: thumbKey, medium: mediumKey, full: fullKey };
+    const variants = toDeliveryVariants(variantKeys, isPrivate);
+    return {
+      result: {
+        mediaFileId: row.id,
+        publicUrl: variants.full,
+        variants,
+        width: row.width ?? 0,
+        height: row.height ?? 0,
+        byteSize: meta.byteSize,
+        mediaType: "image"
+      },
+      mediaUpdates: {
+        fileUrl: fullKey,
+        objectKey: fullKey,
+        variantsJson: JSON.stringify(variantKeys),
+        processingStatus: "completed",
+        byteSize: meta.byteSize,
+        width: row.width,
+        height: row.height
+      },
+      keysToDeleteAfterCommit: []
+    };
+  }
+
   const sniffed = sniffImageMime(raw);
   if (!sniffed) {
     throw Object.assign(new Error("Unsupported or invalid image file"), { status: 400 });
   }
 
   const processed = await processImageBuffer(raw);
-  const { thumbKey, mediumKey, fullKey } = variantKeysFromUploadKey(stagingKey);
 
   await Promise.all([
     putR2ObjectBuffer(thumbKey, processed.thumb.buffer, IMAGE_OUTPUT_MIME, {
@@ -124,6 +163,10 @@ async function finalizeImage(row: MediaFile): Promise<ProcessedMedia> {
 
   const variantKeys: MediaVariantsDto = { thumb: thumbKey, medium: mediumKey, full: fullKey };
   const variants = toDeliveryVariants(variantKeys, isPrivate);
+  const keysToDeleteAfterCommit =
+    stagingKey !== fullKey && stagingKey !== mediumKey && stagingKey !== thumbKey
+      ? [stagingKey]
+      : [];
 
   return {
     result: {
@@ -143,7 +186,8 @@ async function finalizeImage(row: MediaFile): Promise<ProcessedMedia> {
       byteSize: processed.full.bytes,
       width: processed.full.width,
       height: processed.full.height
-    }
+    },
+    keysToDeleteAfterCommit
   };
 }
 
@@ -157,14 +201,62 @@ async function finalizeVideo(row: MediaFile): Promise<ProcessedMedia> {
     throw Object.assign(new Error("Invalid media storage key"), { status: 400 });
   }
 
-  const raw = await getR2ObjectBuffer(stagingKey, VIDEO_DOWNLOAD_MAX);
+  const optKey = videoOptimizedKey(stagingKey);
+  let raw: Buffer | null = null;
+  try {
+    raw = await getR2ObjectBuffer(stagingKey, VIDEO_DOWNLOAD_MAX);
+  } catch (error) {
+    if (!isMissingObjectError(error)) throw error;
+    // Retry-safe: staging may already be gone after a prior successful optimize+commit.
+    const optMeta = await getR2ObjectMetadata(optKey).catch(() => null);
+    if (!optMeta || optMeta.byteSize <= 0) throw error;
+    const posters = videoPosterKeys(stagingKey);
+    const variantKeys: MediaVariantsDto = {
+      thumb: posters.thumbKey,
+      medium: posters.mediumKey,
+      full: posters.fullKey
+    };
+    const variants = toDeliveryVariants(variantKeys, isPrivate);
+    const publicUrl = isPrivate ? optKey : getCdnPublicUrl(optKey);
+    const variantsJson = JSON.stringify({
+      ...variantKeys,
+      video: optKey,
+      durationSec: null
+    });
+    return {
+      result: {
+        mediaFileId: row.id,
+        publicUrl,
+        variants,
+        width: row.width ?? 0,
+        height: row.height ?? 0,
+        byteSize: optMeta.byteSize,
+        thumbnailUrl: isPrivate ? posters.mediumKey : getCdnPublicUrl(posters.mediumKey),
+        durationSec: null,
+        mediaType: "video"
+      },
+      mediaUpdates: {
+        fileUrl: optKey,
+        objectKey: optKey,
+        variantsJson,
+        processingStatus: "completed",
+        byteSize: optMeta.byteSize,
+        width: row.width,
+        height: row.height
+      },
+      keysToDeleteAfterCommit: []
+    };
+  }
+
   const optimizeOn = isVideoOptimizeEnabled() && (await hasFfmpeg());
+  const ffmpegAvailable = await hasFfmpeg();
 
   let videoBuf = raw;
   let width = 0;
   let height = 0;
   let durationSec = 0;
   let outKey = stagingKey;
+  let optimizedWritten = false;
 
   if (optimizeOn) {
     try {
@@ -173,10 +265,11 @@ async function finalizeVideo(row: MediaFile): Promise<ProcessedMedia> {
       width = optimized.width;
       height = optimized.height;
       durationSec = optimized.durationSec;
-      outKey = videoOptimizedKey(stagingKey);
+      outKey = optKey;
       await putR2ObjectBuffer(outKey, videoBuf, "video/mp4", {
         cacheControl: R2_CACHE_CONTROL_IMMUTABLE
       });
+      optimizedWritten = true;
     } catch (e: unknown) {
       // Optimize failed — only keep original if it is already H.264/AAC/MP4-safe.
       console.warn(
@@ -203,7 +296,7 @@ async function finalizeVideo(row: MediaFile): Promise<ProcessedMedia> {
     }
   } else {
     // No server transcode: require H.264/AAC when ffprobe is available.
-    if (await hasFfmpeg()) {
+    if (ffmpegAvailable) {
       const tmp = await createMediaTempDirectory("dh-probe-");
       const p = path.join(tmp, "v.bin");
       try {
@@ -228,17 +321,24 @@ async function finalizeVideo(row: MediaFile): Promise<ProcessedMedia> {
 
   let variantKeys: MediaVariantsDto = { thumb: outKey, medium: outKey, full: outKey };
   let posterMediumKey: string | null = null;
+  let postersWritten = false;
 
-  if (await hasFfmpeg()) {
+  if (ffmpegAvailable) {
     try {
       const at = Math.max(0.2, Math.min((durationSec || 3) * 0.35, (durationSec || 3) - 0.1));
       const frame = await extractVideoFrameJpeg(videoBuf, at, `thumb-${row.id}`);
       const processed = await processImageBuffer(frame);
       const keys = videoPosterKeys(stagingKey);
       await Promise.all([
-        putR2ObjectBuffer(keys.thumbKey, processed.thumb.buffer, IMAGE_OUTPUT_MIME),
-        putR2ObjectBuffer(keys.mediumKey, processed.medium.buffer, IMAGE_OUTPUT_MIME),
-        putR2ObjectBuffer(keys.fullKey, processed.full.buffer, IMAGE_OUTPUT_MIME)
+        putR2ObjectBuffer(keys.thumbKey, processed.thumb.buffer, IMAGE_OUTPUT_MIME, {
+          cacheControl: R2_CACHE_CONTROL_IMMUTABLE
+        }),
+        putR2ObjectBuffer(keys.mediumKey, processed.medium.buffer, IMAGE_OUTPUT_MIME, {
+          cacheControl: R2_CACHE_CONTROL_IMMUTABLE
+        }),
+        putR2ObjectBuffer(keys.fullKey, processed.full.buffer, IMAGE_OUTPUT_MIME, {
+          cacheControl: R2_CACHE_CONTROL_IMMUTABLE
+        })
       ]);
       variantKeys = {
         thumb: keys.thumbKey,
@@ -246,6 +346,7 @@ async function finalizeVideo(row: MediaFile): Promise<ProcessedMedia> {
         full: keys.fullKey
       };
       posterMediumKey = keys.mediumKey;
+      postersWritten = true;
     } catch (e) {
       console.warn("[media] video poster failed:", e instanceof Error ? e.message : e);
     }
@@ -263,6 +364,18 @@ async function finalizeVideo(row: MediaFile): Promise<ProcessedMedia> {
     video: outKey,
     durationSec: durationSec || null
   });
+
+  // Delete staging only when optimize produced a distinct object AND posters exist
+  // (or ffmpeg is unavailable so posters were never expected).
+  const keysToDeleteAfterCommit: string[] = [];
+  if (
+    optimizedWritten &&
+    outKey !== stagingKey &&
+    (!ffmpegAvailable || postersWritten)
+  ) {
+    keysToDeleteAfterCommit.push(stagingKey);
+  }
+
   return {
     result: {
       mediaFileId: row.id,
@@ -283,7 +396,8 @@ async function finalizeVideo(row: MediaFile): Promise<ProcessedMedia> {
       byteSize: videoBuf.length,
       width: width || null,
       height: height || null
-    }
+    },
+    keysToDeleteAfterCommit
   };
 }
 

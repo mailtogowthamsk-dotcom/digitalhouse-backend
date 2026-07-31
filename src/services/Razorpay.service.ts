@@ -1,5 +1,7 @@
 import crypto from "crypto";
 import Razorpay from "razorpay";
+import { timingSafeEqualHex } from "../utils/timingSafe.util";
+import { logSecurityEvent } from "../utils/securityLog";
 
 export function isRazorpayConfigured(): boolean {
   return Boolean(process.env.RAZORPAY_KEY_ID?.trim() && process.env.RAZORPAY_KEY_SECRET?.trim());
@@ -11,17 +13,27 @@ export function getRazorpayKeyId(): string | null {
 
 /**
  * Dev subscribe / confirm without Razorpay.
- * P0: disabled in production and whenever real Razorpay keys are configured (unless explicitly overridden).
+ * Hard-blocked in production regardless of MATRIMONY_ALLOW_DEV_PAYMENTS.
  */
 export function allowDevMatrimonyPayments(): boolean {
+  if (process.env.NODE_ENV === "production") {
+    if (process.env.MATRIMONY_ALLOW_DEV_PAYMENTS === "true") {
+      logSecurityEvent("dev_payments_misconfig", {
+        note: "MATRIMONY_ALLOW_DEV_PAYMENTS ignored in production"
+      });
+    }
+    return false;
+  }
   if (process.env.MATRIMONY_ALLOW_DEV_PAYMENTS === "true") return true;
   if (isRazorpayConfigured()) return false;
-  if (process.env.NODE_ENV === "production") return false;
   if (process.env.MATRIMONY_ALLOW_DEV_PAYMENTS === "false") return false;
   return true;
 }
 
 export function assertDevMatrimonyPaymentsAllowed(): void {
+  if (process.env.NODE_ENV === "production" && process.env.MATRIMONY_ALLOW_DEV_PAYMENTS === "true") {
+    logSecurityEvent("dev_payments_blocked", { reason: "production" });
+  }
   if (!allowDevMatrimonyPayments()) {
     throw Object.assign(
       new Error("Direct dev payments are disabled. Use Razorpay checkout."),
@@ -32,7 +44,10 @@ export function assertDevMatrimonyPaymentsAllowed(): void {
 
 function getClient(): Razorpay {
   if (!isRazorpayConfigured()) {
-    throw Object.assign(new Error("Razorpay is not configured"), { status: 503, code: "RAZORPAY_NOT_CONFIGURED" });
+    throw Object.assign(new Error("Razorpay is not configured"), {
+      status: 503,
+      code: "RAZORPAY_NOT_CONFIGURED"
+    });
   }
   return new Razorpay({
     key_id: process.env.RAZORPAY_KEY_ID!,
@@ -89,12 +104,15 @@ export function verifyPaymentSignature(
   if (!secret) return false;
   const body = `${razorpayOrderId}|${razorpayPaymentId}`;
   const expected = crypto.createHmac("sha256", secret).update(body).digest("hex");
-  return expected === signature;
+  return timingSafeEqualHex(expected, String(signature || "").trim());
 }
 
-export function verifyWebhookSignature(rawBody: Buffer | string, signatureHeader: string | undefined): boolean {
+export function verifyWebhookSignature(
+  rawBody: Buffer | string,
+  signatureHeader: string | undefined
+): boolean {
   const secret = process.env.RAZORPAY_WEBHOOK_SECRET?.trim();
   if (!secret || !signatureHeader) return false;
   const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
-  return expected === signatureHeader;
+  return timingSafeEqualHex(expected, String(signatureHeader).trim());
 }

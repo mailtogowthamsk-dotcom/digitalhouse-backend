@@ -5,6 +5,7 @@ import type { MediaProcessingStatus } from "../models";
 import {
   extractR2KeyFromUrl,
   getR2ObjectMetadata,
+  getR2ObjectPrefix,
   isPrivateR2Object,
   toPublicUrlIfR2,
   toStorageKeyIfR2
@@ -13,7 +14,70 @@ import {
   getCompletedMediaResult,
   type FinalizeMediaResult
 } from "../utils/mediaProcessingResult";
-import { IMAGE_MAX_BYTES, VIDEO_MAX_BYTES } from "../validations/media.validation";
+import { IMAGE_MAX_BYTES, VIDEO_MAX_BYTES, ALLOWED_IMAGE_MIMES } from "../validations/media.validation";
+import {
+  ALLOWED_POST_VIDEO_MIMES,
+  LEGACY_POST_VIDEO_MIMES
+} from "../constants/postMedia.constants";
+import {
+  detectMediaMimeFromBytes,
+  guessMimeFromObjectKey,
+  isExecutableOrScriptMagic
+} from "../utils/mediaMagic.util";
+
+const ALLOWED_FINALIZE_VIDEO_MIMES = new Set<string>([
+  ...ALLOWED_POST_VIDEO_MIMES,
+  ...LEGACY_POST_VIDEO_MIMES
+]);
+
+function isAllowedFinalizeContentType(fileType: string, contentType: string | null): boolean {
+  if (!contentType) return false;
+  const lower = contentType.toLowerCase().split(";")[0].trim();
+  if (fileType === "image") {
+    return (ALLOWED_IMAGE_MIMES as Set<string>).has(lower);
+  }
+  if (fileType === "video") {
+    return ALLOWED_FINALIZE_VIDEO_MIMES.has(lower);
+  }
+  return false;
+}
+
+/** Resolve effective Content-Type: HEAD → magic bytes → object-key extension. */
+async function resolveFinalizeContentType(
+  fileType: string,
+  objectKey: string,
+  headContentType: string | null
+): Promise<string> {
+  if (headContentType && isAllowedFinalizeContentType(fileType, headContentType)) {
+    return headContentType.toLowerCase().split(";")[0].trim();
+  }
+
+  let prefix: Buffer = Buffer.alloc(0);
+  try {
+    prefix = await getR2ObjectPrefix(objectKey, 512);
+  } catch {
+    prefix = Buffer.alloc(0);
+  }
+
+  if (prefix.length > 0 && isExecutableOrScriptMagic(prefix)) {
+    throw Object.assign(new Error("Uploaded object looks like an executable or script"), {
+      status: 400
+    });
+  }
+
+  const sniffed = prefix.length > 0 ? detectMediaMimeFromBytes(prefix) : null;
+  if (sniffed && isAllowedFinalizeContentType(fileType, sniffed)) {
+    return sniffed;
+  }
+
+  const fromKey = guessMimeFromObjectKey(objectKey, fileType);
+  if (fromKey && isAllowedFinalizeContentType(fileType, fromKey)) {
+    // Prefer extension only when HEAD was empty/unknown — still reject exe magic above
+    return fromKey;
+  }
+
+  throw Object.assign(new Error(`Uploaded object is not a valid ${fileType}`), { status: 400 });
+}
 
 const MAX_RETRIES = 3;
 const configuredMaxStaleRecoveries = Number(
@@ -116,6 +180,7 @@ export async function enqueueMediaFinalize(
       status: 400
     });
   }
+  await resolveFinalizeContentType(current.fileType, objectKey, metadata.contentType);
 
   const result = await sequelize.transaction(async (transaction) => {
     const row = await MediaFile.findByPk(mediaFileId, {
@@ -308,6 +373,33 @@ export async function processClaimedMediaJob(job: MediaJob): Promise<void> {
     });
     if (!completed) {
       console.warn(`[media-worker] lost claim before completion job=${job.id}`);
+      return;
+    }
+    // Staging cleanup only after durable commit + this worker still owns the completed row.
+    const keys = processed.keysToDeleteAfterCommit ?? [];
+    if (keys.length > 0) {
+      const stillOwned = await MediaJob.findByPk(job.id);
+      if (
+        stillOwned &&
+        stillOwned.status === "completed" &&
+        stillOwned.workerId === claimedBy
+      ) {
+        const { deleteR2ObjectByKey } = await import("../utils/r2Client");
+        await Promise.all(
+          keys.map((key) =>
+            deleteR2ObjectByKey(key).catch((error) =>
+              console.warn(
+                `[media-worker] staging delete failed job=${job.id} key=${key}:`,
+                error instanceof Error ? error.message : error
+              )
+            )
+          )
+        );
+      } else {
+        console.warn(
+          `[media-worker] skipped staging delete after ownership change job=${job.id}`
+        );
+      }
     }
   } catch (error) {
     const message =

@@ -7,32 +7,24 @@ import { sequelize, initDbPoolInstrumentation } from "./config/db";
 import { seedOptionsIfEmpty } from "./seed/options.seed";
 import { masterDataService } from "./services/MasterData.service";
 import { setDbReady, setDbFailed } from "./state";
-import { initSocket } from "./realtime/socket";
-import {
-  startMatrimonySubscriptionJobs,
-  stopMatrimonySubscriptionJobs
-} from "./services/MatrimonySubscriptionLifecycle.service";
-import {
-  startMarketplaceExpiryJobs,
-  stopMarketplaceExpiryJobs
-} from "./services/MarketplaceExpiry.service";
-import {
-  startHelpingHandsExpiryJobs,
-  stopHelpingHandsExpiryJobs
-} from "./services/HelpingHandsExpiry.service";
-import {
-  ensurePlatformDefaults,
-  startPlatformNotificationJobs,
-  stopPlatformNotificationJobs
-} from "./services/Platform.service";
-import {
-  startOrphanMediaCleanupJobs,
-  stopOrphanMediaCleanupJobs
-} from "./services/OrphanMediaCleanup.service";
+import { initSocket, shutdownRealtime } from "./realtime/socket";
+import { ensurePlatformDefaults } from "./services/Platform.service";
 import * as SystemScheduler from "./services/SystemScheduler.service";
 import { bootstrapAdminUsers } from "./services/AdminUsers.service";
+import {
+  startAllScheduledJobs,
+  stopAllScheduledJobs
+} from "./workers/schedulerRegistry";
 
 const PORT = Number(process.env.PORT) || 4000;
+
+/**
+ * Jobs belong in digitalhouse-scheduler by default.
+ * Set SCHEDULER_IN_API=true only for local single-process debugging.
+ */
+function schedulerInApiProcess(): boolean {
+  return process.env.SCHEDULER_IN_API === "true";
+}
 
 /** Get LAN IPv4 addresses (e.g. 192.168.x.x) for logging mobile API URL */
 function getLocalIps(): string[] {
@@ -50,38 +42,41 @@ function getLocalIps(): string[] {
   }
 }
 
-function stopAllBackgroundJobs(): void {
-  try {
-    stopMatrimonySubscriptionJobs();
-    stopMarketplaceExpiryJobs();
-    stopHelpingHandsExpiryJobs();
-    stopPlatformNotificationJobs();
-    stopOrphanMediaCleanupJobs();
-  } catch (e) {
-    console.warn("[shutdown] stop jobs:", e);
-  }
-}
-
 // Listen immediately so Railway gets a response (avoids "Application Failed to respond").
-// DB init runs in background; API returns 503 until ready.
+// Socket adapter (Redis) is attached before accept; DB init runs in background.
 const httpServer = http.createServer(app);
-initSocket(httpServer);
 
-httpServer.listen(PORT, "0.0.0.0", () => {
-  console.log(`Digital House API listening on http://0.0.0.0:${PORT}`);
-  console.log("Health endpoints:", getApiMountPaths().map((m) => `http://127.0.0.1:${PORT}${m}/health`).join(", "));
-  if (process.env.API_BASE_PATH) {
-    console.log(`API_BASE_PATH=${process.env.API_BASE_PATH}`);
+void (async () => {
+  try {
+    await initSocket(httpServer);
+  } catch (err) {
+    console.error("[socket] init failed:", err);
   }
-  const localIps = getLocalIps();
-  if (localIps.length > 0) {
-    console.log("For mobile app (same WiFi), set in mobile/.env:");
-    localIps.forEach((ip) => console.log(`  EXPO_PUBLIC_API_URL=http://${ip}:${PORT}/api`));
-  } else {
-    console.log("For mobile app: set EXPO_PUBLIC_API_URL in mobile/.env to http://<this-machine-IP>:" + PORT + "/api");
-  }
-  initDb();
-});
+  httpServer.listen(PORT, "0.0.0.0", () => {
+    console.log(`Digital House API listening on http://0.0.0.0:${PORT}`);
+    console.log(
+      "Health endpoints:",
+      getApiMountPaths().map((m) => `http://127.0.0.1:${PORT}${m}/health`).join(", ")
+    );
+    if (process.env.API_BASE_PATH) {
+      console.log(`API_BASE_PATH=${process.env.API_BASE_PATH}`);
+    }
+    const localIps = getLocalIps();
+    if (localIps.length > 0) {
+      console.log("For mobile app (same WiFi), set in mobile/.env:");
+      localIps.forEach((ip) =>
+        console.log(`  EXPO_PUBLIC_API_URL=http://${ip}:${PORT}/api`)
+      );
+    } else {
+      console.log(
+        "For mobile app: set EXPO_PUBLIC_API_URL in mobile/.env to http://<this-machine-IP>:" +
+          PORT +
+          "/api"
+      );
+    }
+    initDb();
+  });
+})();
 
 async function initDb() {
   try {
@@ -130,11 +125,16 @@ async function initDb() {
     }
     setDbReady(true);
     console.log("Database ready.");
-    startMatrimonySubscriptionJobs();
-    startMarketplaceExpiryJobs();
-    startHelpingHandsExpiryJobs();
-    startPlatformNotificationJobs();
-    startOrphanMediaCleanupJobs();
+    if (schedulerInApiProcess()) {
+      console.warn(
+        "[scheduler] SCHEDULER_IN_API=true — running interval jobs inside the API process (dev only)"
+      );
+      startAllScheduledJobs();
+    } else {
+      console.log(
+        "[scheduler] interval jobs run in digitalhouse-scheduler worker (not in API)"
+      );
+    }
     void SystemScheduler.bootstrap().catch((e) =>
       console.warn("[system-scheduler] bootstrap failed:", e)
     );
@@ -154,6 +154,28 @@ async function initDb() {
     if (process.env.ADMIN_API_KEY_ROLE) {
       console.log(`[admin-auth] API key role = ${process.env.ADMIN_API_KEY_ROLE}`);
     }
+    if (process.env.NODE_ENV !== "production") {
+      try {
+        const { warnIfAdminJwtSecretMissing } = await import("./utils/jwt.util");
+        warnIfAdminJwtSecretMissing();
+      } catch (e) {
+        console.warn("[startup] admin JWT secret check failed:", e);
+      }
+      try {
+        const { warnIfLegacyAdminPasswordConfigured } = await import("./services/admin.service");
+        warnIfLegacyAdminPasswordConfigured();
+      } catch (e) {
+        console.warn("[startup] admin password deprecation check failed:", e);
+      }
+    }
+    if (
+      process.env.NODE_ENV === "production" &&
+      process.env.MATRIMONY_ALLOW_DEV_PAYMENTS === "true"
+    ) {
+      console.warn(
+        "[security] MATRIMONY_ALLOW_DEV_PAYMENTS=true is ignored in production (hard-blocked)."
+      );
+    }
   } catch (e) {
     console.error("Database init failed:", e);
     setDbFailed(true);
@@ -166,8 +188,13 @@ let shuttingDown = false;
 async function gracefulShutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.log(`[shutdown] ${signal} — stopping jobs, closing HTTP + DB pool…`);
-  stopAllBackgroundJobs();
+  console.log(`[shutdown] ${signal} — closing HTTP + DB pool…`);
+  if (schedulerInApiProcess()) {
+    stopAllScheduledJobs();
+  }
+  await shutdownRealtime().catch((e) =>
+    console.warn("[shutdown] realtime:", e)
+  );
   await new Promise<void>((resolve) => {
     httpServer.close(() => resolve());
     setTimeout(resolve, 5000);
@@ -185,7 +212,9 @@ process.on("SIGINT", () => void gracefulShutdown("SIGINT"));
 process.on("SIGTERM", () => void gracefulShutdown("SIGTERM"));
 // ts-node-dev / crash paths — best-effort pool drain
 process.on("beforeExit", () => {
-  stopAllBackgroundJobs();
+  if (schedulerInApiProcess()) {
+    stopAllScheduledJobs();
+  }
 });
 process.on("uncaughtException", (err) => {
   console.error("[uncaughtException]", err);

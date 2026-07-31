@@ -15,14 +15,12 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { R2_CACHE_CONTROL_IMMUTABLE } from "../config/r2Cache.config";
+import { collectMediaArtifactKeys } from "./mediaArtifactKeys";
 
 const accountId = process.env.R2_ACCOUNT_ID;
 const accessKeyId = process.env.R2_ACCESS_KEY_ID;
 const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
 const bucketName = process.env.R2_BUCKET_NAME;
-export const MEDIA_DELIVERY_MODE = (process.env.MEDIA_DELIVERY_MODE || "public")
-  .trim()
-  .toLowerCase();
 const region = "auto"; // R2 uses "auto" for region
 /** S3-compatible client for R2. Only used server-side; never expose to client. */
 function getR2Client(): S3Client {
@@ -54,6 +52,12 @@ export async function getPresignedPutUrl(
   const client = getR2Client();
   // Content-Type only on client PUT — Cache-Control is applied server-side after optimize
   // so mobile uploads do not need matching signed headers.
+  //
+  // Size enforcement: signing ContentLength on PutObject would require every client to
+  // send an exact matching Content-Length header. That breaks clients that compress or
+  // re-encode between upload-url and PUT, and is not equivalent to S3 POST policy
+  // content-length-range. Declared size is checked at upload-url time; actual size is
+  // verified with HeadObject on finalize. Leave PUT signature unchanged.
   const command = new PutObjectCommand({
     Bucket: bucketName,
     Key: key,
@@ -274,6 +278,27 @@ export async function getR2ObjectMetadata(
   }
 }
 
+/** Read a small prefix of an R2 object (magic-byte sniff) without full download. */
+export async function getR2ObjectPrefix(key: string, maxBytes = 512): Promise<Buffer> {
+  if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
+  const client = getR2Client();
+  const end = Math.max(0, Math.floor(maxBytes) - 1);
+  const response = await client.send(
+    new GetObjectCommand({
+      Bucket: bucketName,
+      Key: normalizeR2ObjectKey(key),
+      Range: `bytes=0-${end}`
+    })
+  );
+  const body = response.Body;
+  if (!body) return Buffer.alloc(0);
+  const chunks: Buffer[] = [];
+  for await (const chunk of body as AsyncIterable<Uint8Array>) {
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
 /** Upload buffer to R2 with Content-Type + long Cache-Control (immutable optimized assets). */
 export async function putR2ObjectBuffer(
   key: string,
@@ -304,20 +329,31 @@ export async function deleteR2ObjectByKey(key: string): Promise<void> {
   }
 }
 
-/** Delete full + medium + thumb variants when URL/key uses _full.webp convention. */
+/** Delete full + medium + thumb + staging/video siblings. Idempotent; missing keys are ignored. */
 export async function deleteR2ImageVariants(urlOrKey: string | null | undefined): Promise<void> {
   if (!urlOrKey?.trim()) return;
   const key = urlOrKey.startsWith("digital-house/")
     ? urlOrKey
     : extractR2KeyFromUrl(urlOrKey);
   if (!key) return;
-  if (key.endsWith("_full.webp")) {
-    await deleteR2ObjectByKey(key);
-    await deleteR2ObjectByKey(key.replace(/_full\.webp$/, "_md.webp"));
-    await deleteR2ObjectByKey(key.replace(/_full\.webp$/, "_thumb.webp"));
-    return;
-  }
-  await deleteR2ObjectByKey(key);
+  await deleteMediaArtifacts(key);
+}
+
+/**
+ * Best-effort delete of every known artifact for a media key (variants, staging, posters, _opt).
+ * Never throws on missing objects.
+ */
+export async function deleteMediaArtifacts(
+  urlOrKey: string | null | undefined,
+  variantsJson?: string | null
+): Promise<void> {
+  if (!urlOrKey?.trim()) return;
+  const key = urlOrKey.startsWith("digital-house/")
+    ? urlOrKey.trim()
+    : extractR2KeyFromUrl(urlOrKey.trim());
+  if (!key) return;
+  const keys = collectMediaArtifactKeys(key, variantsJson);
+  await Promise.all(keys.map((k) => deleteR2ObjectByKey(k)));
 }
 
 export async function deleteR2ObjectIfStored(url: string | null | undefined): Promise<void> {

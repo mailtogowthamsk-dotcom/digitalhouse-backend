@@ -1,4 +1,4 @@
-/** Static registry of in-process interval jobs (ops dashboard — does not replace timers). */
+/** Static registry of lifecycle jobs (ops dashboard). Timers run in scheduler worker. */
 
 export const SCHEDULER_JOB_KEYS = [
   "matrimony_subscription_lifecycle",
@@ -71,7 +71,7 @@ export const SCHEDULER_JOB_DEFINITIONS: readonly SchedulerJobDefinition[] = [
     name: "Platform Scheduled Notifications",
     module: "Platform",
     description: "Send due SCHEDULED global/emergency platform notifications.",
-    fileLocation: "src/services/Platform.service.ts",
+    fileLocation: "src/services/platform/notifications.service.ts",
     scheduleLabel: "Every 60 seconds (default, min 15s)",
     intervalEnv: "PLATFORM_NOTIF_JOB_INTERVAL_MS",
     defaultIntervalMs: 60 * 1000,

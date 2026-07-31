@@ -68,6 +68,8 @@ export async function razorpayWebhook(req: Request, res: Response) {
     return res.status(400).json({ ok: false, message: "Invalid webhook body" });
   }
   if (!verifyWebhookSignature(rawBody, signature)) {
+    const { logSecurityEvent } = await import("../utils/securityLog");
+    logSecurityEvent("webhook_invalid", { kind: "razorpay" });
     return res.status(400).json({ ok: false, message: "Invalid webhook signature" });
   }
   try {

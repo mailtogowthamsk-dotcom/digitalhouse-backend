@@ -65,16 +65,27 @@ export async function register(req: Request, res: Response) {
 /**
  * LOGIN REQUEST: Identity step only — issue OTP when the account may receive a session.
  * App access is decided after verify via registration status (not here).
+ *
+ * Anti-enumeration: unknown emails keep HTTP 404 (mobile LoginScreen branches on status)
+ * but use a normalized message. Exact reason is security-logged only.
  */
 export async function loginRequest(req: Request, res: Response) {
   const { email } = loginRequestSchema.parse(req.body);
+  const genericMessage = "If the account exists, an OTP has been sent.";
   const user = await userService.findByEmail(email);
   if (!user) {
-    return error(res, "No account found with this email. Please register first.", 404);
+    const { logSecurityEvent } = await import("../utils/securityLog");
+    logSecurityEvent("login_unknown_email", { reason: "not_found" });
+    return error(res, genericMessage, 404);
   }
   try {
     registrationStatusService.assertCanIssueSession(user);
   } catch (e: any) {
+    const { logSecurityEvent } = await import("../utils/securityLog");
+    logSecurityEvent("login_blocked", {
+      reason: e?.message ?? "blocked",
+      status: e?.status ?? 403
+    });
     return error(res, e?.message ?? "Unable to sign in.", e?.status ?? 403);
   }
   const result = await otpService.createAndSendOtp(user);
@@ -94,7 +105,11 @@ export async function loginRequest(req: Request, res: Response) {
 export async function verifyOtp(req: Request, res: Response) {
   const { email, otp } = verifyOtpSchema.parse(req.body);
   const user = await userService.findByEmail(email);
-  if (!user) return error(res, "User not found.", 404);
+  if (!user) {
+    const { logSecurityEvent } = await import("../utils/securityLog");
+    logSecurityEvent("login_unknown_email", { reason: "verify_not_found" });
+    return error(res, "If the account exists, an OTP has been sent.", 404);
+  }
   try {
     registrationStatusService.assertCanIssueSession(user);
   } catch (e: any) {

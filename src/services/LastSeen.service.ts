@@ -101,8 +101,8 @@ export async function revealPresence(
   subjectId: number,
   opts?: { adminBypass?: boolean }
 ): Promise<PresenceReveal> {
-  const online = isOnline(subjectId);
-  const memorySeen = getLastSeenAt(subjectId);
+  const online = await isOnline(subjectId);
+  const memorySeen = await getLastSeenAt(subjectId);
   let durableSeen: string | null = null;
   let visibility: LastSeenVisibility = DEFAULT_LAST_SEEN_VISIBILITY;
 

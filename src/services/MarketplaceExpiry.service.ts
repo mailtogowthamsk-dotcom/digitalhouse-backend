@@ -135,6 +135,7 @@ export async function runMarketplaceExpiryJobs(opts?: {
 }): Promise<void> {
   const trigger = opts?.trigger ?? "automatic";
   if (trigger === "automatic" && !(await SchedulerTracking.isJobEnabled(SCHEDULER_JOB_KEY))) {
+    await SchedulerTracking.touchHeartbeat(SCHEDULER_JOB_KEY);
     return;
   }
   if (jobRunning) return;

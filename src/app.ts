@@ -28,10 +28,45 @@ app.options(/.*/, cors(corsOptions));
 
 app.use(
   helmet({
-    contentSecurityPolicy: false,
-    crossOriginResourcePolicy: { policy: "cross-origin" }
+    // API returns JSON — deny document embedding; keep CORP cross-origin for mobile/CDN clients
+    contentSecurityPolicy:
+      process.env.NODE_ENV === "production"
+        ? {
+            useDefaults: false,
+            directives: {
+              defaultSrc: ["'none'"],
+              frameAncestors: ["'none'"],
+              baseUri: ["'none'"],
+              formAction: ["'none'"]
+            }
+          }
+        : false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginOpenerPolicy: { policy: "same-origin" },
+    crossOriginEmbedderPolicy: false,
+    originAgentCluster: true,
+    referrerPolicy: { policy: "no-referrer" },
+    frameguard: { action: "deny" },
+    hidePoweredBy: true,
+    ieNoOpen: true,
+    noSniff: true,
+    xssFilter: false,
+    hsts:
+      process.env.NODE_ENV === "production"
+        ? { maxAge: 31536000, includeSubDomains: true, preload: true }
+        : false,
+    permittedCrossDomainPolicies: { permittedPolicies: "none" }
   })
 );
+
+// Permissions-Policy (Helmet 8 does not bundle this middleware)
+app.use((_req, res, next) => {
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+  );
+  next();
+});
 
 // Gzip JSON/API responses (skip already-compressed payloads)
 app.use(

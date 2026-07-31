@@ -1,4 +1,6 @@
-export function generateOtp6(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
-}
+import { generateOtp } from "./generateOtp";
 
+/** @deprecated Prefer generateOtp() — kept for any legacy imports. */
+export function generateOtp6(): string {
+  return generateOtp();
+}

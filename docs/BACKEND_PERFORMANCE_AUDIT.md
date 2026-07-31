@@ -300,7 +300,7 @@ For every issue: **File · Function · Root Cause · Impact · Recommendation ·
 - **Function:** PM2 app + interval jobs
 - **Root Cause:** `instances: 1` fork; API + sockets + expiry/cleanup jobs co-located; 512M restart.
 - **Performance Impact:** No horizontal scale; job spikes steal API CPU; in-memory state not shared.
-- **Recommendation:** Separate worker process for jobs; sticky sessions if scaling sockets.
+- **Recommendation:** Separate worker process for jobs; Redis Socket.IO adapter + presence for multi-instance (see `docs/REDIS_SOCKET.md`). Sticky sessions optional once Redis is on.
 - **Priority:** Medium
 
 ### 31. Missing caching on hot reads

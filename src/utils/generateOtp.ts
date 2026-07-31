@@ -1,4 +1,6 @@
-/** Generate a 6-digit numeric OTP */
+import { randomInt } from "crypto";
+
+/** Generate a cryptographically secure 6-digit numeric OTP (100000–999999). */
 export function generateOtp(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(randomInt(100000, 1000000));
 }

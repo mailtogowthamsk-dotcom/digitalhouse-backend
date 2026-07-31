@@ -413,16 +413,20 @@ export async function getAdminUserDetail(userId: number) {
       lastLoginProvider: user.lastLoginProvider,
       accountCreated: user.createdAt.toISOString(),
       lastActive:
-        (await import("../realtime/presence").then(({ getLastSeenAt, isOnline }) =>
-          isOnline(user.id) ? new Date().toISOString() : getLastSeenAt(user.id)
-        ).catch(() => null)) ??
+        (await import("../realtime/presence")
+          .then(async ({ getLastSeenAt, isOnline }) =>
+            (await isOnline(user.id))
+              ? new Date().toISOString()
+              : await getLastSeenAt(user.id)
+          )
+          .catch(() => null)) ??
         user.lastSeenAt?.toISOString() ??
         lastDevice?.lastUsedAt?.toISOString() ??
         user.updatedAt.toISOString(),
       numberOfLogins: loginEventCount,
       deviceCount: devices.length,
       onlineStatus: (await import("../realtime/presence")
-        .then(({ isOnline }) => (isOnline(user.id) ? "online" : "offline"))
+        .then(async ({ isOnline }) => ((await isOnline(user.id)) ? "online" : "offline"))
         .catch(() => "unknown")) as "online" | "offline" | "unknown"
     },
     statistics: {
@@ -606,6 +610,9 @@ export async function softDeleteUser(
     deletedBy: adminEmail,
     deleteReason: reason?.trim() || null
   });
+  void import("../utils/tokenRevocation")
+    .then(({ revokeUserTokens }) => revokeUserTokens(userId, "soft_delete"))
+    .catch(() => {});
   await ModerationAction.create({
     action: "SUSPEND",
     targetUserId: userId,

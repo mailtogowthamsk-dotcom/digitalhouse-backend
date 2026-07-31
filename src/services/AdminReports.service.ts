@@ -665,6 +665,9 @@ export async function suspendUser(
   }
 
   await user.update({ status: "SUSPENDED" });
+  void import("../utils/tokenRevocation")
+    .then(({ revokeUserTokens }) => revokeUserTokens(userId, "suspend"))
+    .catch(() => {});
   const body =
     reason?.trim() ||
     "Your Digital House account has been suspended by moderation. Contact support if you believe this is a mistake.";

@@ -31,6 +31,7 @@ export async function runOrphanMediaCleanup(opts?: {
 }): Promise<{ scanned: number; deleted: number }> {
   const trigger = opts?.trigger ?? "automatic";
   if (trigger === "automatic" && !(await SchedulerTracking.isJobEnabled(SCHEDULER_JOB_KEY))) {
+    await SchedulerTracking.touchHeartbeat(SCHEDULER_JOB_KEY);
     return { scanned: 0, deleted: 0 };
   }
   if (jobRunning) return { scanned: 0, deleted: 0 };
@@ -49,9 +50,9 @@ export async function runOrphanMediaCleanup(opts?: {
         });
         scanned = result.scanned;
         deleted = result.deleted;
-        if (result.deleted > 0 || result.scanned > 0) {
+        if (result.deleted > 0 || result.scanned > 0 || result.stagingCleared > 0) {
           console.log(
-            `[media-orphan-cleanup] scanned=${result.scanned} deleted=${result.deleted} olderThan=${OLDER_THAN_HOURS}h`
+            `[media-orphan-cleanup] scanned=${result.scanned} deleted=${result.deleted} stagingCleared=${result.stagingCleared} olderThan=${OLDER_THAN_HOURS}h`
           );
         }
         return { recordsProcessed: result.scanned };

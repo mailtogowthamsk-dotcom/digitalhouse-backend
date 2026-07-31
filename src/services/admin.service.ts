@@ -12,6 +12,20 @@ import { resolveAdminRole } from "./AdminRoles.service";
 import { ADMIN_ROLE_LABELS } from "../constants/adminRoles.constants";
 import { registrationStatusService } from "./RegistrationStatus.service";
 import { dummyPasswordVerify, safeEqualString } from "../utils/adminPassword.util";
+import { logSecurityEvent } from "../utils/securityLog";
+
+let warnedLegacyAdminPassword = false;
+
+/** Startup: prefer hashed admin_users; shared ADMIN_PASSWORD is deprecated. */
+export function warnIfLegacyAdminPasswordConfigured(): void {
+  if (warnedLegacyAdminPassword) return;
+  warnedLegacyAdminPassword = true;
+  if (process.env.ADMIN_PASSWORD?.trim()) {
+    console.warn(
+      "[security] ADMIN_PASSWORD is set (DEPRECATED). Prefer hashed accounts in admin_users; remove ADMIN_PASSWORD when all admins are provisioned."
+    );
+  }
+}
 
 const MATRIMONY_MEDIA_URL_KEYS = ["candidatePhotoUrl", "profilePhotoUrl", "horoscopeDocumentUrl"] as const;
 
@@ -74,6 +88,10 @@ export async function adminLogin(
     dbResult.reason === "inactive" ||
     dbResult.reason === "locked"
   ) {
+    logSecurityEvent(
+      dbResult.reason === "locked" ? "admin_login_lockout" : "admin_login_failed",
+      { reason: dbResult.reason, email: normalized }
+    );
     const err = new Error("Invalid credentials");
     (err as any).status = dbResult.reason === "locked" ? 429 : 401;
     if (dbResult.reason === "locked") {
@@ -85,13 +103,26 @@ export async function adminLogin(
   // Equalize timing vs hashed-password path when email is unknown to DB
   await dummyPasswordVerify(password);
 
+  if (process.env.NODE_ENV === "production") {
+    logSecurityEvent("admin_legacy_password_blocked", {
+      email: normalized,
+      note: "ADMIN_PASSWORD path disabled in production"
+    });
+    const err = new Error("Invalid credentials");
+    (err as any).status = 401;
+    throw err;
+  }
+
+  warnIfLegacyAdminPasswordConfigured();
   const { emails, password: expectedPassword } = getAdminWhitelist();
   if (!emails.has(normalized)) {
+    logSecurityEvent("admin_login_failed", { reason: "unknown_email", email: normalized });
     const err = new Error("Invalid credentials");
     (err as any).status = 401;
     throw err;
   }
   if (!expectedPassword || !safeEqualString(password, expectedPassword)) {
+    logSecurityEvent("admin_login_failed", { reason: "legacy_bad_password", email: normalized });
     const err = new Error("Invalid credentials");
     (err as any).status = 401;
     throw err;

@@ -11,3 +11,10 @@ export function requireEnv(name: string): string {
   return v;
 }
 
+/**
+ * IMPORTANT: use require() (not ESM import) so dotenv.config runs BEFORE
+ * production validation reads process.env. Static imports are hoisted.
+ */
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { assertProductionSecurityEnv } = require("./productionSecurity") as typeof import("./productionSecurity");
+assertProductionSecurityEnv();

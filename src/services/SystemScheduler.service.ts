@@ -1,6 +1,7 @@
 /**
- * System Scheduler — operations monitoring & control over existing setInterval jobs.
- * Does not replace timers; wraps run* functions for history, enable/disable, and Run Now.
+ * System Scheduler — operations monitoring & control over lifecycle jobs.
+ * Timers run in the dedicated scheduler worker; this service exposes history,
+ * enable/disable, Run Now, and health (heartbeat-aware for horizontal scale).
  */
 import { Op } from "sequelize";
 import { SystemSchedulerJob, SystemSchedulerRun } from "../models/SystemScheduler.models";
@@ -14,27 +15,22 @@ import {
 import * as Tracking from "./SystemSchedulerTracking.service";
 import {
   runSubscriptionLifecycleJobs,
-  startMatrimonySubscriptionJobs,
   getMatrimonySubscriptionJobRuntimeStatus
 } from "./MatrimonySubscriptionLifecycle.service";
 import {
   runMarketplaceExpiryJobs,
-  startMarketplaceExpiryJobs,
   getMarketplaceExpiryJobRuntimeStatus
 } from "./MarketplaceExpiry.service";
 import {
   runHelpingHandsExpiryJobs,
-  startHelpingHandsExpiryJobs,
   getHelpingHandsExpiryJobRuntimeStatus
 } from "./HelpingHandsExpiry.service";
 import {
   processScheduledPlatformNotifications,
-  startPlatformNotificationJobs,
   getPlatformNotificationJobRuntimeStatus
 } from "./Platform.service";
 import {
   runOrphanMediaCleanup,
-  startOrphanMediaCleanupJobs,
   getOrphanMediaCleanupJobRuntimeStatus
 } from "./OrphanMediaCleanup.service";
 
@@ -60,6 +56,18 @@ function runtimeFor(jobKey: string): JobRuntimeStatus {
     default:
       return { timerActive: false, running: false, intervalMs: 0, envEnabled: false };
   }
+}
+
+/** Prefer worker heartbeat when timers are not in this process (API). */
+function effectiveTimerActive(
+  localTimerActive: boolean,
+  lastHeartbeatAt: Date | null | undefined,
+  intervalMs: number
+): boolean {
+  if (localTimerActive) return true;
+  if (!lastHeartbeatAt) return false;
+  const skew = Math.max(intervalMs * 2.5, 120_000);
+  return Date.now() - new Date(lastHeartbeatAt).getTime() < skew;
 }
 
 function formatDuration(ms: number | null | undefined): string | null {
@@ -146,6 +154,11 @@ export async function listJobs() {
     const failureCount = row?.failureCount ?? 0;
     const avgMs =
       successCount > 0 ? Math.round(Number(row?.totalDurationMs || 0) / successCount) : null;
+    const timerActive = effectiveTimerActive(
+      rt.timerActive,
+      row?.lastHeartbeatAt ?? null,
+      intervalMs
+    );
     const status = deriveRowStatus({
       enabled,
       running: rt.running,
@@ -167,7 +180,7 @@ export async function listJobs() {
       enabledOverride: override,
       envEnabled,
       lastRunAt: row?.lastRunAt?.toISOString() ?? null,
-      nextRunAt: computeNextRun(row?.lastRunAt ?? null, intervalMs, rt.timerActive, enabled),
+      nextRunAt: computeNextRun(row?.lastRunAt ?? null, intervalMs, timerActive, enabled),
       lastDurationMs: row?.lastDurationMs ?? null,
       lastDurationLabel: formatDuration(row?.lastDurationMs),
       averageDurationMs: avgMs,
@@ -175,7 +188,7 @@ export async function listJobs() {
       successCount,
       failureCount,
       status,
-      timerActive: rt.timerActive,
+      timerActive,
       running: rt.running,
       lastError: row?.lastError ?? null,
       lastHeartbeatAt: row?.lastHeartbeatAt?.toISOString() ?? null
@@ -285,26 +298,8 @@ export async function setJobEnabled(
   );
   Tracking.invalidateEnabledCache();
 
-  if (enabled) {
-    // Ensure timer is started if env allows (idempotent start*Jobs).
-    switch (jobKey as SchedulerJobKey) {
-      case "matrimony_subscription_lifecycle":
-        startMatrimonySubscriptionJobs();
-        break;
-      case "marketplace_expiry":
-        startMarketplaceExpiryJobs();
-        break;
-      case "helping_hands_expiry":
-        startHelpingHandsExpiryJobs();
-        break;
-      case "platform_scheduled_notifications":
-        startPlatformNotificationJobs();
-        break;
-      case "media_orphan_cleanup":
-        startOrphanMediaCleanupJobs();
-        break;
-    }
-  }
+  // Timers live in digitalhouse-scheduler. Enable/disable is honored on the next tick
+  // via isJobEnabled(); no need to start timers inside the API process.
 
   return getJobDetail(jobKey);
 }
@@ -384,10 +379,20 @@ export async function getHealth(preloadedJobs?: Awaited<ReturnType<typeof listJo
   return {
     schedulerStatus,
     lastHeartbeat,
-    workerStatus: "in_process" as const,
-    workerDetail: "Jobs run inside the API process (setInterval).",
+    workerStatus:
+      process.env.SCHEDULER_ROLE === "worker"
+        ? ("scheduler_worker" as const)
+        : timersActive > 0
+          ? ("external_worker" as const)
+          : ("stopped" as const),
+    workerDetail:
+      process.env.SCHEDULER_ROLE === "worker"
+        ? "Jobs run in this scheduler worker process (setInterval + MySQL GET_LOCK)."
+        : timersActive > 0
+          ? "Jobs run in digitalhouse-scheduler (heartbeat detected from API)."
+          : "No scheduler worker heartbeat — start npm run worker:scheduler / PM2 digitalhouse-scheduler.",
     queueStatus: "n_a" as const,
-    queueDetail: "No external job queue (Bull/Redis) in this architecture.",
+    queueDetail: "Duplicate prevention via MySQL GET_LOCK (no Redis required).",
     timersActive,
     timersExpected: enabled.length,
     tablesReady: await Tracking.ensureSchedulerTables()

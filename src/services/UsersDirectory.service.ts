@@ -49,7 +49,7 @@ async function toDto(
     username: u.username ?? "",
     needsUsernameSetup: !u.username,
     profileImage,
-    online: isOnline(u.id),
+    online: await isOnline(u.id),
     city: u.city ?? null,
     district: u.district ?? null,
     profileVisibility: u.profileVisibility ?? "PUBLIC",

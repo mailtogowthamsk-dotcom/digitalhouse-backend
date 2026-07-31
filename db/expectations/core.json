@@ -1,0 +1,28 @@
+{
+  "tables": [
+    {
+      "name": "schema_migrations",
+      "columns": ["version", "name", "checksum", "applied_at", "direction"],
+      "indexes": ["PRIMARY"]
+    },
+    {
+      "name": "media_jobs",
+      "columns": [
+        "id",
+        "mediaId",
+        "objectKey",
+        "jobType",
+        "status",
+        "retryCount",
+        "workerId",
+        "createdAt",
+        "updatedAt"
+      ],
+      "indexes": ["PRIMARY"]
+    },
+    {
+      "name": "media_files",
+      "columns": ["id", "processingStatus"]
+    }
+  ]
+}

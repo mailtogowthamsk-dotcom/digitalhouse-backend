@@ -16,6 +16,7 @@ BACKUP_DIR="$(mktemp -d)"
 HAD_DIST=0
 HAD_API=0
 HAD_WORKER=0
+HAD_SCHEDULER=0
 LEGACY_STOPPED=0
 ACTIVATED=0
 
@@ -31,6 +32,7 @@ if [[ -d dist ]]; then
 fi
 if pm2_is_running digitalhouse-api; then HAD_API=1; fi
 if pm2_is_running digitalhouse-media-worker; then HAD_WORKER=1; fi
+if pm2_is_running digitalhouse-scheduler; then HAD_SCHEDULER=1; fi
 
 rollback_deployment() {
   local exit_code=$?
@@ -52,6 +54,11 @@ rollback_deployment() {
     else
       pm2 delete digitalhouse-media-worker || true
     fi
+    if [[ "$HAD_SCHEDULER" -eq 1 ]]; then
+      pm2 restart digitalhouse-scheduler --update-env || true
+    else
+      pm2 delete digitalhouse-scheduler || true
+    fi
     if [[ "$LEGACY_STOPPED" -eq 1 && "$HAD_API" -eq 0 ]]; then
       pm2 restart digitalhouse || true
     fi
@@ -69,8 +76,8 @@ bash deploy/npm-install-deps.sh
 echo "Building..."
 npm run build
 
-echo "Validating and applying backward-compatible migrations..."
-npm run db:run-media-jobs-sql
+echo "Applying versioned DB migrations + schema validation..."
+npm run db:migrate
 
 npm run verify:deploy
 
@@ -80,7 +87,7 @@ if pm2_is_running digitalhouse; then
   LEGACY_STOPPED=1
 fi
 
-echo "Reloading PM2 API + media worker..."
+echo "Reloading PM2 API + media worker + scheduler..."
 ACTIVATED=1
 pm2 startOrReload ecosystem.config.cjs --update-env
 
@@ -97,8 +104,8 @@ for _ in {1..15}; do
   fi
   sleep 2
 done
-if [[ "$API_HEALTHY" -ne 1 ]] || ! pm2_is_running digitalhouse-media-worker; then
-  echo "Health check failed — run: pm2 logs digitalhouse-api"
+if [[ "$API_HEALTHY" -ne 1 ]] || ! pm2_is_running digitalhouse-media-worker || ! pm2_is_running digitalhouse-scheduler; then
+  echo "Health check failed — run: pm2 logs digitalhouse-api digitalhouse-scheduler"
   exit 1
 fi
 

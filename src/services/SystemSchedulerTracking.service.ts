@@ -13,6 +13,7 @@ import {
   type SchedulerJobKey,
   type SchedulerTriggerType
 } from "../constants/systemScheduler.constants";
+import { withSchedulerLock } from "./SchedulerLock.service";
 
 let tablesReady: boolean | null = null;
 /** In-memory override cache: null = follow env */
@@ -150,6 +151,27 @@ export async function touchHeartbeat(jobKey: string): Promise<void> {
 }
 
 export async function trackExecution(
+  jobKey: SchedulerJobKey | string,
+  triggerType: SchedulerTriggerType,
+  executedBy: string | null,
+  work: () => Promise<TrackWorkResult>
+): Promise<TrackExecutionResult> {
+  const locked = await withSchedulerLock(jobKey, () =>
+    trackExecutionLocked(jobKey, triggerType, executedBy, work)
+  );
+  if (!locked.acquired) {
+    await touchHeartbeat(jobKey);
+    return {
+      ok: true,
+      skipped: true,
+      runId: null,
+      recordsProcessed: 0
+    };
+  }
+  return locked.result;
+}
+
+async function trackExecutionLocked(
   jobKey: SchedulerJobKey | string,
   triggerType: SchedulerTriggerType,
   executedBy: string | null,

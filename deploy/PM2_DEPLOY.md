@@ -56,6 +56,14 @@ pm2 startup
 pm2 save
 ```
 
+## 3b. Log rotation (required for production)
+
+PM2 file logs under `logs/` grow without bound unless rotated. Configure **pm2-logrotate** once per host:
+
+See **[PM2_LOG_ROTATION.md](./PM2_LOG_ROTATION.md)** for install commands and recommended settings.
+
+This is operational only — it does not change the Media Worker, API, or database.
+
 ## 4. Apache reverse proxy (required for HTTPS)
 
 Without this, `https://www.infosensetechnologies.com/digitalhouse/backend/api/health` stays **404**.
@@ -90,13 +98,25 @@ Must return JSON, not HTML 404.
 
 ## 6. Deploy updates
 
+Prefer the full deploy script (build + **versioned migrations** + PM2 reload):
+
+```bash
+cd /path/to/digitalhouse-backend
+./deploy/pm2-deploy.sh
+```
+
+Manual equivalent:
+
 ```bash
 cd /path/to/digitalhouse-backend
 git pull   # or upload new files
 npm ci
 npm run build
+npm run db:migrate          # schema_migrations history + expectations
 npm run pm2:reload
 ```
+
+See `docs/MIGRATIONS.md` for status / baseline / rollback.
 
 ## Troubleshooting
 

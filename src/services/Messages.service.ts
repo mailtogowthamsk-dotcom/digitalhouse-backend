@@ -151,7 +151,7 @@ export async function listThreads(
           id: otherUserId,
           name: u?.fullName ?? "Unknown",
           profileImage,
-          online: isOnline(otherUserId)
+          online: await isOnline(otherUserId)
         },
         chatLanes: access?.chatLanes ?? [],
         primaryLane: access?.primaryLane ?? null,
