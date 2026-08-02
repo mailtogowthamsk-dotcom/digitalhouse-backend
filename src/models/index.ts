@@ -90,6 +90,11 @@ User.hasOne(UserProfile, { foreignKey: "userId" });
 UserProfile.belongsTo(User, { foreignKey: "userId" });
 User.hasMany(PendingProfileUpdate, { foreignKey: "userId", as: "PendingProfileUpdates" });
 PendingProfileUpdate.belongsTo(User, { foreignKey: "userId", as: "User" });
+PendingProfileUpdate.hasOne(MatrimonyRequestMeta, {
+  foreignKey: "pendingUpdateId",
+  sourceKey: "id",
+  as: "MatrimonyMeta"
+});
 MatrimonyRequestMeta.belongsTo(PendingProfileUpdate, { foreignKey: "pendingUpdateId" });
 MatrimonyAdminNote.belongsTo(PendingProfileUpdate, { foreignKey: "pendingUpdateId" });
 MatrimonyReviewAudit.belongsTo(PendingProfileUpdate, { foreignKey: "pendingUpdateId" });

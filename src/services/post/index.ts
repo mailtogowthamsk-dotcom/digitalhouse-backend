@@ -23,7 +23,7 @@ export {
   unsavePost,
   getPostLikes
 } from "./engagement.service";
-export { reportPost, trackFeedEvent } from "./moderation.service";
+export { reportPost, trackFeedEvent, trackFeedEvents } from "./moderation.service";
 
 import { getApprovedUserIdsInCommunity } from "./access";
 import { createPost, updatePost } from "./write.service";
@@ -38,7 +38,7 @@ import {
   unsavePost,
   getPostLikes
 } from "./engagement.service";
-import { reportPost, trackFeedEvent } from "./moderation.service";
+import { reportPost, trackFeedEvent, trackFeedEvents } from "./moderation.service";
 
 export const postService = {
   createPost,
@@ -55,5 +55,6 @@ export const postService = {
   unsavePost,
   reportPost,
   trackFeedEvent,
+  trackFeedEvents,
   getApprovedUserIdsInCommunity
 };

@@ -22,7 +22,8 @@ import {
   readRawPendingData,
   upsertMatrimonyPending,
   queueMatrimonyReReviewIfNeeded,
-  loadMeta
+  loadMeta,
+  findActiveMatrimonyApplication
 } from "./matrimony.persistence.service";
 import { getMatrimonyHub, getUserContext } from "./matrimony.hub.service";
 
@@ -66,7 +67,24 @@ export async function submitMatrimonyProfile(
   userId: number,
   optionalPayload?: Record<string, unknown>
 ): Promise<MatrimonyHubResponse> {
-  const hub = await getMatrimonyHub(userId);
+  const timingOn = process.env.MATRIMONY_SUBMIT_TIMING === "true";
+  const tSubmit = Date.now();
+  const marks: Array<{ step: string; ms: number }> = [];
+  const mark = (step: string, since: number) => {
+    const ms = Date.now() - since;
+    marks.push({ step, ms });
+    if (timingOn) console.log(`[matrimony-submit] user=${userId} ${step}=${ms}ms`);
+  };
+
+  let t = Date.now();
+  // One pending lookup shared by hub status checks + upsert (avoids 2–3 identical findOnes).
+  const preloadedActive = await findActiveMatrimonyApplication(userId);
+  mark("findActiveMatrimonyApplication", t);
+
+  t = Date.now();
+  const hub = await getMatrimonyHub(userId, { preloadedActive });
+  mark("getMatrimonyHub", t);
+
   if (hub.status === "PENDING") {
     return {
       ...hub,
@@ -80,9 +98,13 @@ export async function submitMatrimonyProfile(
     } as MatrimonyHubResponse & { message?: string };
   }
 
-  const ctx = await getUserContext(userId);
-  const accountRow = await User.findByPk(userId, { attributes: ["profilePhoto"] });
+  t = Date.now();
+  const ctx = hub.user_context;
+  const accountRow = await User.findByPk(userId, {
+    attributes: ["profilePhoto", "signupProvider", "googleId"]
+  });
   const accountPhotoRaw = accountRow?.profilePhoto?.trim() || null;
+  mark("loadAccountPhoto", t);
 
   const incoming = { ...(optionalPayload ?? {}) };
   normalizeHoroscopeWrite(incoming, (hub.draft ?? {}) as Record<string, unknown>);
@@ -139,8 +161,15 @@ export async function submitMatrimonyProfile(
     }
   }
 
-  const row = await upsertMatrimonyPending(userId, merged, true);
+  t = Date.now();
+  const row = await upsertMatrimonyPending(userId, merged, true, {
+    existingRow: preloadedActive.row
+  });
+  mark("upsertMatrimonyPending", t);
+
+  t = Date.now();
   await markMatrimonyMediaAttached(userId, merged);
+  mark("markMatrimonyMediaAttached", t);
 
   const rawFull = readRawPendingData(row.data);
   const profileData = stripInternalKeys(merged) as Record<string, unknown>;
@@ -150,6 +179,7 @@ export async function submitMatrimonyProfile(
   const resubmissionCount = Number(rawFull[RESUB_COUNT_KEY] ?? 0) + (isResubmission ? 1 : 0);
   const changes = computeFieldChanges(snapshot, profileData);
 
+  t = Date.now();
   await row.update({
     data: {
       ...rawFull,
@@ -162,7 +192,9 @@ export async function submitMatrimonyProfile(
     submittedAt: new Date(),
     updatedAt: new Date()
   } as any);
+  mark("row.update(submit)", t);
 
+  t = Date.now();
   const meta = await loadMeta(row.id);
   if (meta) {
     try {
@@ -190,6 +222,7 @@ export async function submitMatrimonyProfile(
       console.warn("[Matrimony] meta create on submit failed:", err instanceof Error ? err.message : err);
     }
   }
+  mark("meta.upsert", t);
 
   await writeAudit(
     userId,
@@ -206,8 +239,7 @@ export async function submitMatrimonyProfile(
   const Notifications = await import("../Notification.service");
   void Notifications.notifyMatrimonyApplicationSubmitted(userId).catch(() => {});
 
-  const account = await User.findByPk(userId, { attributes: ["signupProvider", "googleId"] });
-  if (account?.signupProvider === "GOOGLE" || account?.googleId) {
+  if (accountRow?.signupProvider === "GOOGLE" || accountRow?.googleId) {
     const { trackAuthEvent } = await import("../authAnalytics.service");
     void trackAuthEvent("GOOGLE_MATRIMONY_APPLY", {
       userId,
@@ -216,7 +248,16 @@ export async function submitMatrimonyProfile(
     });
   }
 
-  return getMatrimonyHub(userId);
+  t = Date.now();
+  const result = await getMatrimonyHub(userId);
+  mark("getMatrimonyHub(final)", t);
+
+  if (timingOn || Date.now() - tSubmit >= 3000) {
+    console.log(
+      `[matrimony-submit] user=${userId} total=${Date.now() - tSubmit}ms marks=${JSON.stringify(marks)}`
+    );
+  }
+  return result;
 }
 
 /**
@@ -225,7 +266,9 @@ export async function submitMatrimonyProfile(
  */
 export async function onUserProfilePhotoUpdated(userId: number, profilePhotoUrl: string | null): Promise<void> {
   const pending = await PendingProfileUpdate.findOne({
-    where: { userId, section: "MATRIMONY", status: "PENDING" }
+    where: { userId, section: "MATRIMONY", status: "PENDING" },
+    order: [["submittedAt", "DESC"]],
+    attributes: ["id", "data", "status"]
   });
   if (pending) {
     const raw = readRawPendingData(pending.data);

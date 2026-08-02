@@ -48,6 +48,8 @@ export type MatrimonyHubResponse = {
   /** Signed account owner photo for comparison UI */
   account_profile_photo: string | null;
   matrimony_candidate_photo: string | null;
+  /** Bride/groom display name (never family-manager account name when candidateName is set). */
+  matrimony_candidate_name: string;
   profile_for_self: boolean;
 };
 

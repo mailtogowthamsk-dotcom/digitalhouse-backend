@@ -64,8 +64,13 @@ const FEED_POST_ATTRIBUTES = [
   "urgent",
   "meetupAt",
   "jobStatus",
+  "jobCompany",
+  "jobCategory",
   "jobLocation",
   "jobEmploymentType",
+  "jobWorkMode",
+  "jobExperience",
+  "jobSkills",
   "jobSalaryMin",
   "jobSalaryMax",
   "marketplaceStatus",
@@ -408,7 +413,8 @@ export async function buildFeedItemsFromPosts(
   if (postIds.length === 0) return [];
 
   // Use denormalized likeCount/commentCount on posts — skip scanning post_likes/comments.
-  const [myLikes, mySaves, helpOffers] = await Promise.all([
+  const jobPostIds = pagePosts.filter((p) => p.postType === "JOB").map((p) => p.id);
+  const [myLikes, mySaves, helpOffers, myJobInterests] = await Promise.all([
     PostLike.findAll({
       where: { postId: { [Op.in]: postIds }, userId: currentUserId },
       attributes: ["postId"],
@@ -423,7 +429,17 @@ export async function buildFeedItemsFromPosts(
       where: { postId: { [Op.in]: postIds }, status: "ACTIVE" },
       attributes: ["postId"],
       raw: true
-    })
+    }),
+    jobPostIds.length
+      ? (async () => {
+          const { JobInterest } = await import("../models");
+          return JobInterest.findAll({
+            where: { postId: { [Op.in]: jobPostIds }, fromUserId: currentUserId },
+            attributes: ["postId"],
+            raw: true
+          });
+        })()
+      : Promise.resolve([] as Array<{ postId: number }>)
   ]);
 
   const likeMap: Record<number, number> = {};
@@ -440,6 +456,7 @@ export async function buildFeedItemsFromPosts(
 
   const likedSet = new Set(myLikes.map((r: { postId: number }) => r.postId));
   const savedSet = new Set(mySaves.map((r: { postId: number }) => r.postId));
+  const jobInterestedSet = new Set(myJobInterests.map((r: { postId: number }) => r.postId));
 
   const originalIds = [
     ...new Set(
@@ -557,10 +574,15 @@ export async function buildFeedItemsFromPosts(
         isTrending: engagementScore >= TRENDING_SCORE_THRESHOLD,
         jobStatus: p.jobStatus ?? null,
         jobCompany: p.jobCompany ?? null,
+        jobCategory: p.jobCategory ?? null,
         jobLocation: p.jobLocation ?? null,
         jobEmploymentType: p.jobEmploymentType ?? null,
+        jobWorkMode: p.jobWorkMode ?? null,
+        jobExperience: p.jobExperience ?? null,
+        jobSkills: Array.isArray(p.jobSkills) ? (p.jobSkills as string[]) : null,
         jobSalaryMin: p.jobSalaryMin ?? null,
         jobSalaryMax: p.jobSalaryMax ?? null,
+        jobInterestedByMe: p.postType === "JOB" ? jobInterestedSet.has(p.id) : undefined,
         marketplaceStatus: p.marketplaceStatus ?? null,
         marketplaceIntent: p.marketplaceIntent ?? null,
         marketplaceCategory: p.marketplaceCategory ?? null,

@@ -55,7 +55,13 @@ export async function deletePost(userId: number, postId: number): Promise<void> 
 
 export async function getPost(userId: number, postId: number): Promise<PostDetailDto> {
   const post = await Post.findByPk(postId, {
-    include: [{ association: "User", attributes: ["id", "fullName", "profilePhoto", "status"], required: true }]
+    include: [
+      {
+        association: "User",
+        attributes: ["id", "fullName", "profilePhoto", "status"],
+        required: true
+      }
+    ]
   });
   if (!post) {
     const err = new Error("Post not found");

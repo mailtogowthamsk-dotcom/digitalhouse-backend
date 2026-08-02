@@ -39,6 +39,19 @@ export const matrimonyListQuerySchema = z.object({
     z.enum(["complete", "incomplete", "any"]).optional()
   ),
   search: z.string().max(120).optional(),
+  requestType: z
+    .preprocess(
+      (v) => (v === "" ? undefined : v),
+      z
+        .enum([
+          "NEW_APPLICATION",
+          "PROFILE_UPDATE",
+          "RESUBMISSION",
+          "CHANGE_REQUEST_RESPONSE"
+        ])
+        .optional()
+    ),
+  waitingOverDays: optionalInt(1, 365),
   includeDrafts: z
     .union([z.literal("true"), z.literal("false"), z.boolean()])
     .optional()

@@ -55,6 +55,7 @@ export async function createPost(req: AuthRequest, res: Response) {
     job_status: (body.job_status ?? null) as JobStatus | null,
     job_company: body.job_company ?? null,
     job_location: body.job_location ?? null,
+    job_contact_phone: body.job_contact_phone ?? null,
     job_employment_type: (body.job_employment_type ?? null) as JobEmploymentType | null,
     job_salary_min: body.job_salary_min ?? null,
     job_salary_max: body.job_salary_max ?? null,
@@ -120,6 +121,9 @@ export async function updatePost(req: AuthRequest, res: Response) {
     ...(body.job_status !== undefined && { job_status: (body.job_status ?? null) as JobStatus | null }),
     ...(body.job_company !== undefined && { job_company: body.job_company ?? null }),
     ...(body.job_location !== undefined && { job_location: body.job_location ?? null }),
+    ...(body.job_contact_phone !== undefined && {
+      job_contact_phone: body.job_contact_phone ?? null
+    }),
     ...(body.job_employment_type !== undefined && {
       job_employment_type: (body.job_employment_type ?? null) as JobEmploymentType | null
     }),
@@ -320,7 +324,13 @@ export async function reportPost(req: AuthRequest, res: Response) {
 const jobInterestSchema = z
   .object({
     message: z.string().trim().max(500).nullable().optional(),
-    resume_url: z.string().trim().url().max(500).nullable().optional()
+    resume_url: z.string().trim().url().max(500).nullable().optional(),
+    /** Applicant contact mobile — required for first-time apply. */
+    contact_mobile: z
+      .string()
+      .trim()
+      .regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit Indian mobile number")
+      .optional()
   })
   .strict();
 
@@ -330,8 +340,17 @@ export async function expressJobInterest(req: AuthRequest, res: Response) {
   if (postId == null) return error(res, "Invalid post id", 400);
   const body = jobInterestSchema.parse(req.body ?? {});
   try {
-    const { expressJobInterest: express } = await import("../services/JobInterest.service");
-    const data = await express(req.user.id, postId, body.message, body.resume_url);
+    const { expressJobInterest: express, getMyJobInterest } = await import(
+      "../services/JobInterest.service"
+    );
+    const existing = await getMyJobInterest(req.user.id, postId);
+    if (!existing.interested && !body.contact_mobile) {
+      return error(res, "Mobile number is required to apply", 400);
+    }
+    const contactLine = body.contact_mobile ? `Contact: ${body.contact_mobile}` : null;
+    const noteParts = [contactLine, body.message?.trim() || null].filter(Boolean);
+    const message = noteParts.length ? noteParts.join("\n") : null;
+    const data = await express(req.user.id, postId, message, body.resume_url);
     return success(res, data, data.created ? 201 : 200);
   } catch (e: any) {
     if (e?.status) return error(res, e.message, e.status);
@@ -353,17 +372,25 @@ export async function listJobInterests(req: AuthRequest, res: Response) {
   }
 }
 
-const trackEventSchema = z.object({
+const trackEventItemSchema = z.object({
   event_type: z.string().max(40),
   post_id: z.coerce.number().int().positive().optional(),
   meta: z.record(z.unknown()).optional()
 });
 
+const trackEventSchema = z.union([
+  trackEventItemSchema,
+  z.object({
+    events: z.array(trackEventItemSchema).min(1).max(25)
+  })
+]);
+
 export async function trackEvent(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const body = trackEventSchema.parse(req.body ?? {});
-  await postService.trackFeedEvent(req.user.id, body.event_type, body.post_id, body.meta);
-  return success(res, { ok: true });
+  const items = "events" in body ? body.events : [body];
+  postService.trackFeedEvents(req.user.id, items);
+  return success(res, { ok: true, accepted: items.length });
 }
 
 export async function sharePost(req: AuthRequest, res: Response) {

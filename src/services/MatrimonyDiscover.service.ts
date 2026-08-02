@@ -40,7 +40,7 @@ export type DiscoverCardDto = {
   education: string | null;
   kulamLabel: string | null;
   photoUrl: string | null;
-  /** True when photo is intentionally withheld (locked card). */
+  /** True when browse card is locked — photo may still be present but should be shown blurred. */
   photoPlaceholder: boolean;
   familyManaged: boolean;
   horoscopeAvailable: boolean;
@@ -479,11 +479,9 @@ export async function discoverProfiles(
     const mutualMatch = mutualSet.has(user.id);
     const profileOpened = mutualMatch || openedSet.has(user.id);
     const photoBlurred = !profileOpened;
-    let photoUrl: string | null = null;
-    if (!photoBlurred) {
-      const photoRaw = resolveCandidatePhotoUrl(m as Record<string, unknown>);
-      photoUrl = photoRaw ? (await toPublicUrlIfR2(photoRaw)) ?? photoRaw : null;
-    }
+    // Always include photo URL so browse cards can show a blurred preview; full clarity after open.
+    const photoRaw = resolveCandidatePhotoUrl(m as Record<string, unknown>);
+    const photoUrl = photoRaw ? (await toPublicUrlIfR2(photoRaw)) ?? photoRaw : null;
     const gate = Monetization.resolveOpenGate(
       viewerPlan,
       matchScore.starLevel,

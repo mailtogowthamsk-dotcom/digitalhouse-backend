@@ -73,6 +73,8 @@ export class Post extends Model<InferAttributes<Post>, InferCreationAttributes<P
   declare jobCompany: string | null;
   declare jobCategory: string | null;
   declare jobLocation: string | null;
+  /** Recruitment contact for this listing (not account personal mobile). */
+  declare jobContactPhone: string | null;
   declare jobEmploymentType: JobEmploymentType | null;
   declare jobWorkMode: JobWorkMode | null;
   declare jobExperience: string | null;
@@ -163,6 +165,7 @@ Post.init(
     jobCompany: { type: DataTypes.STRING(255), allowNull: true },
     jobCategory: { type: DataTypes.STRING(128), allowNull: true },
     jobLocation: { type: DataTypes.STRING(255), allowNull: true },
+    jobContactPhone: { type: DataTypes.STRING(32), allowNull: true },
     jobEmploymentType: {
       type: DataTypes.ENUM(...JOB_EMPLOYMENT_TYPES),
       allowNull: true

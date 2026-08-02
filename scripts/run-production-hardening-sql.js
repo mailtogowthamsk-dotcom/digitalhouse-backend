@@ -110,6 +110,13 @@ async function main() {
       `ALTER TABLE users ADD INDEX idx_users_status_community (status, community)`
     );
 
+    await addIndex(
+      conn,
+      "users",
+      "idx_users_status_id",
+      `ALTER TABLE users ADD INDEX idx_users_status_id (status, id)`
+    );
+
     if (postsUserCol && postsCreatedCol) {
       await addIndex(
         conn,
@@ -217,6 +224,12 @@ async function main() {
       "pending_profile_updates",
       "idx_pending_status_section",
       `ALTER TABLE pending_profile_updates ADD INDEX idx_pending_status_section (status, section)`
+    );
+    await addIndex(
+      conn,
+      "pending_profile_updates",
+      "idx_pending_user_section_status_submitted",
+      `ALTER TABLE pending_profile_updates ADD INDEX idx_pending_user_section_status_submitted (userId, section, status, submittedAt)`
     );
     await addIndex(
       conn,

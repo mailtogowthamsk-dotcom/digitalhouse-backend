@@ -236,12 +236,41 @@ export async function listUsers(
   }
   const sortBy = filters?.sortBy && USER_SORT_FIELDS.has(filters.sortBy) ? filters.sortBy : "createdAt";
   const sortDir = filters?.sortDir === "asc" ? "ASC" : "DESC";
-  const { count, rows } = await User.findAndCountAll({
-    where,
-    order: [[sortBy, sortDir]],
-    limit: safeLimit,
-    offset
-  });
+
+  // List DTO only — avoid SELECT * (password hashes, tokens, large JSON/text).
+  const listAttrs = [
+    "id",
+    "fullName",
+    "username",
+    "email",
+    "mobile",
+    "community",
+    "kulam",
+    "gender",
+    "district",
+    "city",
+    "status",
+    "emailVerified",
+    "profilePhoto",
+    "communityRole",
+    "lastLoginProvider",
+    "googleId",
+    "linkedProviders",
+    "createdAt",
+    "updatedAt",
+    "deletedAt"
+  ] as const;
+
+  const [count, rows] = await Promise.all([
+    User.count({ where }),
+    User.findAll({
+      where,
+      attributes: [...listAttrs],
+      order: [[sortBy, sortDir]],
+      limit: safeLimit,
+      offset
+    })
+  ]);
 
   // Lightweight subscription badges for current page only
   const ids = rows.map((u) => u.id);

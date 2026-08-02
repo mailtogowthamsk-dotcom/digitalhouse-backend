@@ -40,10 +40,27 @@ export async function verifyGoogleIdToken(idToken: string): Promise<GoogleTokenP
   }
 
   const client = new OAuth2Client();
-  const ticket = await client.verifyIdToken({
-    idToken,
-    audience: audiences
-  });
+  let ticket;
+  try {
+    ticket = await client.verifyIdToken({
+      idToken,
+      audience: audiences
+    });
+  } catch (e: unknown) {
+    const raw = e instanceof Error ? e.message : "Invalid Google token.";
+    const audienceMismatch =
+      /audience|Wrong recipient|invalid token signature|Token used too early|Token used too late/i.test(
+        raw
+      );
+    throw Object.assign(
+      new Error(
+        audienceMismatch
+          ? "Google token was rejected by the server (client ID / SHA-1 mismatch). Ensure PM2 has the same GOOGLE_WEB_CLIENT_ID as the preview app, and the Android OAuth client includes the EAS signing SHA-1."
+          : "Invalid Google token. Please try again."
+      ),
+      { status: 401, code: "INVALID_GOOGLE_TOKEN", cause: raw }
+    );
+  }
   const payload = ticket.getPayload();
   if (!payload?.sub || !payload.email) {
     throw Object.assign(new Error("Invalid Google token."), { status: 401, code: "INVALID_GOOGLE_TOKEN" });

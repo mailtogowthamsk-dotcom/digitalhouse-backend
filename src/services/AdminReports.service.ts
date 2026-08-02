@@ -1,4 +1,4 @@
-import { Op } from "sequelize";
+import { fn, col, Op } from "sequelize";
 import {
   Post,
   PostReport,
@@ -10,6 +10,75 @@ import {
 import type { AdminReportStatus, ReportKind } from "../constants/reports.constants";
 import * as Notifications from "./Notification.service";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
+
+type AdminReportCounts = {
+  pending: number;
+  escalated: number;
+  resolved: number;
+  dismissed: number;
+  all: number;
+  post: number;
+  profile: number;
+};
+
+const COUNTS_CACHE_TTL_MS = Math.max(
+  3_000,
+  Number(process.env.ADMIN_REPORT_COUNTS_CACHE_MS || 8_000)
+);
+let countsCache: { value: AdminReportCounts; expiresAt: number } | null = null;
+
+function emptyStatusBag(): Record<string, number> {
+  return { PENDING: 0, ESCALATED: 0, RESOLVED: 0, DISMISSED: 0 };
+}
+
+async function countReportsByStatus(
+  Model: { findAll: (opts: object) => Promise<unknown[]> }
+): Promise<{ byStatus: Record<string, number>; total: number }> {
+  const rows = (await Model.findAll({
+    attributes: ["status", [fn("COUNT", col("id")), "cnt"]],
+    group: ["status"],
+    raw: true
+  })) as Array<{ status: string; cnt: string | number }>;
+
+  const byStatus = emptyStatusBag();
+  let total = 0;
+  for (const row of rows) {
+    const n = Number(row.cnt) || 0;
+    byStatus[row.status] = n;
+    total += n;
+  }
+  return { byStatus, total };
+}
+
+/** Invalidate badge counts after resolve/dismiss/escalate. */
+export function invalidateAdminReportCountsCache(): void {
+  countsCache = null;
+}
+
+async function fetchAdminReportCounts(): Promise<AdminReportCounts> {
+  const now = Date.now();
+  if (countsCache && countsCache.expiresAt > now) {
+    return countsCache.value;
+  }
+
+  // 2 GROUP BY queries instead of 10 COUNT(*) — huge win on remote MySQL RTT/pool.
+  const [post, profile] = await Promise.all([
+    countReportsByStatus(PostReport),
+    countReportsByStatus(MatrimonyReport)
+  ]);
+
+  const value: AdminReportCounts = {
+    pending: (post.byStatus.PENDING ?? 0) + (profile.byStatus.PENDING ?? 0),
+    escalated: (post.byStatus.ESCALATED ?? 0) + (profile.byStatus.ESCALATED ?? 0),
+    resolved: (post.byStatus.RESOLVED ?? 0) + (profile.byStatus.RESOLVED ?? 0),
+    dismissed: (post.byStatus.DISMISSED ?? 0) + (profile.byStatus.DISMISSED ?? 0),
+    all: post.total + profile.total,
+    post: post.total,
+    profile: profile.total
+  };
+  countsCache = { value, expiresAt: now + COUNTS_CACHE_TTL_MS };
+  return value;
+}
 
 export type AdminReportListItem = {
   key: string;
@@ -193,41 +262,6 @@ async function hydrateProfileReports(rows: MatrimonyReport[]): Promise<AdminRepo
       post: null
     };
   });
-}
-
-async function fetchAdminReportCounts() {
-  const [
-    pendingPost,
-    pendingProfile,
-    escPost,
-    escProfile,
-    resPost,
-    resProfile,
-    disPost,
-    disProfile,
-    allPost,
-    allProfile
-  ] = await Promise.all([
-    PostReport.count({ where: { status: "PENDING" } }),
-    MatrimonyReport.count({ where: { status: "PENDING" } }),
-    PostReport.count({ where: { status: "ESCALATED" } }),
-    MatrimonyReport.count({ where: { status: "ESCALATED" } }),
-    PostReport.count({ where: { status: "RESOLVED" } }),
-    MatrimonyReport.count({ where: { status: "RESOLVED" } }),
-    PostReport.count({ where: { status: "DISMISSED" } }),
-    MatrimonyReport.count({ where: { status: "DISMISSED" } }),
-    PostReport.count(),
-    MatrimonyReport.count()
-  ]);
-  return {
-    pending: pendingPost + pendingProfile,
-    escalated: escPost + escProfile,
-    resolved: resPost + resProfile,
-    dismissed: disPost + disProfile,
-    all: allPost + allProfile,
-    post: allPost,
-    profile: allProfile
-  };
 }
 
 async function logAction(input: {
@@ -560,6 +594,7 @@ export async function setAdminReportStatus(
     reviewedBy: adminEmail,
     reviewedAt: new Date()
   });
+  invalidateAdminReportCountsCache();
 
   const action =
     nextStatus === "ESCALATED" ? "ESCALATE" : nextStatus === "RESOLVED" ? "RESOLVE" : "DISMISS";
@@ -695,6 +730,9 @@ export async function reactivateUser(
     throw Object.assign(new Error("User is not suspended"), { status: 400 });
   }
   await user.update({ status: "APPROVED" });
+  void import("../middlewares/auth.middleware")
+    .then(({ invalidateAuthGateCache }) => invalidateAuthGateCache(userId))
+    .catch(() => {});
   await Notifications.createUserNotification(
     userId,
     "Account reactivated",
@@ -710,9 +748,6 @@ export async function reactivateUser(
 }
 
 export async function getPendingReportCount(): Promise<number> {
-  const [a, b] = await Promise.all([
-    PostReport.count({ where: { status: { [Op.in]: ["PENDING", "ESCALATED"] } } }),
-    MatrimonyReport.count({ where: { status: { [Op.in]: ["PENDING", "ESCALATED"] } } })
-  ]);
-  return a + b;
+  const counts = await fetchAdminReportCounts();
+  return counts.pending + counts.escalated;
 }

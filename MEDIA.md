@@ -31,6 +31,22 @@ MEDIA_MAX_CONCURRENT=2
 - Create an R2 bucket and attach the media custom domain via **media-guard** (not a bypassable R2 public domain binding). See [`infra/cloudflare/media-guard`](../infra/cloudflare/media-guard/README.md).
 - R2 API tokens: Object Read & Write (backend only).
 
+## Local development (critical)
+
+`npm run dev` starts **only the API**. Finalize enqueues `media_jobs` and returns immediately; **Sharp/FFmpeg never runs in the API process**.
+
+You must also run:
+
+```bash
+npm run dev:media-worker
+```
+
+Without the worker, `GET /api/media/:id/status` stays `processingStatus: pending` forever (job `workerId` remains null).
+
+Production/PM2: `digitalhouse-api` **and** `digitalhouse-media-worker` (see `ecosystem.config.cjs`).
+
+Optional timing logs: `MEDIA_PIPELINE_TIMING=true`.
+
 ## API
 
 ### POST `/api/media/upload-url`

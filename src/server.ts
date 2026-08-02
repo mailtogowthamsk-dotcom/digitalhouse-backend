@@ -125,6 +125,25 @@ async function initDb() {
     }
     setDbReady(true);
     console.log("Database ready.");
+    console.log(
+      "[media] Sharp/FFmpeg finalize runs in digitalhouse-media-worker — local: npm run dev:media-worker"
+    );
+    void (async () => {
+      try {
+        const { MediaJob } = await import("./models");
+        const pending = await MediaJob.count({ where: { status: "pending" } });
+        if (pending > 0) {
+          console.warn(
+            `[media] ${pending} media_jobs still pending — start/restart the media worker or uploads will poll forever`
+          );
+        }
+      } catch (e) {
+        console.warn(
+          "[media] pending-job check failed:",
+          e instanceof Error ? e.message : e
+        );
+      }
+    })();
     if (schedulerInApiProcess()) {
       console.warn(
         "[scheduler] SCHEDULER_IN_API=true — running interval jobs inside the API process (dev only)"
@@ -153,6 +172,17 @@ async function initDb() {
     }
     if (process.env.ADMIN_API_KEY_ROLE) {
       console.log(`[admin-auth] API key role = ${process.env.ADMIN_API_KEY_ROLE}`);
+    }
+    const cdnBase = (process.env.R2_CDN_PUBLIC_URL || "").trim();
+    if (!cdnBase) {
+      console.warn(
+        "[media] R2_CDN_PUBLIC_URL is not set — feed/public media URL hydration will fail."
+      );
+    } else if (/r2\.cloudflarestorage\.com/i.test(cdnBase)) {
+      console.warn(
+        "[media] R2_CDN_PUBLIC_URL points at the private R2 S3 API host (*.r2.cloudflarestorage.com). " +
+          "Unsigned feed URLs will 400. Set it to your media-guard custom domain (e.g. https://media.konguvettuvagounder.com)."
+      );
     }
     if (process.env.NODE_ENV !== "production") {
       try {

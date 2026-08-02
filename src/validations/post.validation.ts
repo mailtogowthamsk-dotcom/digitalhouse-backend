@@ -77,10 +77,17 @@ const optionalPrice = z.preprocess(
   z.coerce.number().int().min(0).max(100_000_000).nullable().optional()
 );
 
+const indianMobileSchema = z
+  .string()
+  .trim()
+  .regex(/^[6-9]\d{9}$/, "Enter a valid 10-digit Indian mobile number");
+
 const jobFieldsSchema = {
   job_company: z.string().trim().max(255).nullable().optional(),
   job_category: z.string().trim().max(128).nullable().optional(),
   job_location: z.string().trim().max(255).nullable().optional(),
+  /** Recruitment contact for this job — separate from account personal mobile. */
+  job_contact_phone: indianMobileSchema.nullable().optional(),
   job_employment_type: jobEmploymentTypeSchema.nullable().optional(),
   job_work_mode: jobWorkModeSchema.nullable().optional(),
   job_experience: z.string().trim().max(128).nullable().optional(),
@@ -214,6 +221,23 @@ function refineMarketplaceCreate(
       code: z.ZodIssueCode.custom,
       message: "Price is required for sale listings",
       path: ["marketplace_price"]
+    });
+  }
+}
+
+function refineJobCreate(
+  data: {
+    post_type: string;
+    job_contact_phone?: string | null;
+  },
+  ctx: z.RefinementCtx
+) {
+  if (data.post_type !== "JOB") return;
+  if (!data.job_contact_phone?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Contact number is required for job listings",
+      path: ["job_contact_phone"]
     });
   }
 }
@@ -415,6 +439,7 @@ export const createPostSchema = z
   .superRefine((data, ctx) => {
     refineCreationSource(data, ctx);
     refineSalaryRange(data, ctx);
+    refineJobCreate(data, ctx);
     refineMarketplaceCreate(data, ctx);
     refineHelpCreate(data, ctx);
     refineMediaMeta(data, ctx);

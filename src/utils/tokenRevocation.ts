@@ -47,6 +47,12 @@ export async function getTokenMinIat(userId: number): Promise<number> {
 export async function revokeUserTokens(userId: number, reason?: string): Promise<void> {
   const minIat = Math.floor(Date.now() / 1000);
   memoryMinIat.set(userId, minIat);
+  try {
+    const { invalidateAuthGateCache } = await import("../middlewares/auth.middleware");
+    invalidateAuthGateCache(userId);
+  } catch {
+    /* ignore */
+  }
   const redis = isRedisConfigured() ? getRedis() : null;
   if (redis) {
     try {

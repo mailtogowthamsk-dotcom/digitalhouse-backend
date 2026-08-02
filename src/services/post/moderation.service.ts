@@ -1,6 +1,6 @@
 import { Post, PostReport } from "../../models";
 import type { MarketplaceStatus } from "../../constants/marketplace.constants";
-import { logFeedEvent } from "../../utils/feedAnalytics";
+import { logFeedEvent, logFeedEvents } from "../../utils/feedAnalytics";
 import * as MarketplaceSettings from "../MarketplaceSettings.service";
 import { ensureCommunityVisible } from "./access";
 import { isModeratedAway } from "./mappers";
@@ -11,7 +11,21 @@ export async function trackFeedEvent(
   postId?: number,
   meta?: Record<string, unknown>
 ): Promise<void> {
-  logFeedEvent(userId, eventType as any, postId ?? null, meta);
+  logFeedEvent(userId, eventType, postId ?? null, meta);
+}
+
+export async function trackFeedEvents(
+  userId: number,
+  items: Array<{ event_type: string; post_id?: number; meta?: Record<string, unknown> }>
+): Promise<void> {
+  logFeedEvents(
+    items.map((item) => ({
+      userId,
+      eventType: item.event_type,
+      postId: item.post_id ?? null,
+      meta: item.meta
+    }))
+  );
 }
 
 export async function reportPost(userId: number, postId: number, reason: string): Promise<{ id: number }> {

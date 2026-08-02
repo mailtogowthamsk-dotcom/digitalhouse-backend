@@ -1,4 +1,4 @@
-import { User, UserProfile, PendingProfileUpdate } from "../../models";
+import { User, UserProfile } from "../../models";
 import type { MatrimonySection } from "../../models/UserProfile.model";
 import type { MatrimonyChangeRequestInfo } from "../../models/MatrimonyRequestMeta.model";
 import { fieldsForChangeSections } from "../../constants/matrimony-changes.constants";
@@ -10,6 +10,7 @@ import {
   resolveCandidatePhotoUrl
 } from "../../constants/matrimony-photo.constants";
 import { normalizeMatrimonyLifecycle } from "../../constants/matrimony-lifecycle.constants";
+import { resolveMatrimonyCandidate } from "../../utils/matrimonyCandidate.util";
 import type { MatrimonyHubResponse, MatrimonyHubStatus } from "./matrimony.types";
 import {
   CHANGE_REQUEST_KEY,
@@ -85,9 +86,14 @@ export async function assertMatrimonyBrowseAllowed(userId: number): Promise<void
 }
 
 export async function getUserContext(userId: number) {
-  const user = await User.findByPk(userId);
+  const user = await User.findByPk(userId, {
+    attributes: ["id", "fullName", "gender", "dob", "district", "city", "profilePhoto"]
+  });
   if (!user) throw new Error("User not found");
-  const profile = await UserProfile.findOne({ where: { userId } });
+  const profile = await UserProfile.findOne({
+    where: { userId },
+    attributes: ["community", "personal"]
+  });
   const community = normalizeJsonColumn(profile?.community, SECTION_ALLOWED_KEYS.community) as {
     kulam?: string | null;
   } | null;
@@ -107,25 +113,61 @@ export async function getUserContext(userId: number) {
   };
 }
 
-export async function getMatrimonyHub(userId: number): Promise<MatrimonyHubResponse> {
-  const [profileRow, { row: pendingRow, meta }, userContext] = await Promise.all([
-    UserProfile.findOne({ where: { userId } }),
-    findActiveMatrimonyApplication(userId),
-    getUserContext(userId)
+type HubLoadOptions = {
+  /** Skip a second pending lookup when the caller already has the active row. */
+  preloadedActive?: Awaited<ReturnType<typeof findActiveMatrimonyApplication>>;
+};
+
+export async function getMatrimonyHub(
+  userId: number,
+  opts?: HubLoadOptions
+): Promise<MatrimonyHubResponse> {
+  const [user, profileRow, active] = await Promise.all([
+    User.findByPk(userId, {
+      attributes: ["id", "fullName", "gender", "dob", "district", "city", "profilePhoto"]
+    }),
+    UserProfile.findOne({
+      where: { userId },
+      attributes: ["id", "userId", "matrimony", "community", "personal"]
+    }),
+    opts?.preloadedActive
+      ? Promise.resolve(opts.preloadedActive)
+      : findActiveMatrimonyApplication(userId)
   ]);
+  if (!user) throw new Error("User not found");
+
+  const { row: pendingRow, meta, latestWhenInactive } = active;
+  const community = normalizeJsonColumn(profileRow?.community, SECTION_ALLOWED_KEYS.community) as {
+    kulam?: string | null;
+  } | null;
+  const personal = normalizeJsonColumn(profileRow?.personal, SECTION_ALLOWED_KEYS.personal) as {
+    fatherName?: string | null;
+  } | null;
+  const profile_image =
+    (await toPublicUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
+  const userContext = {
+    full_name: user.fullName,
+    gender: user.gender ?? null,
+    date_of_birth: user.dob ? String(user.dob).slice(0, 10) : null,
+    district: user.district ?? null,
+    city: user.city ?? null,
+    profile_image,
+    father_name: personal?.fatherName ?? null,
+    kulam: community?.kulam ?? null
+  };
 
   const approved = stripInternalKeys(
     normalizeJsonColumn(profileRow?.matrimony, SECTION_ALLOWED_KEYS.matrimony) ?? {}
   );
   const hasApproved = approved.matrimonyProfileActive === true;
 
-  let draft: MatrimonySection | null = null;
+  let draftUnsigned: MatrimonySection | null = null;
   let pending: MatrimonyHubResponse["pending"] = null;
 
   if (pendingRow) {
     const rawFull = readRawPendingData(pendingRow.data);
     const raw = normalizeJsonColumn(pendingRow.data, SECTION_ALLOWED_KEYS.matrimony) ?? {};
-    draft = await signMatrimonySection(stripInternalKeys(raw));
+    draftUnsigned = stripInternalKeys(raw);
 
     const workflow = meta?.workflowStatus;
     const changeRequest =
@@ -163,10 +205,8 @@ export async function getMatrimonyHub(userId: number): Promise<MatrimonyHubRespo
       };
     }
   } else {
-    const lastRow = await PendingProfileUpdate.findOne({
-      where: { userId, section: "MATRIMONY" },
-      order: [["submittedAt", "DESC"]]
-    });
+    // Reuse the latest row already loaded by findActiveMatrimonyApplication (no second round-trip).
+    const lastRow = latestWhenInactive;
     if (lastRow?.status === "REJECTED") {
       const lastMeta = await loadMeta(lastRow.id);
       const isHardReject =
@@ -174,7 +214,7 @@ export async function getMatrimonyHub(userId: number): Promise<MatrimonyHubRespo
         lastMeta?.rejectionReason !== "CHANGES_REQUESTED";
       if (isHardReject) {
         const raw = normalizeJsonColumn(lastRow.data, SECTION_ALLOWED_KEYS.matrimony) ?? {};
-        draft = await signMatrimonySection(stripInternalKeys(raw));
+        draftUnsigned = stripInternalKeys(raw);
         pending = {
           status: "REJECTED",
           admin_remarks: lastRow.adminRemarks,
@@ -186,13 +226,12 @@ export async function getMatrimonyHub(userId: number): Promise<MatrimonyHubRespo
     }
   }
 
-  const user = await User.findByPk(userId, { attributes: ["profilePhoto"] });
   const requestedFields = pending?.requested_fields?.length ? pending.requested_fields : null;
-  const draftForCompletion = draft ?? (hasApproved ? null : approved);
+  const draftForCompletion = draftUnsigned ?? (hasApproved ? null : approved);
   const { percentage, missing } = computeMatrimonyCompletion(
     hasApproved ? approved : null,
     draftForCompletion,
-    user?.profilePhoto ?? null,
+    user.profilePhoto ?? null,
     pending?.status === "CHANGES_REQUESTED" ? requestedFields : null
   );
 
@@ -206,7 +245,7 @@ export async function getMatrimonyHub(userId: number): Promise<MatrimonyHubRespo
     if (life === "PAUSED") status = "PAUSED";
     else if (life === "CLOSED") status = "CLOSED";
     else status = "APPROVED";
-  } else if (draft && Object.keys(draft).length > 0) status = "DRAFT";
+  } else if (draftUnsigned && Object.keys(draftUnsigned).length > 0) status = "DRAFT";
   else if (percentage > 0) status = "DRAFT";
 
   const lifecycle = hasApproved ? normalizeMatrimonyLifecycle(approved) : null;
@@ -234,13 +273,28 @@ export async function getMatrimonyHub(userId: number): Promise<MatrimonyHubRespo
   const can_close = status === "APPROVED" || status === "PAUSED";
   const can_reactivate = status === "CLOSED";
 
-  const profileForSelf = isMatrimonyForSelf(
-    (draftForCompletion as MatrimonySection | null)?.lookingFor ?? approved?.lookingFor
+  const sectionForCandidate = (draftForCompletion ?? approved ?? {}) as MatrimonySection;
+  const profileForSelf = isMatrimonyForSelf(sectionForCandidate.lookingFor ?? approved?.lookingFor);
+  const candidateRaw = resolveCandidatePhotoUrl(sectionForCandidate as Record<string, unknown>);
+  const candidateIdentity = resolveMatrimonyCandidate(
+    {
+      id: user.id,
+      fullName: user.fullName,
+      gender: user.gender,
+      dob: user.dob,
+      district: user.district,
+      occupation: null,
+      education: null
+    },
+    sectionForCandidate
   );
-  const candidateRaw = resolveCandidatePhotoUrl(
-    (draftForCompletion ?? approved ?? {}) as Record<string, unknown>
-  );
-  const candidatePublicUrl = candidateRaw ? await toPublicUrlIfR2(candidateRaw) : null;
+
+  // Sign URLs in parallel — same outputs as sequential signMatrimonySection / toPublicUrlIfR2.
+  const [draft, approvedSigned, candidatePublicUrl] = await Promise.all([
+    draftUnsigned ? signMatrimonySection(draftUnsigned) : Promise.resolve(null),
+    hasApproved ? signMatrimonySection(approved) : Promise.resolve(null),
+    candidateRaw ? toPublicUrlIfR2(candidateRaw) : Promise.resolve(null)
+  ]);
 
   return {
     status,
@@ -253,12 +307,13 @@ export async function getMatrimonyHub(userId: number): Promise<MatrimonyHubRespo
     can_close,
     can_reactivate,
     missing_fields: missing,
-    approved: hasApproved ? await signMatrimonySection(approved) : null,
+    approved: approvedSigned,
     draft,
     pending,
     user_context: userContext,
     account_profile_photo: userContext.profile_image,
     matrimony_candidate_photo: candidatePublicUrl,
+    matrimony_candidate_name: candidateIdentity.name,
     profile_for_self: profileForSelf
   };
 }

@@ -638,6 +638,9 @@ export async function restoreSoftDeletedUser(userId: number, adminEmail: string)
     deletedBy: null,
     deleteReason: null
   });
+  void import("../middlewares/auth.middleware")
+    .then(({ invalidateAuthGateCache }) => invalidateAuthGateCache(userId))
+    .catch(() => {});
   await ModerationAction.create({
     action: "REACTIVATE",
     targetUserId: userId,

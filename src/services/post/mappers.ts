@@ -52,6 +52,7 @@ export function jobFieldsFromPost(post: Post) {
     job_company: post.jobCompany ?? null,
     job_category: post.jobCategory ?? null,
     job_location: post.jobLocation ?? null,
+    job_contact_phone: post.jobContactPhone ?? null,
     job_employment_type: post.jobEmploymentType ?? null,
     job_work_mode: post.jobWorkMode ?? null,
     job_experience: post.jobExperience ?? null,
@@ -231,6 +232,7 @@ export type PostJobFields = {
   jobCompany: string | null;
   jobCategory: string | null;
   jobLocation: string | null;
+  jobContactPhone: string | null;
   jobEmploymentType: JobEmploymentType | null;
   jobWorkMode: JobWorkMode | null;
   jobExperience: string | null;
@@ -245,6 +247,7 @@ export function normalizeJobFields(payload: {
   job_company?: string | null;
   job_category?: string | null;
   job_location?: string | null;
+  job_contact_phone?: string | null;
   job_employment_type?: JobEmploymentType | null;
   job_work_mode?: JobWorkMode | null;
   job_experience?: string | null;
@@ -258,6 +261,7 @@ export function normalizeJobFields(payload: {
     jobCompany: payload.job_company?.trim() || null,
     jobCategory: payload.job_category?.trim() || null,
     jobLocation: payload.job_location?.trim() || null,
+    jobContactPhone: payload.job_contact_phone?.trim() || null,
     jobEmploymentType: payload.job_employment_type ?? null,
     jobWorkMode: payload.job_work_mode ?? null,
     jobExperience: payload.job_experience?.trim() || null,

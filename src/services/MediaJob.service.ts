@@ -95,7 +95,47 @@ export type MediaFinalizeState = FinalizeMediaResult & {
   processingStatus: MediaProcessingStatus;
   jobId: number | null;
   errorMessage?: string | null;
+  /** Present when a job is queued/unclaimed — helps diagnose a missing media worker. */
+  queue?: {
+    jobStatus: string;
+    ageMs: number;
+    claimed: boolean;
+    hint?: string;
+  };
 };
+
+function mediaTimingEnabled(): boolean {
+  return process.env.MEDIA_PIPELINE_TIMING === "true";
+}
+
+function mediaTimingLog(step: string, ms: number, extra?: Record<string, unknown>): void {
+  if (!mediaTimingEnabled() && ms < 3000) return;
+  const suffix = extra ? ` ${JSON.stringify(extra)}` : "";
+  console.log(`[media-pipeline] ${step}=${ms}ms${suffix}`);
+}
+
+function queueDiagnostics(
+  job: MediaJob | null,
+  processingStatus: MediaProcessingStatus
+): MediaFinalizeState["queue"] | undefined {
+  if (!job) return undefined;
+  if (job.status === "completed" || processingStatus === "completed") return undefined;
+  if (job.status === "failed" || processingStatus === "failed") return undefined;
+  const ageMs = Math.max(0, Date.now() - new Date(job.updatedAt).getTime());
+  const claimed = job.status === "processing" && !!job.workerId;
+  const stuckUnclaimed = job.status === "pending" && !job.workerId && ageMs >= 5_000;
+  return {
+    jobStatus: job.status,
+    ageMs,
+    claimed,
+    ...(stuckUnclaimed
+      ? {
+          hint:
+            "Media job is still pending with no worker claim. Start the media worker (npm run dev:media-worker / digitalhouse-media-worker)."
+        }
+      : {})
+  };
+}
 
 function provisionalResult(row: MediaFile, byteSize = 0): FinalizeMediaResult {
   const raw = row.objectKey ?? row.fileUrl;
@@ -120,16 +160,19 @@ function stateFor(
   byteSize = 0
 ): MediaFinalizeState {
   const completed = getCompletedMediaResult(row);
+  const processingStatus: MediaProcessingStatus =
+    job?.status === "failed"
+      ? "failed"
+      : job?.status === "completed"
+        ? "completed"
+        : row.processingStatus;
+  const queue = queueDiagnostics(job, processingStatus);
   return {
     ...(completed ?? provisionalResult(row, byteSize)),
-    processingStatus:
-      job?.status === "failed"
-        ? "failed"
-        : job?.status === "completed"
-          ? "completed"
-          : row.processingStatus,
+    processingStatus,
     jobId: job?.id ?? null,
-    ...(job?.status === "failed" ? { errorMessage: job.errorMessage } : {})
+    ...(job?.status === "failed" ? { errorMessage: job.errorMessage } : {}),
+    ...(queue ? { queue } : {})
   };
 }
 
@@ -150,10 +193,12 @@ export async function enqueueMediaFinalize(
   mediaFileId: number,
   userId: number
 ): Promise<MediaFinalizeState> {
+  const t0 = Date.now();
   const current = await ownedMedia(mediaFileId, userId);
   const completed = getCompletedMediaResult(current);
   if (completed) {
     const job = await MediaJob.findOne({ where: { mediaId: current.id } });
+    mediaTimingLog("finalize.already_completed", Date.now() - t0, { mediaFileId });
     return stateFor(current, job);
   }
 
@@ -161,7 +206,9 @@ export async function enqueueMediaFinalize(
   if (!objectKey) {
     throw Object.assign(new Error("Invalid media storage key"), { status: 400 });
   }
+  const tHead = Date.now();
   const metadata = await getR2ObjectMetadata(objectKey);
+  mediaTimingLog("finalize.head_object", Date.now() - tHead, { mediaFileId });
   if (metadata.byteSize <= 0) {
     throw Object.assign(new Error("Uploaded media object is empty"), { status: 400 });
   }
@@ -182,6 +229,7 @@ export async function enqueueMediaFinalize(
   }
   await resolveFinalizeContentType(current.fileType, objectKey, metadata.contentType);
 
+  const tTx = Date.now();
   const result = await sequelize.transaction(async (transaction) => {
     const row = await MediaFile.findByPk(mediaFileId, {
       transaction,
@@ -244,17 +292,46 @@ export async function enqueueMediaFinalize(
     }
     return { row, job };
   });
+  mediaTimingLog("finalize.enqueue_tx", Date.now() - tTx, {
+    mediaFileId,
+    jobId: result.job.id,
+    jobStatus: result.job.status
+  });
+  mediaTimingLog("finalize.total", Date.now() - t0, {
+    mediaFileId,
+    jobId: result.job.id
+  });
 
   return stateFor(result.row, result.job, metadata.byteSize);
 }
+
+const statusUnclaimedWarnAt = new Map<number, number>();
 
 export async function getMediaFinalizeStatus(
   mediaFileId: number,
   userId: number
 ): Promise<MediaFinalizeState> {
+  const t0 = Date.now();
   const row = await ownedMedia(mediaFileId, userId);
   const job = await MediaJob.findOne({ where: { mediaId: row.id } });
-  return stateFor(row, job);
+  const state = stateFor(row, job);
+  if (state.queue?.hint) {
+    const last = statusUnclaimedWarnAt.get(mediaFileId) ?? 0;
+    if (Date.now() - last >= 30_000) {
+      statusUnclaimedWarnAt.set(mediaFileId, Date.now());
+      console.warn(
+        `[media] status media=${mediaFileId} pending_unclaimed ageMs=${state.queue.ageMs} — ${state.queue.hint}`
+      );
+    }
+  } else {
+    statusUnclaimedWarnAt.delete(mediaFileId);
+  }
+  mediaTimingLog("status.poll", Date.now() - t0, {
+    mediaFileId,
+    processingStatus: state.processingStatus,
+    jobStatus: job?.status ?? null
+  });
+  return state;
 }
 
 /** Atomically claim one pending job across any number of worker processes. */
@@ -269,7 +346,9 @@ export async function claimNextMediaJob(workerId: string): Promise<MediaJob | nu
       order: [
         ["createdAt", "ASC"],
         ["id", "ASC"]
-      ]
+      ],
+      // Empty-queue polls are frequent; don't inflate [slow-query] with acquire/RTT noise.
+      logging: false
     });
     if (!candidate) return null;
     const claimed = await sequelize.transaction(async (transaction) => {
@@ -325,6 +404,12 @@ export async function claimNextMediaJob(workerId: string): Promise<MediaJob | nu
 export async function processClaimedMediaJob(job: MediaJob): Promise<void> {
   const claimedBy = job.workerId;
   if (!claimedBy) throw new Error(`Media job ${job.id} has no worker claim`);
+  const t0 = Date.now();
+  mediaTimingLog("worker.claim_start", 0, {
+    jobId: job.id,
+    mediaId: job.mediaId,
+    workerId: claimedBy
+  });
   const heartbeat = setInterval(() => {
     void MediaJob.update(
       { updatedAt: new Date() },
@@ -339,8 +424,14 @@ export async function processClaimedMediaJob(job: MediaJob): Promise<void> {
   heartbeat.unref();
   try {
     // Dynamic import keeps Sharp/FFmpeg modules out of the Express process.
+    const tOpt = Date.now();
     const { mediaProcessingService } = await import("./MediaProcessing.service");
     const processed = await mediaProcessingService.processMediaFile(job.mediaId);
+    mediaTimingLog("worker.optimize", Date.now() - tOpt, {
+      jobId: job.id,
+      mediaId: job.mediaId
+    });
+    const tCommit = Date.now();
     const completed = await sequelize.transaction(async (transaction) => {
       const media = await MediaFile.findByPk(job.mediaId, {
         transaction,
@@ -370,6 +461,10 @@ export async function processClaimedMediaJob(job: MediaJob): Promise<void> {
         { transaction }
       );
       return true;
+    });
+    mediaTimingLog("worker.db_complete", Date.now() - tCommit, {
+      jobId: job.id,
+      committed: completed
     });
     if (!completed) {
       console.warn(`[media-worker] lost claim before completion job=${job.id}`);
@@ -401,6 +496,10 @@ export async function processClaimedMediaJob(job: MediaJob): Promise<void> {
         );
       }
     }
+    mediaTimingLog("worker.total", Date.now() - t0, {
+      jobId: job.id,
+      mediaId: job.mediaId
+    });
   } catch (error) {
     const message =
       error instanceof Error ? `${error.name}: ${error.message}` : String(error);

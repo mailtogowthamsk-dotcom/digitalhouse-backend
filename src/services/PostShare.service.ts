@@ -132,10 +132,20 @@ export async function repostPost(userId: number, postId: number): Promise<PostDe
 
   const existing = await Post.findOne({
     where: { userId, originalPostId: rootId },
-    attributes: ["id"]
+    attributes: ["id", "moderationStatus", "deletedAt"]
   });
   if (existing) {
-    serviceError("You already reposted this post", 409, "ALREADY_REPOSTED");
+    // Soft-deleted repost → restore instead of blocking forever.
+    if (existing.moderationStatus === "SOFT_DELETED" || existing.deletedAt) {
+      await existing.update({
+        moderationStatus: "ACTIVE",
+        deletedAt: null,
+        moderatedAt: null,
+        moderationReason: null
+      } as any);
+    }
+    // Idempotent: already reposted is success (avoids false 409 after double-tap / retry).
+    return postService.getPost(userId, existing.id);
   }
 
   const repost = await Post.create({

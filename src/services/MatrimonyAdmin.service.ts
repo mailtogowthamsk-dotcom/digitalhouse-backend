@@ -75,7 +75,7 @@ async function loadMetaForPendingIds(ids: number[]): Promise<Map<number, Matrimo
   if (ids.length === 0) return new Map();
   try {
     const metas = await MatrimonyRequestMeta.findAll({
-      where: { pendingUpdateId: ids },
+      where: { pendingUpdateId: { [Op.in]: ids } },
       attributes: [...META_SAFE_ATTRIBUTES]
     });
     return new Map(metas.map((m) => [m.pendingUpdateId, m]));
@@ -105,6 +105,8 @@ export type MatrimonyRequestListQuery = {
   sortBy?: string;
   sortDir?: "asc" | "desc";
   workflowStatus?: string;
+  /** Display taxonomy filter (NEW_APPLICATION | PROFILE_UPDATE | …) */
+  requestType?: string;
   gender?: string;
   district?: string;
   kulam?: string;
@@ -121,6 +123,8 @@ export type MatrimonyRequestListQuery = {
   includeDrafts?: boolean;
   /** When true, show SUBMITTED, UNDER_REVIEW, and RESUBMITTED only */
   pendingReviewOnly?: boolean;
+  /** Pending review older than N days */
+  waitingOverDays?: number;
   subscriptionPlan?: string;
   versionMin?: number;
 };
@@ -204,6 +208,54 @@ function deriveWorkflow(
   if (rawData[SUBMITTED_FLAG] === false) return "DRAFT";
   if (meta?.assignedReviewer) return "UNDER_REVIEW";
   return "SUBMITTED";
+}
+
+/** Display-only taxonomy for admin UI (does not change approval rules). */
+export type MatrimonyAdminRequestType =
+  | "NEW_APPLICATION"
+  | "PROFILE_UPDATE"
+  | "RESUBMISSION"
+  | "CHANGE_REQUEST_RESPONSE";
+
+export function deriveAdminRequestType(input: {
+  hasApprovedProfile: boolean;
+  workflowStatus: MatrimonyWorkflowStatus;
+  resubmissionCount: number;
+  hasChangeRequest: boolean;
+  applicationVersion: number;
+}): MatrimonyAdminRequestType {
+  const { hasApprovedProfile, workflowStatus, resubmissionCount, hasChangeRequest, applicationVersion } =
+    input;
+  if (resubmissionCount > 0 || workflowStatus === "RESUBMITTED") {
+    return "CHANGE_REQUEST_RESPONSE";
+  }
+  if (
+    hasChangeRequest &&
+    (workflowStatus === "SUBMITTED" || workflowStatus === "UNDER_REVIEW")
+  ) {
+    return "CHANGE_REQUEST_RESPONSE";
+  }
+  if (hasApprovedProfile) return "PROFILE_UPDATE";
+  if (applicationVersion > 1) return "RESUBMISSION";
+  return "NEW_APPLICATION";
+}
+
+function resolveCandidateDisplayName(
+  data: Record<string, unknown>,
+  userFullName: string
+): string {
+  const named = typeof data.candidateName === "string" ? data.candidateName.trim() : "";
+  if (named) return named;
+  const lookingFor = String(data.lookingFor ?? "").toUpperCase();
+  if (!lookingFor || lookingFor === "SELF") return userFullName;
+  const rel = lookingFor.replace(/_/g, " ").toLowerCase();
+  return `${userFullName} · profile for ${rel}`;
+}
+
+function daysBetween(fromIso: string, to = new Date()): number {
+  const from = new Date(fromIso).getTime();
+  if (Number.isNaN(from)) return 0;
+  return Math.max(0, Math.floor((to.getTime() - from) / 86_400_000));
 }
 
 async function ensureMeta(
@@ -376,26 +428,60 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
   }
   const hasUserFilter = Object.keys(userWhere).length > 0;
 
+  const LIST_USER_ATTRIBUTES = [
+    "id",
+    "fullName",
+    "email",
+    "mobile",
+    "gender",
+    "dob",
+    "district",
+    "community",
+    "kulam",
+    "profilePhoto",
+    "occupation",
+    "createdAt"
+  ] as const;
+
   const rows = await PendingProfileUpdate.findAll({
     where: pendingWhere,
+    attributes: [
+      "id",
+      "userId",
+      "section",
+      "data",
+      "status",
+      "submittedAt",
+      "updatedAt",
+      "reviewedAt",
+      "adminRemarks"
+    ],
     order: [["submittedAt", "ASC"]],
     include: [
       {
         model: User,
         as: "User",
         required: true,
+        attributes: [...LIST_USER_ATTRIBUTES],
         where: hasUserFilter ? userWhere : undefined
+      },
+      {
+        model: MatrimonyRequestMeta,
+        as: "MatrimonyMeta",
+        required: false,
+        attributes: [...META_SAFE_ATTRIBUTES]
       }
     ]
   });
 
   const userIds = [...new Set(rows.map((r) => r.userId))];
-  const [profiles, metaByPending] = await Promise.all([
+  const profiles =
     userIds.length > 0
-      ? UserProfile.findAll({ where: { userId: userIds } })
-      : Promise.resolve([]),
-    loadMetaForPendingIds(rows.map((r) => r.id))
-  ]);
+      ? await UserProfile.findAll({
+          where: { userId: { [Op.in]: userIds } },
+          attributes: ["userId", "matrimony", "community"]
+        })
+      : [];
   const profileByUser = new Map(profiles.map((p) => [p.userId, p]));
 
   type BuiltItem = {
@@ -413,11 +499,23 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     updatedAt: string;
     profileCompletion: number;
     workflowStatus: MatrimonyWorkflowStatus;
+    requestType: MatrimonyAdminRequestType;
     rowStatus: string;
     assignedReviewer: string | null;
     reviewedBy: string | null;
     verificationComplete: boolean;
     profilePhotoUrl: string | null;
+    applicantPhotoUrl: string | null;
+    candidatePhotoUrl: string | null;
+    candidateName: string;
+    candidateGender: string | null;
+    candidateAge: number | null;
+    candidateDistrict: string;
+    candidateOccupation: string | null;
+    candidateMaritalStatus: string | null;
+    fieldChangeCount: number;
+    pendingSinceDays: number;
+    registeredAt: string | null;
     submittedForReview: boolean;
     adminDecision: string;
     applicationVersion: number;
@@ -425,6 +523,9 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     isCurrent: boolean;
     subscriptionPlan: string | null;
     _candidateUrl?: string | null;
+    _applicantUrl?: string | null;
+    _changeBaseline?: Record<string, unknown> | null;
+    _pendingData?: Record<string, unknown>;
   };
 
   const byUser = new Map<number, BuiltItem[]>();
@@ -436,7 +537,8 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     const allowedKeys = SECTION_ALLOWED_KEYS.matrimony;
     const rawData = readRawPendingData(row.data);
     const data = normalizeJsonColumn(row.data, allowedKeys) ?? {};
-    const meta = metaByPending.get(row.id) ?? null;
+    const meta =
+      ((row as any).MatrimonyMeta as MatrimonyRequestMeta | null | undefined) ?? null;
     const workflowStatus = deriveWorkflow(row.status, rawData, meta);
 
     if (
@@ -485,6 +587,10 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     if (search) {
       const idMatch = String(row.id).includes(search) || String(row.userId).includes(search);
       const nameMatch = (u.fullName ?? "").toLowerCase().includes(search);
+      const candidateNameHint = resolveCandidateDisplayName(
+        data as Record<string, unknown>,
+        u.fullName ?? ""
+      ).toLowerCase();
       const mobileMatch = (u.mobile ?? "").includes(search);
       const emailMatch = (u.email ?? "").toLowerCase().includes(search);
       const communityMatch = communityName.toLowerCase().includes(search);
@@ -493,6 +599,7 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
       if (
         !idMatch &&
         !nameMatch &&
+        !candidateNameHint.includes(search) &&
         !mobileMatch &&
         !emailMatch &&
         !communityMatch &&
@@ -505,6 +612,22 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
 
     const candidateUrl = resolveCandidatePhotoUrl(data as Record<string, unknown>);
     const reviewedBy = meta?.reviewedBy ?? null;
+    const hasApprovedProfile = approved.matrimonyProfileActive === true;
+    const snapshotRaw =
+      (rawData[SUBMISSION_SNAPSHOT_KEY] as Record<string, unknown> | undefined) ?? null;
+    const changeBaseline = hasApprovedProfile
+      ? (approved as Record<string, unknown>)
+      : snapshotRaw;
+    const hasChangeRequest = Boolean(
+      rawData[CHANGE_REQUEST_KEY] ||
+        meta?.rejectionReason === "CHANGES_REQUESTED" ||
+        meta?.workflowStatus === "CHANGES_REQUESTED"
+    );
+    const resubmissionCount = Number(rawData[RESUB_COUNT_KEY] ?? 0);
+    const candidateName = resolveCandidateDisplayName(
+      data as Record<string, unknown>,
+      u.fullName ?? `User #${row.userId}`
+    );
 
     const item: BuiltItem = {
       id: row.id,
@@ -521,19 +644,40 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
       updatedAt: row.updatedAt.toISOString(),
       profileCompletion: percentage,
       workflowStatus,
+      requestType: "NEW_APPLICATION",
       rowStatus: row.status,
       assignedReviewer: meta?.assignedReviewer ?? null,
       reviewedBy,
       verificationComplete: vComplete,
       profilePhotoUrl: null,
+      applicantPhotoUrl: null,
+      candidatePhotoUrl: null,
+      candidateName,
+      candidateGender: u.gender ?? null,
+      candidateAge: age,
+      candidateDistrict: district,
+      candidateOccupation:
+        typeof data.occupation === "string" ? data.occupation : u.occupation ?? null,
+      candidateMaritalStatus:
+        typeof data.maritalStatus === "string" ? data.maritalStatus : null,
+      fieldChangeCount: 0,
+      pendingSinceDays: daysBetween(row.submittedAt.toISOString()),
+      registeredAt: u.createdAt ? new Date(u.createdAt).toISOString() : null,
       submittedForReview: rawData[SUBMITTED_FLAG] !== false,
       adminDecision: adminDecisionLabel(workflowStatus, reviewedBy),
       applicationVersion: 0,
       applicationCount: 0,
       isCurrent: false,
       subscriptionPlan: null,
-      _candidateUrl: candidateUrl
+      _candidateUrl: candidateUrl,
+      _applicantUrl: u.profilePhoto ?? null,
+      _changeBaseline: changeBaseline,
+      _pendingData: data as Record<string, unknown>
     };
+    (item as BuiltItem & { _hasApproved?: boolean; _hasChangeRequest?: boolean; _resub?: number })._hasApproved =
+      hasApprovedProfile;
+    (item as BuiltItem & { _hasChangeRequest?: boolean })._hasChangeRequest = hasChangeRequest;
+    (item as BuiltItem & { _resub?: number })._resub = resubmissionCount;
 
     const list = byUser.get(row.userId) ?? [];
     list.push(item);
@@ -549,6 +693,21 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     chron.forEach((a, idx) => {
       a.applicationVersion = idx + 1;
       a.applicationCount = chron.length;
+      const flags = a as BuiltItem & {
+        _hasApproved?: boolean;
+        _hasChangeRequest?: boolean;
+        _resub?: number;
+      };
+      a.requestType = deriveAdminRequestType({
+        hasApprovedProfile: Boolean(flags._hasApproved),
+        workflowStatus: a.workflowStatus,
+        resubmissionCount: Number(flags._resub ?? 0),
+        hasChangeRequest: Boolean(flags._hasChangeRequest),
+        applicationVersion: a.applicationVersion
+      });
+      delete flags._hasApproved;
+      delete flags._hasChangeRequest;
+      delete flags._resub;
     });
     const current = pickCurrentApplication(chron);
     current.isCurrent = true;
@@ -563,6 +722,13 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     } else if (query.pendingReviewOnly) {
       const pending = new Set(["SUBMITTED", "UNDER_REVIEW", "RESUBMITTED"]);
       if (!pending.has(item.workflowStatus)) return false;
+    }
+    if (query.requestType && item.requestType !== query.requestType) return false;
+    if (query.waitingOverDays != null && query.waitingOverDays > 0) {
+      const pending = new Set(["SUBMITTED", "UNDER_REVIEW", "RESUBMITTED"]);
+      if (!pending.has(item.workflowStatus) || item.pendingSinceDays < query.waitingOverDays) {
+        return false;
+      }
     }
     if (submittedFrom) {
       const from = new Date(submittedFrom);
@@ -616,8 +782,19 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
   await Promise.all(
     pageItems.map(async (item) => {
       const url = item._candidateUrl;
-      item.profilePhotoUrl = url ? publicUserPhoto(url) : null;
+      const applicant = item._applicantUrl;
+      item.candidatePhotoUrl = url ? publicUserPhoto(url) : null;
+      item.applicantPhotoUrl = applicant ? publicUserPhoto(applicant) : null;
+      // Keep profilePhotoUrl as candidate thumb for backward-compatible list UIs
+      item.profilePhotoUrl = item.candidatePhotoUrl;
+      const baseline = item._changeBaseline ?? null;
+      const pendingData = item._pendingData;
+      item.fieldChangeCount =
+        baseline && pendingData ? computeFieldChanges(baseline, pendingData).length : 0;
       delete item._candidateUrl;
+      delete item._applicantUrl;
+      delete item._changeBaseline;
+      delete item._pendingData;
     })
   );
 
@@ -701,10 +878,33 @@ export async function getMatrimonyRequestDetail(updateId: number) {
   const { revealPresence } = await import("./LastSeen.service");
   const presence = await revealPresence(null, user.id, { adminBypass: true });
 
+  const hasApprovedProfile = (currentApproved as { matrimonyProfileActive?: boolean })
+    .matrimonyProfileActive === true;
+  const resubmissionCount = Number(rawData[RESUB_COUNT_KEY] ?? meta?.resubmissionCount ?? 0);
+  const hasChangeRequest = Boolean(changeRequest);
+  const historyPayload = await buildApplicationHistoryPayload(row.userId, row.id);
+  const requestType = deriveAdminRequestType({
+    hasApprovedProfile,
+    workflowStatus,
+    resubmissionCount,
+    hasChangeRequest,
+    applicationVersion: historyPayload.applicationVersion ?? 1
+  });
+  const approvedFieldChanges = await signFieldChangesMedia(
+    hasApprovedProfile
+      ? computeFieldChanges(currentApproved as Record<string, unknown>, data)
+      : []
+  );
+  const candidateName = resolveCandidateDisplayName(
+    data,
+    user.fullName ?? `User #${user.id}`
+  );
+
   return {
     id: row.id,
     userId: user.id,
     workflowStatus,
+    requestType,
     rowStatus: row.status,
     lifecycleStatus: approvedLifecycle,
     presence: {
@@ -729,7 +929,42 @@ export async function getMatrimonyRequestDetail(updateId: number) {
     changeRequest,
     submissionSnapshot,
     fieldChanges,
-    resubmissionCount: Number(rawData[RESUB_COUNT_KEY] ?? meta?.resubmissionCount ?? 0),
+    /** Approved live profile vs current pending (profile updates). */
+    approvedFieldChanges,
+    fieldChangeCount: Math.max(fieldChanges.length, approvedFieldChanges.length),
+    resubmissionCount,
+    applicant: {
+      id: user.id,
+      fullName: user.fullName,
+      photoUrl: accountOwnerPhoto,
+      mobile: user.mobile,
+      email: user.email,
+      registeredAt: user.createdAt ? new Date(user.createdAt).toISOString() : null,
+      community: user.community ?? null,
+      district: user.district ?? null
+    },
+    candidate: {
+      name: candidateName,
+      photoUrl: matrimonyCandidatePhoto,
+      age: calcAge(user.dob),
+      gender: user.gender,
+      district: user.district,
+      occupation: (data.occupation as string) ?? user.occupation ?? null,
+      kulam:
+        (data.kulamSnapshot as string) ??
+        (community as { kulam?: string } | null)?.kulam ??
+        user.kulam ??
+        null,
+      maritalStatus: (data.maritalStatus as string) ?? null,
+      lookingFor: (data.lookingFor as string) ?? null
+    },
+    reviewActors: {
+      assignedReviewer: meta?.assignedReviewer ?? null,
+      reviewedBy: meta?.reviewedBy ?? null,
+      changeRequestedBy: changeRequest?.requestedBy ?? null,
+      changeRequestedAt: changeRequest?.requestedAt ?? null,
+      reviewedAt: row.reviewedAt?.toISOString() ?? null
+    },
     user: {
       id: user.id,
       fullName: user.fullName,
@@ -745,7 +980,8 @@ export async function getMatrimonyRequestDetail(updateId: number) {
       nativePlace: (community as any)?.nativeVillage ?? null,
       education: user.education,
       occupation: user.occupation,
-      workLocation: user.workLocation
+      workLocation: user.workLocation,
+      createdAt: user.createdAt ? new Date(user.createdAt).toISOString() : null
     },
     personal,
     community,
@@ -783,7 +1019,7 @@ export async function getMatrimonyRequestDetail(updateId: number) {
       createdAt: a.createdAt.toISOString()
     })),
     rejectionReasons: MATRIMONY_REJECTION_REASONS,
-    ...(await buildApplicationHistoryPayload(row.userId, row.id))
+    ...historyPayload
   };
 }
 

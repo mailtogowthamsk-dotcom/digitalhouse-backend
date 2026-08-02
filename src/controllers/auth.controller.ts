@@ -152,10 +152,15 @@ export async function googleAuth(req: Request, res: Response) {
   const { idToken } = googleAuthSchema.parse(req.body);
   try {
     const result = await GoogleAuth.authenticateWithGoogle(idToken);
+    console.log(
+      `[auth/google] ok userId=${result.user?.id} new=${result.isNewUser} linked=${result.linkedExistingAccount}`
+    );
     return success(res, result);
   } catch (e: any) {
     const status = e?.status ?? 401;
-    return error(res, e?.message ?? "Google sign-in failed", status);
+    const message = e?.message ?? "Google sign-in failed";
+    console.warn(`[auth/google] fail status=${status} code=${e?.code ?? "?"} message=${message}`);
+    return error(res, message, status);
   }
 }
 

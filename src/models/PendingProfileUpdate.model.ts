@@ -53,6 +53,19 @@ PendingProfileUpdate.init(
   {
     sequelize,
     tableName: "pending_profile_updates",
-    timestamps: true
+    timestamps: true,
+    indexes: [
+      // Hot path: findActiveMatrimonyApplication / upsert draft+submit
+      // WHERE userId + section + status ORDER BY submittedAt DESC LIMIT 1
+      {
+        name: "idx_pending_user_section_status_submitted",
+        fields: ["userId", "section", "status", "submittedAt"]
+      },
+      // Admin queue listing by status+section (existing prod index)
+      {
+        name: "idx_pending_status_section",
+        fields: ["status", "section"]
+      }
+    ]
   }
 );

@@ -134,7 +134,8 @@ function registerApiMounts(application: Express, mount: string) {
   application.use(
     mount,
     (req, _res, next) => {
-      if (shouldLogRequests) {
+      const isGoogleAuth = req.path === "/auth/google" || req.path.endsWith("/auth/google");
+      if (shouldLogRequests || isGoogleAuth) {
         console.log(`[${new Date().toISOString()}] ${req.method} ${mount}${req.path}`);
       }
       next();

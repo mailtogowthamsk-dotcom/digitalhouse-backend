@@ -1,0 +1,6 @@
+{
+  "description": "Composite index for matrimony/business pending lookup by userId+section+status+submittedAt (avoids filesort and wrong status/section index choice)",
+  "idempotent": true,
+  "rollback": true,
+  "destructive": false
+}

@@ -34,6 +34,8 @@ export type PostDetailDto = {
   job_company: string | null;
   job_category?: string | null;
   job_location: string | null;
+  /** Recruitment contact — JOB detail only; never on feed. */
+  job_contact_phone?: string | null;
   job_employment_type: string | null;
   job_work_mode?: string | null;
   job_experience?: string | null;
@@ -139,6 +141,7 @@ export type CreatePostPayload = {
   job_company?: string | null;
   job_category?: string | null;
   job_location?: string | null;
+  job_contact_phone?: string | null;
   job_employment_type?: JobEmploymentType | null;
   job_work_mode?: JobWorkMode | null;
   job_experience?: string | null;

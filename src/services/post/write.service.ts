@@ -53,6 +53,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
         jobCompany: null,
         jobCategory: null,
         jobLocation: null,
+        jobContactPhone: null,
         jobEmploymentType: null,
         jobWorkMode: null,
         jobExperience: null,
@@ -465,6 +466,10 @@ export async function updatePost(userId: number, postId: number, payload: Update
     ...(isJob &&
       payload.job_location !== undefined && {
         jobLocation: payload.job_location?.trim() || null
+      }),
+    ...(isJob &&
+      payload.job_contact_phone !== undefined && {
+        jobContactPhone: payload.job_contact_phone?.trim() || null
       }),
     ...(isJob &&
       payload.job_employment_type !== undefined && {

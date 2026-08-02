@@ -31,24 +31,30 @@ import { assertDevMatrimonyPaymentsAllowed } from "../services/Razorpay.service"
 
 export async function getMe(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
-  const hub = await getMatrimonyHub(userId);
-  let subscription: Awaited<ReturnType<typeof Monetization.getSubscriptionSummary>>;
-  try {
-    subscription = await Monetization.getSubscriptionSummary(userId);
-  } catch (err: unknown) {
-    console.warn(
-      "[matrimony/me] subscription summary failed — run npm run db:run-matrimony-subscription-p1-sql",
-      err instanceof Error ? err.message : err
-    );
-    const period = Monetization.currentBillingPeriod();
-    subscription = {
+  const periodFallback = () => Monetization.currentBillingPeriod();
+  const freeSubscription = (): Awaited<ReturnType<typeof Monetization.getSubscriptionSummary>> => {
+    const period = periodFallback();
+    return {
       plan: "FREE",
       planLabel: "Free",
       expiresAt: null,
       quota: { used: 0, limit: 0, period, resetsAt: Monetization.billingPeriodResetsAt(period) },
       features: { canOpenOneStar: false, canOpenTwoStar: false, whoViewedMe: false }
     };
-  }
+  };
+
+  // Hub + subscription are independent — run together to cut one remote RTT.
+  const [hub, subscription] = await Promise.all([
+    getMatrimonyHub(userId),
+    Monetization.getSubscriptionSummary(userId).catch((err: unknown) => {
+      console.warn(
+        "[matrimony/me] subscription summary failed — run npm run db:run-matrimony-subscription-p1-sql",
+        err instanceof Error ? err.message : err
+      );
+      return freeSubscription();
+    })
+  ]);
+
   return success(res, {
     ...hub,
     subscription,
@@ -64,6 +70,7 @@ export async function saveDraft(req: Request, res: Response) {
     return success(res, hub);
   } catch (e: any) {
     if (e instanceof ZodError) return error(res, formatZodMessage(e), 400);
+    if (e?.status === 400) return error(res, e.message || "Invalid request", 400);
     throw e;
   }
 }
@@ -77,9 +84,13 @@ function formatZodMessage(err: ZodError): string {
 
 export async function submit(req: Request, res: Response) {
   const userId = (req as any).user?.id as number;
+  const t0 = Date.now();
   try {
     const payload = validateMatrimonySubmitBody(req.body);
     const hub = await submitMatrimonyProfile(userId, payload);
+    if (process.env.MATRIMONY_SUBMIT_TIMING === "true" || Date.now() - t0 >= 3000) {
+      console.log(`[matrimony-submit] controller user=${userId} total=${Date.now() - t0}ms`);
+    }
     return success(res, { ...hub, message: "Matrimony profile submitted for admin approval." });
   } catch (e: any) {
     if (e instanceof ZodError) return error(res, formatZodMessage(e), 400);
