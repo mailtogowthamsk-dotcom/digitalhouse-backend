@@ -1,6 +1,6 @@
 import { Op, literal, type WhereOptions } from "sequelize";
 import { User, Post, PostLike, SavedPost, HelpOffer } from "../models";
-import { toPublicUrlIfR2 } from "../utils/r2Client";
+import { isPrivateR2Object, toPrivateSignedUrlIfR2, toPublicUrlIfR2 } from "../utils/r2Client";
 import type { FeedAuthorDto, FeedItemDto, FeedResultDto } from "./Home.service";
 import { resolvePostMediaType } from "../constants/postMedia.constants";
 import { parseMarketplaceGallery, publicMarketplaceGallery } from "../utils/marketplaceGallery";
@@ -138,6 +138,9 @@ function applyPostFilters(
 ): WhereOptions {
   const andParts: WhereOptions[] = [baseWhere];
   andParts.push({ moderationStatus: "ACTIVE" });
+  if (!params.mine) {
+    andParts.push({ safetyDecision: "SAFE" });
+  }
 
   if (params.mine) {
     andParts.push({ userId: currentUserId });
@@ -468,7 +471,7 @@ export async function buildFeedItemsFromPosts(
   const originalPosts =
     originalIds.length > 0
       ? await Post.findAll({
-          where: { id: { [Op.in]: originalIds } },
+          where: { id: { [Op.in]: originalIds }, moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
           include: [
             {
               association: "User",
@@ -491,14 +494,19 @@ export async function buildFeedItemsFromPosts(
           : p.postType === "HELP_REQUEST"
             ? parseHelpGallery(p.helpGallery, p.mediaUrl ?? null)
             : [];
+      const ownerView = p.userId === currentUserId;
+      const resolveFeedMedia = (url: string | null | undefined) =>
+        ownerView && isPrivateR2Object(url)
+          ? toPrivateSignedUrlIfR2(url)
+          : Promise.resolve(toPublicUrlIfR2(url ?? null));
       const [mediaUrl, thumbnailUrl, profileImage, gallery] = await Promise.all([
-        toPublicUrlIfR2(p.mediaUrl ?? null),
-        toPublicUrlIfR2(p.thumbnailUrl ?? null),
-        author ? toPublicUrlIfR2(author.profilePhoto ?? null) : Promise.resolve(null),
+        resolveFeedMedia(p.mediaUrl),
+        resolveFeedMedia(p.thumbnailUrl),
+        author ? Promise.resolve(toPublicUrlIfR2(author.profilePhoto ?? null)) : Promise.resolve(null),
         galleryRaw.length
           ? p.postType === "MARKETPLACE"
-            ? publicMarketplaceGallery(galleryRaw)
-            : publicHelpGallery(galleryRaw)
+            ? publicMarketplaceGallery(galleryRaw, { signPrivate: ownerView })
+            : publicHelpGallery(galleryRaw, { signPrivate: ownerView })
           : Promise.resolve([] as string[])
       ]);
       const mediaType = resolvePostMediaType({
@@ -536,9 +544,7 @@ export async function buildFeedItemsFromPosts(
       const original = p.originalPostId ? originalById.get(p.originalPostId) : null;
       const originalUser = original ? ((original as any).User as User) : null;
       const originalProfileImage = originalUser
-        ? (await toPublicUrlIfR2(originalUser.profilePhoto ?? null)) ??
-          originalUser.profilePhoto ??
-          null
+        ? (await toPublicUrlIfR2(originalUser.profilePhoto ?? null))
         : null;
       return {
         postId: p.id,
@@ -557,7 +563,7 @@ export async function buildFeedItemsFromPosts(
         fileSize: p.fileSize ?? null,
         createdAt: p.createdAt.toISOString(),
         author: author
-          ? { ...toFeedAuthor(author), profileImage: profileImage ?? author.profilePhoto ?? null }
+          ? { ...toFeedAuthor(author), profileImage: profileImage ?? null }
           : { userId: 0, username: null, name: "Unknown", profileImage: null, verified: false },
         isRepost: Boolean(p.originalPostId),
         originalPostId: p.originalPostId ?? null,

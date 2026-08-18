@@ -132,19 +132,20 @@ export async function repostPost(userId: number, postId: number): Promise<PostDe
 
   const existing = await Post.findOne({
     where: { userId, originalPostId: rootId },
-    attributes: ["id", "moderationStatus", "deletedAt"]
+    attributes: ["id", "moderationStatus", "deletedAt", "safetyDecision", "mediaVersion"]
   });
   if (existing) {
-    // Soft-deleted repost → restore instead of blocking forever.
     if (existing.moderationStatus === "SOFT_DELETED" || existing.deletedAt) {
       await existing.update({
         moderationStatus: "ACTIVE",
         deletedAt: null,
         moderatedAt: null,
-        moderationReason: null
+        moderationReason: null,
+        safetyDecision: root.safetyDecision === "SAFE" ? "SAFE" : "PENDING",
+        mediaVersion: root.mediaVersion || existing.mediaVersion || 1,
+        moderatedMediaVersion: root.safetyDecision === "SAFE" ? root.mediaVersion || 1 : null
       } as any);
     }
-    // Idempotent: already reposted is success (avoids false 409 after double-tap / retry).
     return postService.getPost(userId, existing.id);
   }
 
@@ -188,13 +189,20 @@ export async function repostPost(userId: number, postId: number): Promise<PostDe
     helpUrgency: root.helpUrgency,
     helpLocation: root.helpLocation,
     helpContactPhone: root.helpContactPhone,
-    helpGallery: root.helpGallery
+    helpGallery: root.helpGallery,
+    safetyDecision: root.safetyDecision === "SAFE" ? "SAFE" : "PENDING",
+    safetyCategory: root.safetyCategory,
+    mediaVersion: root.mediaVersion || 1,
+    moderatedMediaVersion: root.safetyDecision === "SAFE" ? root.mediaVersion || 1 : null,
+    safetyPolicyVersion: root.safetyPolicyVersion
   } as any);
 
   const detail = await postService.getPost(userId, repost.id);
-  const { User: UserModel } = await import("../models");
-  const me = await UserModel.findByPk(userId, { attributes: ["community"] });
-  emitFeedNewPost(me?.community ?? null, repost.id);
+  if (repost.safetyDecision === "SAFE") {
+    const { User: UserModel } = await import("../models");
+    const me = await UserModel.findByPk(userId, { attributes: ["community"] });
+    emitFeedNewPost(me?.community ?? null, repost.id);
+  }
   return detail;
 }
 

@@ -1,0 +1,6 @@
+{
+  "description": "Central payment ledger/invoices/refunds and advertisement campaign tables (additive, reversible)",
+  "idempotent": true,
+  "rollback": true,
+  "destructive": false
+}

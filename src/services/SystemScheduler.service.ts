@@ -33,6 +33,10 @@ import {
   runOrphanMediaCleanup,
   getOrphanMediaCleanupJobRuntimeStatus
 } from "./OrphanMediaCleanup.service";
+import {
+  runAdvertisementLifecycleJobs,
+  getAdvertisementLifecycleJobRuntimeStatus
+} from "./advertisement/AdvertisementLifecycle.service";
 
 export type JobRuntimeStatus = {
   timerActive: boolean;
@@ -53,6 +57,8 @@ function runtimeFor(jobKey: string): JobRuntimeStatus {
       return getPlatformNotificationJobRuntimeStatus();
     case "media_orphan_cleanup":
       return getOrphanMediaCleanupJobRuntimeStatus();
+    case "advertisement_lifecycle":
+      return getAdvertisementLifecycleJobRuntimeStatus();
     default:
       return { timerActive: false, running: false, intervalMs: 0, envEnabled: false };
   }
@@ -330,6 +336,9 @@ export async function runJobNow(jobKey: string, adminEmail: string | null) {
     }
     case "media_orphan_cleanup":
       await runOrphanMediaCleanup(opts);
+      break;
+    case "advertisement_lifecycle":
+      await runAdvertisementLifecycleJobs(opts);
       break;
     default:
       throw new Error("Unknown job");

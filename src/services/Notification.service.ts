@@ -46,7 +46,7 @@ export async function notifyAccountApproved(userId: number): Promise<void> {
     userId,
     type: NOTIFICATION_TYPES.ACCOUNT_VERIFIED,
     title: "Registration approved",
-    body: "Your Digital House account is approved. You can use the app now.",
+    body: "Your Digital House account is approved. Please sign in with OTP or Google to continue.",
     actionType: NOTIFICATION_ACTIONS.OPEN_NOTIFICATIONS,
     force: true
   });
@@ -736,6 +736,180 @@ export async function notifyHelpAppreciationReceived(
     actionType: NOTIFICATION_ACTIONS.OPEN_POST,
     actionTargetId: postId,
     groupKey: `help_appreciation:${postId}:${helperUserId}`
+  });
+}
+
+export async function notifyAdvertisementPaymentSuccess(
+  userId: number,
+  advertisementId: number,
+  amountInr: number
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_PAYMENT_SUCCESS,
+    title: "Advertisement payment successful",
+    body: `₹${amountInr.toLocaleString("en-IN")} received. Your campaign is in review.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
+  });
+}
+
+export async function notifyAdvertisementPaymentFailed(
+  userId: number,
+  advertisementId: number
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_PAYMENT_FAILED,
+    title: "Advertisement payment failed",
+    body: "You can try again from My Advertisements.",
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
+  });
+}
+
+export async function notifyAdvertisementSubmittedForReview(
+  userId: number,
+  advertisementId: number
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_SUBMITTED,
+    title: "Advertisement submitted for review",
+    body: "We will notify you after moderation.",
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
+  });
+}
+
+export async function notifyAdvertisementApproved(
+  userId: number,
+  advertisementId: number,
+  title: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_APPROVED,
+    title: "Advertisement approved",
+    body: `"${title.slice(0, 80)}" is approved.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
+  });
+}
+
+export async function notifyAdvertisementRejected(
+  userId: number,
+  advertisementId: number,
+  title: string,
+  reason: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_REJECTED,
+    title: "Advertisement not approved",
+    body: `"${title.slice(0, 60)}" — ${reason.slice(0, 120)}`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
+  });
+}
+
+export async function notifyAdvertisementActivated(
+  userId: number,
+  advertisementId: number,
+  title: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_ACTIVATED,
+    title: "Advertisement is live",
+    body: `"${title.slice(0, 80)}" is now showing to members.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
+  });
+}
+
+export async function notifyAdvertisementPaused(
+  userId: number,
+  advertisementId: number,
+  title: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_PAUSED,
+    title: "Advertisement paused",
+    body: `"${title.slice(0, 80)}" is not being shown. Paid time is not extended.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
+  });
+}
+
+export async function notifyAdvertisementResumed(
+  userId: number,
+  advertisementId: number,
+  title: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_RESUMED,
+    title: "Advertisement resumed",
+    body: `"${title.slice(0, 80)}" is showing again.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
+  });
+}
+
+export async function notifyAdvertisementExpiringSoon(
+  userId: number,
+  advertisementId: number,
+  title: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_EXPIRING,
+    title: "Advertisement expiring soon",
+    body: `"${title.slice(0, 80)}" ends within 24 hours.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
+  });
+}
+
+export async function notifyAdvertisementExpired(
+  userId: number,
+  advertisementId: number,
+  title: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_EXPIRED,
+    title: "Advertisement expired",
+    body: `"${title.slice(0, 80)}" is no longer showing.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
+  });
+}
+
+export async function notifyAdvertisementInvoiceAvailable(
+  userId: number,
+  advertisementId: number
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ADVERTISEMENT_INVOICE_AVAILABLE,
+    title: "Invoice available",
+    body: "Your advertisement invoice is ready to view.",
+    actionType: NOTIFICATION_ACTIONS.OPEN_ADVERTISEMENTS,
+    actionTargetId: advertisementId,
+    force: true
   });
 }
 

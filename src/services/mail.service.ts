@@ -31,7 +31,7 @@ export async function sendApprovalEmail(
   await sendOrThrow(
     to,
     "Your Digital House account has been approved",
-    `Hi${name},\n\nYour Digital House account has been approved. You can now sign in with your email and use the one-time code sent to your inbox. Welcome to the community!${remarkLine}\n\n— Digital House`
+    `Hi${name},\n\nYour Digital House account has been approved. Please sign in again with OTP or Google to start using the app. Welcome to the community!${remarkLine}\n\n— Digital House`
   );
 }
 

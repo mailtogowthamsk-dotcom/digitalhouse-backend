@@ -1,12 +1,12 @@
 import { Post, PostLike, Comment, SavedPost, User } from "../../models";
-import { toPublicUrlIfR2, deleteR2ImageVariants } from "../../utils/r2Client";
+import { toPublicUrlIfR2, toPrivateSignedUrlIfR2, isPrivateR2Object, deleteR2ImageVariants } from "../../utils/r2Client";
 import { parseMarketplaceGallery, publicMarketplaceGallery } from "../../utils/marketplaceGallery";
 import { parseHelpGallery, publicHelpGallery } from "../../utils/helpGallery";
 import {
   ensureCommunityVisible
 } from "./access";
+import { isHiddenFromPublic } from "../contentSafety/publicVisibility";
 import {
-  isModeratedAway,
   jobFieldsFromPost,
   marketplaceFieldsFromPost,
   helpFieldsFromPost,
@@ -70,14 +70,14 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
   }
   const author = (post as any).User as User;
   await ensureCommunityVisible(post, userId);
-  if (isModeratedAway(post) && post.userId !== userId) {
+  const isOwner = post.userId === userId;
+  if (isHiddenFromPublic(post) && !isOwner) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
   }
 
   if (post.postType === "MARKETPLACE") {
-    const isOwner = post.userId === userId;
     if (post.marketplaceStatus !== "LIVE" && !isOwner) {
       const err = new Error("Post not found");
       (err as any).status = 404;
@@ -98,13 +98,17 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
       Comment.count({ where: { postId } }),
       PostLike.findOne({ where: { postId, userId } }).then((r) => !!r),
       SavedPost.findOne({ where: { postId, userId } }).then((r) => !!r),
-      toPublicUrlIfR2(post.mediaUrl ?? null),
-      toPublicUrlIfR2(post.thumbnailUrl ?? null),
+      isOwner && isPrivateR2Object(post.mediaUrl)
+        ? toPrivateSignedUrlIfR2(post.mediaUrl)
+        : Promise.resolve(toPublicUrlIfR2(post.mediaUrl ?? null)),
+      isOwner && isPrivateR2Object(post.thumbnailUrl)
+        ? toPrivateSignedUrlIfR2(post.thumbnailUrl)
+        : Promise.resolve(toPublicUrlIfR2(post.thumbnailUrl ?? null)),
       toAuthorDto(author),
       post.postType === "MARKETPLACE"
-        ? publicMarketplaceGallery(galleryRaw)
+        ? publicMarketplaceGallery(galleryRaw, { signPrivate: isOwner })
         : isHelp
-          ? publicHelpGallery(galleryRaw)
+          ? publicHelpGallery(galleryRaw, { signPrivate: isOwner })
           : Promise.resolve([] as string[])
     ]);
 
@@ -189,6 +193,8 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     comment_count: commentCount,
     liked_by_me: likedByMe,
     saved_by_me: savedByMe,
+    safety_decision: isOwner ? post.safetyDecision : undefined,
+    safety_category: isOwner ? post.safetyCategory ?? null : undefined,
     ...jobExtra,
     ...helpExtra,
     ...repostExtra

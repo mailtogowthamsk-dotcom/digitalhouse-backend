@@ -30,6 +30,7 @@ import {
 } from "../validations/media.validation";
 import { parseMarketplaceGallery } from "../utils/marketplaceGallery";
 import { UserProfile } from "../models/UserProfile.model";
+import { needsUploadQuarantine, toQuarantineKey } from "./contentSafety/quarantine";
 
 const R2_PREFIX = "digital-house";
 
@@ -78,13 +79,21 @@ function buildKey(
   }
   if (module === "profile") {
     // Keep legacy folder so existing profile-photo-upload-url and media/upload-url stay aligned.
-    return `${R2_PREFIX}/profile-photos/${userId}/${safeName}`;
+    const key = `${R2_PREFIX}/profile-photos/${userId}/${safeName}`;
+    return needsUploadQuarantine(module, purpose) ? toQuarantineKey(key) : key;
   }
 
   if (module === "prominent") {
     const kind =
       purpose === "hero" || purpose === "gallery" || purpose === "profile" ? purpose : "profile";
     return `${R2_PREFIX}/images/prominent/${kind}/${yyyy}/${mm}/${safeName}`;
+  }
+
+  if (module === "advertisements") {
+    if (fileTypeKind === "video") {
+      return `${R2_PREFIX}/videos/advertisements/${yyyy}/${mm}/${safeName}`;
+    }
+    return `${R2_PREFIX}/images/advertisements/${yyyy}/${mm}/${safeName}`;
   }
 
   const resolvedPurpose: MediaUploadPurpose =
@@ -95,14 +104,15 @@ function buildKey(
         ? "video_thumbnail"
         : "image");
 
+  let publicKey: string;
   if (resolvedPurpose === "video") {
-    return `${R2_PREFIX}/videos/posts/${yyyy}/${mm}/${safeName}`;
+    publicKey = `${R2_PREFIX}/videos/posts/${yyyy}/${mm}/${safeName}`;
+  } else if (resolvedPurpose === "video_thumbnail") {
+    publicKey = `${R2_PREFIX}/videos/thumbnails/${yyyy}/${mm}/${safeName}`;
+  } else {
+    publicKey = `${R2_PREFIX}/images/posts/${module}/${yyyy}/${mm}/${safeName}`;
   }
-  if (resolvedPurpose === "video_thumbnail") {
-    return `${R2_PREFIX}/videos/thumbnails/${yyyy}/${mm}/${safeName}`;
-  }
-
-  return `${R2_PREFIX}/images/posts/${module}/${yyyy}/${mm}/${safeName}`;
+  return needsUploadQuarantine(module, purpose) ? toQuarantineKey(publicKey) : publicKey;
 }
 
 /** Generate unique filename: timestamp + random to avoid collisions */

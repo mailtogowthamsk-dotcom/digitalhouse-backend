@@ -1,0 +1,51 @@
+{
+  "tables": [
+    {
+      "name": "content_safety_scans",
+      "columns": [
+        "id",
+        "postId",
+        "mediaId",
+        "jobId",
+        "mediaVersion",
+        "mediaType",
+        "model",
+        "modelVersion",
+        "policyVersion",
+        "status",
+        "category",
+        "confidence",
+        "decision",
+        "failureReason",
+        "processingTimeMs",
+        "createdAt",
+        "completedAt"
+      ],
+      "indexes": ["PRIMARY", "idx_css_post_version", "idx_css_media"]
+    },
+    {
+      "name": "content_safety_fingerprints",
+      "columns": [
+        "id",
+        "hash",
+        "algorithm",
+        "mediaType",
+        "category",
+        "decision",
+        "postId",
+        "mediaId",
+        "createdAt"
+      ],
+      "indexes": ["PRIMARY", "idx_csf_hash"]
+    },
+    {
+      "name": "posts",
+      "columns": [
+        "safety_decision",
+        "media_version",
+        "moderated_media_version"
+      ],
+      "indexes": ["idx_posts_safety_moderation_created"]
+    }
+  ]
+}

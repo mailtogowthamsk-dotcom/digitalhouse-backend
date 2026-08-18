@@ -2,7 +2,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 
-export const MEDIA_TEMP_PREFIXES = ["dh-vid-", "dh-thumb-", "dh-probe-"] as const;
+export const MEDIA_TEMP_PREFIXES = ["dh-vid-", "dh-thumb-", "dh-probe-", "dh-mod-"] as const;
 
 const activeDirectories = new Set<string>();
 const ACTIVE_MARKER = ".active.json";

@@ -5,6 +5,9 @@ export const adminPostsListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   q: z.string().trim().optional(),
   status: z.enum(["all", "ACTIVE", "HIDDEN", "SOFT_DELETED"]).default("all"),
+  safetyDecision: z
+    .enum(["all", "PENDING", "PROCESSING", "SAFE", "REVIEW_REQUIRED", "BLOCKED", "FAILED"])
+    .default("all"),
   postType: z.string().trim().optional().default("all"),
   visibility: z.enum(["all", "PUBLIC", "CONNECTIONS"]).default("all"),
   reportStatus: z.enum(["all", "REPORTED", "UNREPORTED"]).default("all"),
@@ -26,6 +29,12 @@ export const adminPostActionSchema = z.object({
   reason: z.string().trim().max(1000).optional(),
   remarks: z.string().trim().max(1000).optional(),
   reportId: z.coerce.number().int().positive().optional()
+});
+
+export const adminSafetyActionSchema = z.object({
+  mediaVersion: z.coerce.number().int().positive(),
+  reason: z.string().trim().max(1000).optional(),
+  remarks: z.string().trim().max(1000).optional()
 });
 
 export const adminPostBulkActionSchema = z.object({

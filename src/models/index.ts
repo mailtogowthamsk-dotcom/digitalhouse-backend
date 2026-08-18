@@ -82,6 +82,25 @@ import {
   LegalDocument,
   LegalDocumentAcceptance
 } from "./LegalDocument.model";
+import {
+  PaymentOrder,
+  PaymentInvoice,
+  PaymentRefund
+} from "./Payment.models";
+import {
+  AdvertisementType,
+  AdvertisementPricing,
+  Advertisement,
+  AdvertisementEntitlement,
+  AdvertisementModerationLog,
+  AdvertisementExtension,
+  AdvertisementEvent,
+  AdvertisementUniqueReach,
+  AdvertisementDailyStat,
+  AdvertisementUserExposure,
+  AdvertisementReport
+} from "./Advertisement.models";
+import { ContentSafetyScan, ContentSafetyFingerprint } from "./ContentSafety.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
@@ -209,6 +228,23 @@ LegalDocumentType.hasMany(LegalDocument, {
   sourceKey: "documentKey"
 });
 
+User.hasMany(Advertisement, { foreignKey: "userId" });
+Advertisement.belongsTo(User, { foreignKey: "userId" });
+Advertisement.belongsTo(PaymentOrder, { foreignKey: "paymentOrderId" });
+PaymentOrder.hasMany(Advertisement, { foreignKey: "paymentOrderId" });
+PaymentOrder.hasOne(PaymentInvoice, { foreignKey: "paymentOrderId" });
+PaymentInvoice.belongsTo(PaymentOrder, { foreignKey: "paymentOrderId" });
+PaymentOrder.hasMany(PaymentRefund, { foreignKey: "paymentOrderId" });
+PaymentRefund.belongsTo(PaymentOrder, { foreignKey: "paymentOrderId" });
+Advertisement.hasOne(AdvertisementEntitlement, { foreignKey: "advertisementId" });
+AdvertisementEntitlement.belongsTo(Advertisement, { foreignKey: "advertisementId" });
+Advertisement.hasMany(AdvertisementModerationLog, { foreignKey: "advertisementId" });
+AdvertisementModerationLog.belongsTo(Advertisement, { foreignKey: "advertisementId" });
+Advertisement.hasMany(AdvertisementReport, { foreignKey: "advertisementId" });
+AdvertisementReport.belongsTo(Advertisement, { foreignKey: "advertisementId" });
+Advertisement.hasMany(AdvertisementUserExposure, { foreignKey: "advertisementId" });
+AdvertisementUserExposure.belongsTo(Advertisement, { foreignKey: "advertisementId" });
+
 export type { UserStatus } from "./user.model";
 export type { PostType, JobStatus, JobEmploymentType, JobWorkMode, PostVisibility } from "./Post.model";
 export { POST_TYPES, JOB_STATUSES, JOB_EMPLOYMENT_TYPES, JOB_WORK_MODES, POST_VISIBILITIES } from "./Post.model";
@@ -298,5 +334,21 @@ export {
   AdminUser,
   LegalDocumentType,
   LegalDocument,
-  LegalDocumentAcceptance
+  LegalDocumentAcceptance,
+  PaymentOrder,
+  PaymentInvoice,
+  PaymentRefund,
+  AdvertisementType,
+  AdvertisementPricing,
+  Advertisement,
+  AdvertisementEntitlement,
+  AdvertisementModerationLog,
+  AdvertisementExtension,
+  AdvertisementEvent,
+  AdvertisementUniqueReach,
+  AdvertisementDailyStat,
+  AdvertisementUserExposure,
+  AdvertisementReport,
+  ContentSafetyScan,
+  ContentSafetyFingerprint
 };

@@ -13,6 +13,9 @@ import { apiLimiter } from "./middlewares/rateLimit.middleware";
 import { slowApiLogger } from "./middlewares/slowApi.middleware";
 import { dbReady, dbFailed } from "./state";
 import { razorpayWebhook } from "./controllers/MatrimonyPayment.controller";
+import { registerAdvertisementPaymentHandlers } from "./services/advertisement/AdvertisementPaymentHandler";
+
+registerAdvertisementPaymentHandlers();
 import { getDbPoolSnapshot, DB_POOL_CONFIG } from "./config/db";
 import { getPoolDebugCounters } from "./config/dbPoolMonitor";
 
@@ -81,6 +84,11 @@ app.use(
 
 // Razorpay webhook needs raw body for signature verification (before express.json)
 for (const mount of getApiMountPaths()) {
+  app.post(
+    `${mount}/payments/webhook`,
+    express.raw({ type: "application/json" }),
+    asyncHandler(razorpayWebhook)
+  );
   app.post(
     `${mount}/matrimony/payments/webhook`,
     express.raw({ type: "application/json" }),

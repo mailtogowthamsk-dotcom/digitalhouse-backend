@@ -1,0 +1,6 @@
+{
+  "description": "Content safety columns, scans, fingerprints, and admin action ENUM append",
+  "idempotent": true,
+  "rollback": true,
+  "destructive": false
+}

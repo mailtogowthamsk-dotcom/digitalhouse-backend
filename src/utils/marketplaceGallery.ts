@@ -1,5 +1,5 @@
 import { MARKETPLACE_MAX_PHOTOS } from "../constants/marketplace.constants";
-import { toPublicUrlIfR2, toStorageKeyIfR2 } from "../utils/r2Client";
+import { isPrivateR2Object, toPrivateSignedUrlIfR2, toPublicUrlIfR2, toStorageKeyIfR2 } from "../utils/r2Client";
 
 /** Normalize raw gallery JSON + optional cover into a unique URL list. */
 export function parseMarketplaceGallery(
@@ -48,6 +48,20 @@ export function resolveMarketplaceMedia(
   return { mediaUrl: urls[0], marketplaceGallery: urls };
 }
 
-export async function publicMarketplaceGallery(urls: string[]): Promise<string[]> {
-  return Promise.all(urls.map(async (u) => (await toPublicUrlIfR2(u)) ?? u));
+export async function publicMarketplaceGallery(
+  urls: string[],
+  options?: { signPrivate?: boolean }
+): Promise<string[]> {
+  const out: string[] = [];
+  for (const u of urls) {
+    if (isPrivateR2Object(u)) {
+      if (!options?.signPrivate) continue;
+      const signed = await toPrivateSignedUrlIfR2(u);
+      if (signed) out.push(signed);
+      continue;
+    }
+    const pub = toPublicUrlIfR2(u);
+    if (pub) out.push(pub);
+  }
+  return out;
 }

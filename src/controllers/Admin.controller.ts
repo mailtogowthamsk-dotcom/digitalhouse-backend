@@ -112,6 +112,19 @@ export async function softDeleteUser(req: Request, res: Response) {
   }
 }
 
+/** POST /admin/users/:id/logout — revoke member JWTs on all devices */
+export async function logoutUser(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!id) return error(res, "Invalid user id", 400);
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
+  try {
+    await adminUserManagement.logoutUser(id, adminId);
+    return success(res, { message: "User signed out of the app on all devices." });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to log out user", e?.status ?? 400);
+  }
+}
+
 /** POST /admin/users/:id/restore */
 export async function restoreUser(req: Request, res: Response) {
   const id = Number(req.params.id);

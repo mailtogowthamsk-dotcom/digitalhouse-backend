@@ -1,0 +1,6 @@
+{
+  "description": "Structured advertisement business, contact, location, CTA, and billing mode columns (additive, reversible)",
+  "idempotent": true,
+  "rollback": true,
+  "destructive": false
+}

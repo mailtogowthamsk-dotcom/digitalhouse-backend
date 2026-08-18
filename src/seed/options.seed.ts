@@ -1,4 +1,5 @@
 import { Location, Kulam } from "../models";
+import { VETTUVAR_KULAMS, KULAM_OTHER } from "../constants/kulamCatalog";
 
 const DEFAULT_LOCATIONS = [
   "Chennai",
@@ -18,12 +19,7 @@ const DEFAULT_LOCATIONS = [
   "Other"
 ];
 
-const DEFAULT_KULAMS = [
-  "Semba Vattuar",
-  "Karaiya Vettuvar",
-  "Paandi Vettuvar",
-  "Other"
-];
+const DEFAULT_KULAMS = [...VETTUVAR_KULAMS.map((k) => k.en), KULAM_OTHER.en];
 
 /** Seed locations and kulams if tables are empty (run after sync). */
 export async function seedOptionsIfEmpty(): Promise<void> {

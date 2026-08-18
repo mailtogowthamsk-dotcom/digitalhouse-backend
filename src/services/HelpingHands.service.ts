@@ -50,14 +50,16 @@ export async function getHelpingHandsStats(userId: number): Promise<{
 
   const [completed, openActive, volunteerRows] = await Promise.all([
     Post.count({
-      where: { postType: "HELP_REQUEST", helpStatus: "COMPLETED" },
+      where: { postType: "HELP_REQUEST", helpStatus: "COMPLETED", moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
       include: [communityAuthorInclude],
       distinct: true
     }),
     Post.count({
       where: {
         postType: "HELP_REQUEST",
-        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] }
+        helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
+        moderationStatus: "ACTIVE",
+        safetyDecision: "SAFE"
       },
       include: [communityAuthorInclude],
       distinct: true
@@ -72,7 +74,9 @@ export async function getHelpingHandsStats(userId: number): Promise<{
           required: true,
           where: {
             postType: "HELP_REQUEST",
-            helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] }
+            helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
+            moderationStatus: "ACTIVE",
+            safetyDecision: "SAFE"
           },
           include: [
             {
@@ -198,8 +202,7 @@ export async function listHelpersForPost(
   const items = await Promise.all(
     rows.map(async (r) => {
       const author = (r as any).FromUser as User;
-      const profile_image =
-        (await toPublicUrlIfR2(author.profilePhoto ?? null)) ?? author.profilePhoto ?? null;
+      const profile_image = await toPublicUrlIfR2(author.profilePhoto ?? null);
       return {
         id: r.id,
         from_user_id: r.fromUserId,
@@ -356,8 +359,7 @@ export async function getCommunityHeroes(
   const items = await Promise.all(
     ranked.map(async ([id, count]) => {
       const u = userMap.get(id);
-      const profileImage =
-        (await toPublicUrlIfR2(u?.profilePhoto ?? null)) ?? u?.profilePhoto ?? null;
+      const profileImage = await toPublicUrlIfR2(u?.profilePhoto ?? null);
       const categories = [...(cats.get(id) || [])].map(
         (c) => HELP_CATEGORY_LABELS[c as HelpCategory] || c.replace(/_/g, " ")
       );
@@ -433,7 +435,7 @@ export async function getMyHelpingActivity(userId: number): Promise<{
     offerPostIds.length === 0
       ? []
       : await Post.findAll({
-          where: { id: { [Op.in]: offerPostIds }, postType: "HELP_REQUEST" },
+          where: { id: { [Op.in]: offerPostIds }, postType: "HELP_REQUEST", moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
           include: [{ association: "User", attributes: ["id", "fullName"], required: true }]
         });
   const postMap = new Map(offerPosts.map((p) => [p.id, p]));

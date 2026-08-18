@@ -14,6 +14,7 @@ import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
 import {
   getRelationshipStatus,
+  countAcceptedConnections,
   type RelationshipStatus
 } from "./Connection.service";
 import { MatrimonyBlock } from "../models";
@@ -174,6 +175,8 @@ async function getMemberStats(userId: number): Promise<MemberProfileStats> {
     Post.count({
       where: {
         userId,
+        moderationStatus: "ACTIVE",
+        safetyDecision: "SAFE",
         [Op.or]: [
           { postType: { [Op.ne]: "MARKETPLACE" } },
           { marketplaceStatus: "LIVE" },
@@ -181,12 +184,7 @@ async function getMemberStats(userId: number): Promise<MemberProfileStats> {
         ]
       }
     }),
-    MemberConnection.count({
-      where: {
-        status: "ACCEPTED",
-        [Op.or]: [{ requesterUserId: userId }, { recipientUserId: userId }]
-      }
-    }),
+    countAcceptedConnections(userId),
     PostLike.count({
       include: [
         {
@@ -252,7 +250,7 @@ export async function getMemberProfile(
   }
 
   const profileImage = target.profilePhoto
-    ? (await toPublicUrlIfR2(target.profilePhoto)) ?? target.profilePhoto
+    ? await toPublicUrlIfR2(target.profilePhoto)
     : null;
 
   const isSelf = viewerId === target.id;
@@ -480,6 +478,8 @@ export async function getMemberPosts(
       ? { userId: target.id }
       : {
           userId: target.id,
+          moderationStatus: "ACTIVE",
+          safetyDecision: "SAFE",
           [Op.or]: [
             { postType: { [Op.ne]: "MARKETPLACE" } },
             { marketplaceStatus: "LIVE" }
@@ -498,6 +498,8 @@ export async function getMemberPosts(
           where: {
             userId: target.id,
             visibility: "CONNECTIONS",
+            moderationStatus: "ACTIVE",
+            safetyDecision: "SAFE",
             [Op.or]: [
               { postType: { [Op.ne]: "MARKETPLACE" } },
               { marketplaceStatus: "LIVE" }
@@ -545,7 +547,7 @@ export async function getMemberPosts(
   const originalPosts =
     originalIds.length > 0
       ? await Post.findAll({
-          where: { id: { [Op.in]: originalIds } },
+          where: { id: { [Op.in]: originalIds }, moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
           include: [
             {
               association: "User",

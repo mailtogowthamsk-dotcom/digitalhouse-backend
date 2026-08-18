@@ -6,10 +6,12 @@
 
 import { spawn } from "child_process";
 import fs from "fs";
+import os from "os";
 import path from "path";
 import { POST_VIDEO_MAX_BYTES, POST_VIDEO_MAX_DURATION_SEC, POST_VIDEO_MIN_DURATION_SEC } from "../constants/postMedia.constants";
 import {
   createMediaTempDirectory,
+  MEDIA_TEMP_PREFIXES,
   removeMediaTempDirectory
 } from "./mediaTempFiles";
 
@@ -135,8 +137,10 @@ export async function probeVideoFile(filePath: string): Promise<VideoProbeInfo> 
 }
 
 /**
- * Validate probed media against product rules (MP4/H.264/AAC, duration, bitrate).
- * Soft-fail codecs when optimize will re-encode; hard-fail duration/size/extreme bitrate.
+ * Validate probed media against product rules (MP4/H.264/AAC, duration, size).
+ * When requireCompliantCodecs is false the caller will FFmpeg-re-encode to 720p,
+ * so typical phone-camera bitrates must not be rejected before that encode.
+ * Bitrate is enforced only when the original file would be stored as-is.
  */
 export function assertVideoAllowed(
   probe: VideoProbeInfo,
@@ -161,14 +165,16 @@ export function assertVideoAllowed(
       code: "VIDEO_TOO_LONG"
     });
   }
-  // Always reject extreme bitrates (bandwidth / 1GB-RAM encode risk).
-  if (probe.bitrate && probe.bitrate > MAX_INPUT_BITRATE) {
-    throw Object.assign(new Error("Video bitrate is too high. Compress to ≤720p before upload."), {
-      status: 400,
-      code: "VIDEO_BITRATE_HIGH"
-    });
+  const willTranscode = opts?.requireCompliantCodecs === false;
+  if (!willTranscode && probe.bitrate && probe.bitrate > MAX_INPUT_BITRATE) {
+    throw Object.assign(
+      new Error(
+        "This video is too high quality to store without compression. Choose a shorter 1080p clip, or wait for server processing in a build that compresses video."
+      ),
+      { status: 400, code: "VIDEO_BITRATE_HIGH" }
+    );
   }
-  // Reject absurd resolutions before encode (4K+ phone dumps).
+  // Reject absurd resolutions before encode (above 4K).
   const longEdge = Math.max(probe.width || 0, probe.height || 0);
   if (longEdge > 4096) {
     throw Object.assign(new Error("Video resolution is too high. Use ≤4K source; we output 720p."), {
@@ -351,4 +357,36 @@ export async function extractVideoFrameJpeg(
   } finally {
     await removeMediaTempDirectory(tmp);
   }
+}
+
+/**
+ * Extract a JPEG frame from a worker temp file. Arguments are numeric timestamps
+ * and a path already created by createMediaTempDirectory — never user strings.
+ */
+export async function extractVideoFrameJpegFromPath(
+  inputPath: string,
+  atSec: number
+): Promise<Buffer> {
+  if (!(await hasFfmpeg())) {
+    throw Object.assign(new Error("ffmpeg not available for moderation frames"), { status: 503 });
+  }
+  const resolved = path.resolve(inputPath);
+  const tmpRoot = path.resolve(os.tmpdir());
+  if (!resolved.startsWith(tmpRoot + path.sep)) {
+    throw new Error("Refusing ffmpeg input outside temp directory");
+  }
+  const dirName = path.basename(path.dirname(resolved));
+  if (!MEDIA_TEMP_PREFIXES.some((prefix) => dirName.startsWith(prefix))) {
+    throw new Error("Refusing ffmpeg input outside media temp directories");
+  }
+  const outPath = path.join(path.dirname(resolved), `frame-${Math.round(atSec * 1000)}.jpg`);
+  const ss = Math.max(0, Number(atSec) || 0);
+  const args = ["-y", "-ss", String(ss), "-i", resolved, "-frames:v", "1", "-q:v", "3", outPath];
+  const { code, stderr } = await runCmd("ffmpeg", args, 60_000);
+  if (code !== 0) {
+    throw Object.assign(new Error(`moderation frame extract failed: ${stderr.slice(-200)}`), {
+      status: 500
+    });
+  }
+  return fs.promises.readFile(outPath);
 }

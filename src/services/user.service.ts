@@ -1,5 +1,5 @@
 import { User } from "../models";
-import { AUTH_PROVIDERS } from "../constants/auth.constants";
+import { AUTH_PROVIDERS, DEFAULT_APP_COMMUNITY } from "../constants/auth.constants";
 import { ensureLinkedProviders, resolveLoginSource } from "../utils/authProvider.util";
 import { usernameService } from "./Username.service";
 import { assertValidKulam } from "./kulamValidation.service";
@@ -19,7 +19,6 @@ export type RegisterInput = {
   mobile?: string | null;
   occupation?: string | null;
   location?: string | null;
-  community?: string | null;
   kulam?: string | null;
   profilePhoto?: string | null;
   govtIdType?: string | null;
@@ -82,7 +81,7 @@ export async function register(data: RegisterInput): Promise<User> {
       occupation: data.occupation?.trim() || null,
       location,
       district: location,
-      community: data.community?.trim() || null,
+      community: DEFAULT_APP_COMMUNITY,
       kulam,
       profilePhoto: toStorageKeyIfR2(data.profilePhoto ?? null),
       govtIdType: data.govtIdType?.trim() || null,

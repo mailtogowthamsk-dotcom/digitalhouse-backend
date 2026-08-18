@@ -1,5 +1,5 @@
 import { Op } from "sequelize";
-import { User, Post } from "../../models";
+import { Post } from "../../models";
 import type { JobStatus } from "../../models";
 import type { MarketplaceStatus } from "../../constants/marketplace.constants";
 import type { HelpStatus } from "../../constants/helpingHands.constants";
@@ -12,7 +12,6 @@ import {
   computeHelpExpiresAt,
   isHelpHighlightEligible
 } from "../../constants/helpingHands.constants";
-import { emitFeedNewPost } from "../../realtime/feedEvents";
 import { logFeedEvent } from "../../utils/feedAnalytics";
 import {
   parseMarketplaceGallery,
@@ -22,25 +21,24 @@ import * as MarketplaceSettings from "../MarketplaceSettings.service";
 import * as JobsSettings from "../JobsSettings.service";
 import { parseHelpGallery, resolveHelpMedia } from "../../utils/helpGallery";
 import { syncPostHashtags } from "../Hashtag.service";
-import { assertJobActiveLimit, viewerCommunity } from "./access";
+import { assertJobActiveLimit } from "./access";
 import {
   attachPostMediaFiles,
   buildMediaMetaForWrite,
   emptyHelpFields,
   emptyMarketplaceFields,
-  helpFieldsFromPost,
-  jobFieldsFromPost,
-  marketplaceFieldsFromPost,
-  mediaMetaFromPost,
   normalizeHelpFields,
   normalizeJobFields,
   normalizeMarketplaceFields,
-  toAuthorDto,
-  visibilityFieldsFromPost,
   type PostJobFields
 } from "./mappers";
 import { getPost } from "./read.service";
 import type { CreatePostPayload, PostDetailDto, UpdatePostPayload } from "./types";
+import {
+  afterCreatePostSafety,
+  applyEditSafety
+} from "../contentSafety/ContentSafety.service";
+import { initialSafetyForCreate } from "../contentSafety/initialSafety";
 
 export async function createPost(userId: number, payload: CreatePostPayload): Promise<PostDetailDto> {
   const isJob = payload.post_type === "JOB";
@@ -160,6 +158,17 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
       )
     : buildMediaMetaForWrite(payload, mediaResolved.mediaUrl);
 
+  const hasMedia = Boolean(
+    mediaMeta.mediaUrl ||
+      mediaResolved.marketplaceGallery?.length ||
+      (mediaResolved as { helpGallery?: string[] | null }).helpGallery?.length
+  );
+  const safety = initialSafetyForCreate({
+    title: payload.title,
+    description: payload.description?.trim() ?? null,
+    hasMedia
+  });
+
   const post = await Post.create({
     userId,
     postType: payload.post_type,
@@ -181,7 +190,13 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     ...marketplaceFields,
     ...helpFields,
     ...(isMarketplace ? { marketplaceGallery: mediaResolved.marketplaceGallery } : {}),
-    ...(isHelp ? { helpGallery: (mediaResolved as any).helpGallery ?? helpFields.helpGallery } : {})
+    ...(isHelp ? { helpGallery: (mediaResolved as any).helpGallery ?? helpFields.helpGallery } : {}),
+    safetyDecision: safety.safetyDecision,
+    safetyCategory: safety.safetyCategory,
+    safetyFailureReason: safety.safetyFailureReason,
+    mediaVersion: safety.mediaVersion,
+    moderatedMediaVersion: safety.moderatedMediaVersion,
+    safetyPolicyVersion: safety.safetyPolicyVersion
   } as any);
 
   await syncPostHashtags({
@@ -198,39 +213,9 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     (mediaResolved as { helpGallery?: string[] | null }).helpGallery ?? undefined
   ]);
 
-  const community = await viewerCommunity(userId);
-  // Pending marketplace listings are not public — skip feed emit until approved
-  if (!isMarketplace) {
-    emitFeedNewPost(community, post.id);
-  }
+  await afterCreatePostSafety(post);
   logFeedEvent(userId, "post_impression", post.id, { action: "create" });
-  const author = await User.findByPk(userId, { attributes: ["id", "fullName", "profilePhoto", "status"] });
-  const authorDto = author ? toAuthorDto(author) : { id: userId, name: "Unknown", profile_image: null as string | null, verified: false };
-  return {
-    id: post.id,
-    user_id: post.userId,
-    post_type: post.postType,
-    title: post.title,
-    description: post.description ?? null,
-    ...mediaMetaFromPost(post),
-    pinned: post.pinned,
-    urgent: post.urgent,
-    meetup_at: post.meetupAt ? post.meetupAt.toISOString() : null,
-    job_status: post.jobStatus ?? null,
-    ...jobFieldsFromPost(post),
-    ...marketplaceFieldsFromPost(post),
-    ...helpFieldsFromPost(post),
-    ...visibilityFieldsFromPost(post),
-    created_at: post.createdAt.toISOString(),
-    updated_at: post.updatedAt.toISOString(),
-    author: authorDto,
-    like_count: 0,
-    comment_count: 0,
-    liked_by_me: false,
-    saved_by_me: false,
-    help_helper_count: 0,
-    help_offered_by_me: false
-  };
+  return getPost(userId, post.id);
 }
 
 export async function updatePost(userId: number, postId: number, payload: UpdatePostPayload): Promise<PostDetailDto> {
@@ -613,6 +598,15 @@ export async function updatePost(userId: number, postId: number, payload: Update
     parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null),
     Array.isArray(post.helpGallery) ? (post.helpGallery as string[]) : undefined
   ]);
+
+  const captionChanged = payload.title !== undefined || payload.description !== undefined;
+  const mediaChanged = Boolean(
+    payload.media_url !== undefined ||
+      payload.thumbnail_url !== undefined ||
+      payload.marketplace_gallery !== undefined ||
+      payload.help_gallery !== undefined
+  );
+  await applyEditSafety(post, { caption: captionChanged, media: mediaChanged });
 
   return getPost(userId, postId);
 }

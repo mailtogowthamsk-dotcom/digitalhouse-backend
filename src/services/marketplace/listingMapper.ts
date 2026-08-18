@@ -1,5 +1,5 @@
 import { Post, User } from "../../models";
-import { toPublicUrlIfR2 } from "../../utils/r2Client";
+import { isPrivateR2Object, toPrivateSignedUrlIfR2, toPublicUrlIfR2 } from "../../utils/r2Client";
 import { parseMarketplaceGallery, publicMarketplaceGallery } from "../../utils/marketplaceGallery";
 import type { AdminMarketplaceListItem } from "./types";
 
@@ -14,8 +14,10 @@ export async function toAdminListingItem(
   const rawMedia = post.mediaUrl ?? null;
   const galleryRaw = parseMarketplaceGallery(post.marketplaceGallery, rawMedia);
   const [mediaUrl, gallery] = await Promise.all([
-    Promise.resolve(rawMedia ? toPublicUrlIfR2(rawMedia) ?? rawMedia : null),
-    publicMarketplaceGallery(galleryRaw)
+    isPrivateR2Object(rawMedia)
+      ? toPrivateSignedUrlIfR2(rawMedia)
+      : Promise.resolve(toPublicUrlIfR2(rawMedia)),
+    publicMarketplaceGallery(galleryRaw, { signPrivate: true })
   ]);
   return {
     id: post.id,

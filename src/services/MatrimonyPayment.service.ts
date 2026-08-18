@@ -7,6 +7,7 @@ import * as Monetization from "./MatrimonyMonetization.service";
 import * as Discover from "./MatrimonyDiscover.service";
 import {
   allowDevMatrimonyPayments,
+  assertCapturedPaymentMatchesOrder,
   createRazorpayOrder,
   fetchRazorpayPayment,
   getRazorpayKeyId,
@@ -97,35 +98,14 @@ async function supersedePendingOrders(
   }
 }
 
-async function assertRazorpayPaymentValid(
-  order: MatrimonyPaymentOrder,
-  razorpayPaymentId: string
-): Promise<void> {
-  const payment = await fetchRazorpayPayment(razorpayPaymentId);
-  if (payment.orderId !== order.razorpayOrderId) {
-    throw Object.assign(new Error("Payment does not match order"), {
-      status: 400,
-      code: "PAYMENT_ORDER_MISMATCH"
-    });
-  }
-  if (payment.amount !== order.amountPaise) {
-    throw Object.assign(new Error("Payment amount mismatch"), {
-      status: 400,
-      code: "PAYMENT_AMOUNT_MISMATCH"
-    });
-  }
-  if (payment.status !== "captured") {
-    throw Object.assign(new Error(`Payment not captured (status: ${payment.status})`), {
-      status: 400,
-      code: "PAYMENT_NOT_CAPTURED"
-    });
-  }
-}
-
 async function fulfillOrderLocked(
   orderId: number,
   razorpayPaymentId: string
 ): Promise<{ alreadyPaid: boolean; order: MatrimonyPaymentOrder }> {
+  // Network I/O must stay outside the row lock. Holding UPDATE during Razorpay
+  // fetch caused pool timeouts when verify and webhook raced.
+  const payment = await fetchRazorpayPayment(razorpayPaymentId);
+
   return sequelize.transaction(async (transaction) => {
     const order = await MatrimonyPaymentOrder.findByPk(orderId, {
       transaction,
@@ -137,14 +117,16 @@ async function fulfillOrderLocked(
     if (order.status === "PAID") {
       return { alreadyPaid: true, order };
     }
-    if (order.status === "FAILED") {
+    // CREATED is the happy path. FAILED is recovered when this exact Razorpay
+    // order was still paid after a newer checkout superseded the local row.
+    if (order.status !== "CREATED" && order.status !== "FAILED") {
       throw Object.assign(new Error("Payment order was cancelled or failed"), {
         status: 400,
         code: "ORDER_NOT_PAYABLE"
       });
     }
 
-    await assertRazorpayPaymentValid(order, razorpayPaymentId);
+    assertCapturedPaymentMatchesOrder(order, payment);
 
     const meta = (order.meta ?? {}) as {
       plan?: "GOLD" | "PLATINUM";
@@ -211,7 +193,7 @@ export async function createPaymentOrder(
   }
 
   const amountPaise = purposeAmountPaise(purpose);
-  const durationMonths = 6;
+  const durationMonths = Math.min(24, Math.max(1, PlatformSettings.planDurationMonths() || 6));
   const meta: Record<string, unknown> = { durationMonths };
 
   if (purpose === "CONTACT_REVEAL") {
@@ -248,7 +230,7 @@ export async function createPaymentOrder(
   const row = await MatrimonyPaymentOrder.create({
     userId,
     purpose,
-    amountPaise,
+    amountPaise: rzp.amount,
     currency: "INR",
     razorpayOrderId: rzp.id,
     razorpayPaymentId: null,
@@ -261,7 +243,7 @@ export async function createPaymentOrder(
   return {
     orderId: row.id,
     razorpayOrderId: rzp.id,
-    amountPaise,
+    amountPaise: rzp.amount,
     currency: "INR",
     keyId: getRazorpayKeyId()!,
     description: purposeDescription(purpose)

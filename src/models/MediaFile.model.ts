@@ -22,7 +22,8 @@ export const MEDIA_MODULES = [
   "marketplace",
   "matrimony",
   "help",
-  "prominent"
+  "prominent",
+  "advertisements"
 ] as const;
 export type MediaModule = (typeof MEDIA_MODULES)[number];
 
@@ -47,6 +48,10 @@ export class MediaFile extends Model<InferAttributes<MediaFile>, InferCreationAt
   declare byteSize: CreationOptional<number | null>;
   declare width: CreationOptional<number | null>;
   declare height: CreationOptional<number | null>;
+  declare mediaVersion: CreationOptional<number>;
+  declare safetyDecision: CreationOptional<string | null>;
+  declare safetyCategory: CreationOptional<string | null>;
+  declare perceptualHash: CreationOptional<string | null>;
   declare createdAt: CreationOptional<Date>;
   declare updatedAt: CreationOptional<Date>;
 }
@@ -79,6 +84,10 @@ MediaFile.init(
     byteSize: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
     width: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
     height: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
+    mediaVersion: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, defaultValue: 1 },
+    safetyDecision: { type: DataTypes.STRING(32), allowNull: true },
+    safetyCategory: { type: DataTypes.STRING(32), allowNull: true },
+    perceptualHash: { type: DataTypes.CHAR(16), allowNull: true },
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }
   },

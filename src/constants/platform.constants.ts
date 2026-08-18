@@ -44,7 +44,8 @@ export const DEFAULT_FEATURE_FLAGS: Array<{ code: string; label: string; enabled
   { code: "helping_hands", label: "Helping Hands", enabled: true },
   { code: "prominent_people", label: "Prominent People", enabled: true },
   { code: "members", label: "Members Directory", enabled: true },
-  { code: "business", label: "Business", enabled: true }
+  { code: "business", label: "Business", enabled: true },
+  { code: "advertisements", label: "Advertisements", enabled: true }
 ];
 
 export const DEFAULT_MENU_ITEMS: Array<{
@@ -68,7 +69,8 @@ export const DEFAULT_MENU_ITEMS: Array<{
   { code: "events", label: "Events", enabled: false, sortOrder: 50, featureFlag: "events" },
   { code: "community_feed", label: "Community Updates", enabled: true, sortOrder: 55, featureFlag: "community_feed" },
   { code: "members", label: "Members", enabled: true, sortOrder: 60, featureFlag: "members" },
-  { code: "business", label: "Business", enabled: true, sortOrder: 70, featureFlag: "business" }
+  { code: "business", label: "Business", enabled: true, sortOrder: 70, featureFlag: "business" },
+  { code: "advertisements", label: "Advertise", enabled: true, sortOrder: 75, featureFlag: "advertisements" }
 ];
 
 /** Default store listing URLs — overridable per version or via env */

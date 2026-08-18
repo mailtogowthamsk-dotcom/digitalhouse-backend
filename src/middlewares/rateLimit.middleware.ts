@@ -44,3 +44,12 @@ export const publicPlatformLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+
+/** Impression/click ingest — tighter than general API to limit analytics spam. */
+export const advertisementEventLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 40,
+  message: { ok: false, message: "Too many advertisement events" },
+  standardHeaders: true,
+  legacyHeaders: false
+});

@@ -39,8 +39,7 @@ async function toDto(
     availableForHelp?: boolean | null;
   }
 ): Promise<DirectoryUserDto> {
-  const profileImage =
-    u.profilePhoto ? (await toPublicUrlIfR2(u.profilePhoto)) ?? u.profilePhoto : null;
+  const profileImage = u.profilePhoto ? await toPublicUrlIfR2(u.profilePhoto) : null;
 
   const profession = opts?.profession ?? u.occupation ?? u.jobTitle ?? null;
   return {

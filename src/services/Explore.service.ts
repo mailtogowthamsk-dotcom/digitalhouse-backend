@@ -38,6 +38,7 @@ function publicPostVisibilityFilter(): WhereOptions {
   return {
     [Op.and]: [
       { moderationStatus: "ACTIVE" },
+      { safetyDecision: "SAFE" },
       {
         [Op.or]: [{ postType: { [Op.ne]: "MARKETPLACE" } }, { marketplaceStatus: "LIVE" }]
       },

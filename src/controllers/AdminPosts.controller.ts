@@ -6,7 +6,8 @@ import {
   adminPostActionSchema,
   adminPostBulkActionSchema,
   adminPostUpdateSchema,
-  adminPostsListQuerySchema
+  adminPostsListQuerySchema,
+  adminSafetyActionSchema
 } from "../validations/admin-posts.validation";
 
 function adminEmail(req: Request): string {
@@ -92,6 +93,28 @@ export async function hardDeletePost(req: Request, res: Response) {
   try {
     const body = adminPostActionSchema.parse(req.body ?? {});
     return success(res, await AdminPosts.hardDeleteAdminPost(id, adminEmail(req), body.reason, body.remarks));
+  } catch (e) {
+    return fail(res, e);
+  }
+}
+
+export async function allowSafety(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return error(res, "Invalid post id", 400);
+  try {
+    const body = adminSafetyActionSchema.parse(req.body ?? {});
+    return success(res, await AdminPosts.allowSafetyPost(id, adminEmail(req), body.mediaVersion, body.remarks));
+  } catch (e) {
+    return fail(res, e);
+  }
+}
+
+export async function rejectSafety(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id) || id <= 0) return error(res, "Invalid post id", 400);
+  try {
+    const body = adminSafetyActionSchema.parse(req.body ?? {});
+    return success(res, await AdminPosts.rejectSafetyPost(id, adminEmail(req), body.mediaVersion, body.reason));
   } catch (e) {
     return fail(res, e);
   }

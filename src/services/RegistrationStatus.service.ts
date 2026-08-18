@@ -234,6 +234,16 @@ export async function approveRegistration(
   } as any);
 
   try {
+    const { revokeUserTokens } = await import("../utils/tokenRevocation");
+    await revokeUserTokens(userId, "registration_approved");
+  } catch (e) {
+    console.warn(
+      "[registration] token revoke after approve failed:",
+      e instanceof Error ? e.message : e
+    );
+  }
+
+  try {
     await sendApprovalEmail(user.email, user.fullName, remarks ?? undefined);
   } catch (e) {
     console.error("Failed to send approval email to", user.email, e);

@@ -17,3 +17,6 @@ export const AUTH_ANALYTICS_EVENTS = {
 
 export type AuthAnalyticsEventType =
   (typeof AUTH_ANALYTICS_EVENTS)[keyof typeof AUTH_ANALYTICS_EVENTS];
+
+/** This app is for one community. Registration never accepts a client community name. */
+export const DEFAULT_APP_COMMUNITY = "Vettuva Gounder";

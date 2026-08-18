@@ -5,10 +5,10 @@ import { toPublicUrlIfR2 } from "../../utils/r2Client";
 import { emitFeedLike, emitFeedComment, emitFeedSave } from "../../realtime/feedEvents";
 import { logFeedEvent } from "../../utils/feedAnalytics";
 import { ensureCommunityVisible, viewerCommunity } from "./access";
+import { isHiddenFromPublic } from "../contentSafety/publicVisibility";
 import {
   APPROVED,
   commentToDto,
-  isModeratedAway,
   toAuthorDto
 } from "./mappers";
 import type { CommentDto, CommentsResultDto, PostLikerDto, PostLikesResultDto } from "./types";
@@ -21,7 +21,7 @@ export async function likePost(userId: number, postId: number): Promise<{ liked:
     throw err;
   }
   await ensureCommunityVisible(post, userId);
-  if (isModeratedAway(post)) {
+  if (isHiddenFromPublic(post) && post.userId !== userId) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
@@ -66,7 +66,7 @@ export async function addComment(
     throw err;
   }
   await ensureCommunityVisible(post, userId);
-  if (isModeratedAway(post)) {
+  if (isHiddenFromPublic(post) && post.userId !== userId) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
@@ -132,7 +132,7 @@ export async function getComments(
     throw err;
   }
   await ensureCommunityVisible(post, currentUserId);
-  if (isModeratedAway(post)) {
+  if (isHiddenFromPublic(post) && post.userId !== currentUserId) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
@@ -205,7 +205,7 @@ export async function updateComment(
     throw err;
   }
   await ensureCommunityVisible(post, userId);
-  if (isModeratedAway(post)) {
+  if (isHiddenFromPublic(post) && post.userId !== userId) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
@@ -236,7 +236,7 @@ export async function deleteComment(userId: number, postId: number, commentId: n
     throw err;
   }
   await ensureCommunityVisible(post, userId);
-  if (isModeratedAway(post)) {
+  if (isHiddenFromPublic(post) && post.userId !== userId) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
@@ -335,8 +335,7 @@ export async function getPostLikes(
   const items: PostLikerDto[] = await Promise.all(
     rows.map(async (row) => {
       const u = (row as any).User as User;
-      const profilePhoto =
-        (await toPublicUrlIfR2(u.profilePhoto ?? null)) ?? u.profilePhoto ?? null;
+      const profilePhoto = await toPublicUrlIfR2(u.profilePhoto ?? null);
       return {
         userId: u.id,
         fullName: u.fullName,

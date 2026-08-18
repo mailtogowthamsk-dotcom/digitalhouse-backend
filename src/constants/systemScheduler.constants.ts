@@ -5,7 +5,8 @@ export const SCHEDULER_JOB_KEYS = [
   "marketplace_expiry",
   "helping_hands_expiry",
   "platform_scheduled_notifications",
-  "media_orphan_cleanup"
+  "media_orphan_cleanup",
+  "advertisement_lifecycle"
 ] as const;
 
 export type SchedulerJobKey = (typeof SCHEDULER_JOB_KEYS)[number];
@@ -88,6 +89,19 @@ export const SCHEDULER_JOB_DEFINITIONS: readonly SchedulerJobDefinition[] = [
     intervalEnv: "MEDIA_ORPHAN_CLEANUP_INTERVAL_MS",
     defaultIntervalMs: 60 * 60 * 1000,
     enabledEnv: "MEDIA_ORPHAN_CLEANUP_ENABLED",
+    defaultEnvEnabled: true
+  },
+  {
+    jobKey: "advertisement_lifecycle",
+    name: "Advertisement Lifecycle",
+    module: "Advertisements",
+    description:
+      "Activate scheduled campaigns, expire ended campaigns, and send expiry reminders.",
+    fileLocation: "src/services/advertisement/AdvertisementLifecycle.service.ts",
+    scheduleLabel: "Every 15 minutes (default)",
+    intervalEnv: "ADVERTISEMENT_LIFECYCLE_JOB_INTERVAL_MS",
+    defaultIntervalMs: 15 * 60 * 1000,
+    enabledEnv: "ADVERTISEMENT_LIFECYCLE_JOB_ENABLED",
     defaultEnvEnabled: true
   }
 ];

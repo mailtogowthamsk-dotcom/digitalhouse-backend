@@ -15,7 +15,8 @@ import {
   getCdnPublicUrl,
   toPublicUrlIfR2,
   toStorageKeyIfR2,
-  isPrivateR2Object
+  isPrivateR2Object,
+  toPrivateSignedUrlIfR2
 } from "../utils/r2Client";
 import type {
   CommunitySection,
@@ -393,7 +394,9 @@ export async function getProfile(userId: number): Promise<ProfileMeResponse> {
           ? { status: "APPROVED" as const, admin_remarks: null as string | null }
           : null;
 
-  const profile_image = (await toPublicUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
+  const profile_image = isPrivateR2Object(user.profilePhoto)
+    ? await toPrivateSignedUrlIfR2(user.profilePhoto)
+    : await toPublicUrlIfR2(user.profilePhoto ?? null);
   return {
     id: user.id,
     name: user.fullName,
@@ -526,7 +529,7 @@ export async function getProfileActivity(
   if (tab === "saved") {
     const { count, rows } = await SavedPost.findAndCountAll({
       where: { userId },
-      include: [{ model: Post, as: "Post", required: true }],
+      include: [{ model: Post, as: "Post", required: true, where: { moderationStatus: "ACTIVE", safetyDecision: "SAFE" } }],
       order: [[Post, "createdAt", "DESC"]],
       limit,
       offset
@@ -547,7 +550,7 @@ export async function getProfileActivity(
   // liked
   const { count, rows } = await PostLike.findAndCountAll({
     where: { userId },
-    include: [{ model: Post, as: "Post", required: true }],
+    include: [{ model: Post, as: "Post", required: true, where: { moderationStatus: "ACTIVE", safetyDecision: "SAFE" } }],
     order: [[Post, "createdAt", "DESC"]],
     limit,
     offset
@@ -620,7 +623,9 @@ export async function getProfilePosts(
 
   const items: ProfilePostItemDto[] = await Promise.all(
     posts.map(async (p) => {
-      const mediaUrl = await toPublicUrlIfR2(p.mediaUrl ?? null);
+      const mediaUrl = isPrivateR2Object(p.mediaUrl)
+        ? await toPrivateSignedUrlIfR2(p.mediaUrl)
+        : await toPublicUrlIfR2(p.mediaUrl ?? null);
       return {
         postId: p.id,
         postType: POST_TYPE_LABELS[p.postType] ?? p.postType,

@@ -70,8 +70,8 @@ export function marketplaceFieldsFromPost(post: Post, gallerySigned?: string[]) 
   const gallery =
     gallerySigned ??
     parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null).map(
-      (u) => toPublicUrlIfR2(u) ?? u
-    );
+      (u) => toPublicUrlIfR2(u)
+    ).filter((u): u is string => Boolean(u));
   return {
     marketplace_status: post.marketplaceStatus ?? null,
     marketplace_intent: post.marketplaceIntent ?? null,
@@ -93,8 +93,8 @@ export function helpFieldsFromPost(post: Post, gallerySigned?: string[]) {
   const gallery =
     gallerySigned ??
     parseHelpGallery(post.helpGallery, post.mediaUrl ?? null).map(
-      (u) => toPublicUrlIfR2(u) ?? u
-    );
+      (u) => toPublicUrlIfR2(u)
+    ).filter((u): u is string => Boolean(u));
   return {
     help_status: post.helpStatus ?? null,
     help_category: post.helpCategory ?? null,

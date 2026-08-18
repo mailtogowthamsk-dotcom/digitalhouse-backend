@@ -66,6 +66,7 @@
     "db:run-legal-documents-sql": "node scripts/legacy-db-guard.js scripts/run-legal-documents-sql.js",
     "db:run-prominent-people-sql": "node scripts/legacy-db-guard.js scripts/run-prominent-people-sql.js",
     "db:seed-master-data": "node scripts/seed-master-data.cjs",
+    "db:seed-kulams": "node scripts/seed-kulam-catalog.cjs",
     "db:backfill-master-data-users": "node scripts/backfill-master-data-users.cjs",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -99,6 +100,11 @@
     "sharp": "^0.34.5",
     "socket.io": "^4.8.1",
     "zod": "^3.23.8"
+  },
+  "optionalDependencies": {
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow/tfjs-backend-cpu": "^4.22.0",
+    "nsfwjs": "^4.2.1"
   },
   "devDependencies": {
     "@types/compression": "^1.8.1",

@@ -9,6 +9,7 @@ import {
 import { MARKETPLACE_CATEGORIES } from "../constants/marketplace.constants";
 import { HELP_CATEGORIES, HELP_CATEGORY_LABELS } from "../constants/helpingHands.constants";
 import { EXPERTISE_SEED_ITEMS } from "../constants/expertise.constants";
+import { KULAM_OTHER, VETTUVAR_KULAMS } from "../constants/kulamCatalog";
 import { mdmCacheGet, mdmCacheSet, mdmCacheInvalidateAll, mdmCacheKey } from "../utils/mdmCache";
 
 export type MdmItemDto = {
@@ -145,6 +146,110 @@ async function ensureItem(opts: {
   } as any);
 }
 
+function kulamMatchKeys(entry: { en: string; ta: string; aliases: string[] }): Set<string> {
+  return new Set(
+    [entry.en, entry.ta, ...entry.aliases].map((s) => normalizeAliasKey(s)).filter(Boolean)
+  );
+}
+
+function rowMatchKeys(row: MasterDataItem): Set<string> {
+  const aliases = Array.isArray(row.aliases) ? (row.aliases as string[]) : [];
+  const ta =
+    row.metadata && typeof row.metadata === "object"
+      ? String((row.metadata as { ta?: string }).ta || "")
+      : "";
+  return new Set(
+    [row.label, ta, ...aliases].map((s) => normalizeAliasKey(s)).filter(Boolean)
+  );
+}
+
+/** Upsert the full Vettuvar kulam list into MDM + legacy `kulams` (idempotent). */
+export async function ensureVettuvarKulamCatalog(): Promise<{ upserted: number }> {
+  await ensureMasterDataTypes();
+  const catalog = [...VETTUVAR_KULAMS, KULAM_OTHER];
+  const existing = await MasterDataItem.findAll({ where: { typeCode: "KULAM" } });
+  const legacyRows = await Kulam.findAll();
+  const usedIds = new Set<number>();
+  const usedLegacyIds = new Set<number>();
+  let upserted = 0;
+  const now = new Date();
+
+  for (let i = 0; i < catalog.length; i++) {
+    const entry = catalog[i];
+    const keys = kulamMatchKeys(entry);
+    const aliases = Array.from(
+      new Set([entry.ta, entry.en, ...entry.aliases].map((a) => a.trim()).filter(Boolean))
+    );
+    const sortOrder = entry.en === "Other" ? 9999 : i + 1;
+    const hit = existing.find((row) => {
+      if (usedIds.has(row.id)) return false;
+      const rowKeys = rowMatchKeys(row);
+      for (const k of keys) {
+        if (rowKeys.has(k)) return true;
+      }
+      return false;
+    });
+
+    if (hit) {
+      usedIds.add(hit.id);
+      await hit.update({
+        label: normalizeLabel(entry.en),
+        sortOrder,
+        isActive: true,
+        metadata: { ta: entry.ta },
+        aliases,
+        updatedAt: now
+      } as any);
+    } else {
+      const created = await MasterDataItem.create({
+        typeCode: "KULAM",
+        code: null,
+        label: normalizeLabel(entry.en),
+        parentId: null,
+        sortOrder,
+        isActive: true,
+        metadata: { ta: entry.ta },
+        aliases,
+        createdBy: null,
+        updatedBy: null
+      } as any);
+      existing.push(created);
+      usedIds.add(created.id);
+    }
+    upserted += 1;
+
+    const legacyName = normalizeLabel(entry.en);
+    const legacyHit = legacyRows.find((r) => {
+      if (usedLegacyIds.has(r.id)) return false;
+      return keys.has(normalizeAliasKey(r.name));
+    });
+    if (legacyHit) {
+      usedLegacyIds.add(legacyHit.id);
+      await legacyHit.update({ name: legacyName, sortOrder, updatedAt: now } as any);
+    } else {
+      const createdLegacy = await Kulam.create({
+        name: legacyName,
+        sortOrder,
+        createdAt: now,
+        updatedAt: now
+      } as any);
+      legacyRows.push(createdLegacy);
+      usedLegacyIds.add(createdLegacy.id);
+    }
+  }
+
+  for (const row of existing) {
+    if (!usedIds.has(row.id) && row.isActive) {
+      await row.update({ isActive: false, updatedAt: now } as any);
+      console.log(`[MDM] Deactivated leftover kulam: ${row.label}`);
+    }
+  }
+
+  mdmCacheInvalidateAll();
+  console.log(`[MDM] Ensured ${upserted} Vettuvar kulams.`);
+  return { upserted };
+}
+
 /** Seed types + default values (idempotent). Import legacy locations/kulams. */
 export async function seedMasterDataIfNeeded(): Promise<void> {
   await ensureMasterDataTypes();
@@ -222,21 +327,7 @@ export async function seedMasterDataIfNeeded(): Promise<void> {
   }
   console.log("[MDM] Ensured Tamil Nadu districts.");
 
-  const anyKulam = await MasterDataItem.count({ where: { typeCode: "KULAM" } });
-  if (anyKulam === 0) {
-    const kulams = await Kulam.findAll({ order: [["sortOrder", "ASC"], ["name", "ASC"]] });
-    let i = 1;
-    for (const k of kulams) {
-      if (!k.name?.trim()) continue;
-      await ensureItem({
-        typeCode: "KULAM",
-        label: k.name,
-        sortOrder: i++,
-        aliases: [normalizeAliasKey(k.name)]
-      });
-    }
-    console.log("[MDM] Seeded kulams.");
-  }
+  await ensureVettuvarKulamCatalog();
 
   const seedFlat = async (
     typeCode: MdmTypeCode,
@@ -698,5 +789,6 @@ export const masterDataService = {
   adminUpdateItem,
   adminListAudits,
   resolveMasterValue,
-  assertActiveMasterValue
+  assertActiveMasterValue,
+  ensureVettuvarKulamCatalog
 };

@@ -2,7 +2,7 @@ import type { Request, Response } from "express";
 import { ZodError } from "zod";
 import { error, success } from "../utils/response";
 import * as MatrimonyPayment from "../services/MatrimonyPayment.service";
-import { verifyWebhookSignature } from "../services/Razorpay.service";
+import * as PaymentWebhook from "../services/payments/PaymentWebhook.service";
 import {
   createPaymentOrderSchema,
   verifyPaymentSchema
@@ -64,18 +64,10 @@ export async function verifyPayment(req: Request, res: Response) {
 export async function razorpayWebhook(req: Request, res: Response) {
   const signature = req.headers["x-razorpay-signature"] as string | undefined;
   const rawBody = req.body as Buffer;
-  if (!Buffer.isBuffer(rawBody)) {
-    return res.status(400).json({ ok: false, message: "Invalid webhook body" });
-  }
-  if (!verifyWebhookSignature(rawBody, signature)) {
-    const { logSecurityEvent } = await import("../utils/securityLog");
-    logSecurityEvent("webhook_invalid", { kind: "razorpay" });
-    return res.status(400).json({ ok: false, message: "Invalid webhook signature" });
-  }
+  const eventId = req.headers["x-razorpay-event-id"] as string | undefined;
   try {
-    const payload = JSON.parse(rawBody.toString("utf8"));
-    const eventId = req.headers["x-razorpay-event-id"] as string | undefined;
-    await MatrimonyPayment.processRazorpayWebhook(payload, eventId);
+    const result = await PaymentWebhook.handleRawRazorpayWebhook(rawBody, signature, eventId);
+    if (!result.ok) return res.status(result.status).json({ ok: false, message: result.message });
     return res.status(200).json({ ok: true });
   } catch (e) {
     console.error("[razorpay webhook]", e);

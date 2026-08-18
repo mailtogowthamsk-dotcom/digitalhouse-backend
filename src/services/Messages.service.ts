@@ -124,7 +124,7 @@ export async function listThreads(
         publicProfilePhotos.set(u.id, null);
         return;
       }
-      publicProfilePhotos.set(u.id, (await toPublicUrlIfR2(u.profilePhoto)) ?? u.profilePhoto);
+      publicProfilePhotos.set(u.id, await toPublicUrlIfR2(u.profilePhoto));
     })
   );
 

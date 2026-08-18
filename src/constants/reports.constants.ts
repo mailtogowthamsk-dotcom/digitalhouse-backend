@@ -17,6 +17,8 @@ export const MODERATION_ACTIONS = [
   "RESTORE_POST",
   "SOFT_DELETE_POST",
   "HARD_DELETE_POST",
-  "EDIT_POST"
+  "EDIT_POST",
+  "SAFETY_ALLOW",
+  "SAFETY_REJECT"
 ] as const;
 export type ModerationActionType = (typeof MODERATION_ACTIONS)[number];

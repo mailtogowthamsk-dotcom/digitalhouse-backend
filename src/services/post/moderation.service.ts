@@ -3,7 +3,8 @@ import type { MarketplaceStatus } from "../../constants/marketplace.constants";
 import { logFeedEvent, logFeedEvents } from "../../utils/feedAnalytics";
 import * as MarketplaceSettings from "../MarketplaceSettings.service";
 import { ensureCommunityVisible } from "./access";
-import { isModeratedAway } from "./mappers";
+import { isHiddenFromPublic } from "../contentSafety/publicVisibility";
+import { isSevereSafetyReportReason } from "../contentSafety/textModerator";
 
 export async function trackFeedEvent(
   userId: number,
@@ -36,7 +37,7 @@ export async function reportPost(userId: number, postId: number, reason: string)
     throw err;
   }
   await ensureCommunityVisible(post, userId);
-  if (isModeratedAway(post)) {
+  if (isHiddenFromPublic(post) && post.userId !== userId) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
@@ -59,6 +60,15 @@ export async function reportPost(userId: number, postId: number, reason: string)
     reason: reason.trim(),
     status: "PENDING"
   } as any);
+
+  if (isSevereSafetyReportReason(reason) && post.safetyDecision === "SAFE") {
+    await post.update({
+      safetyDecision: "REVIEW_REQUIRED",
+      safetyCategory: "UNCERTAIN",
+      safetyFailureReason: "SEVERE_MEMBER_REPORT",
+      moderatedMediaVersion: null
+    } as any);
+  }
 
   if (post.postType === "MARKETPLACE" && post.marketplaceStatus === "LIVE") {
     const threshold = await MarketplaceSettings.getAutoHideReportThreshold();

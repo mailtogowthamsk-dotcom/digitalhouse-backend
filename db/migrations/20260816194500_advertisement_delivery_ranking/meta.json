@@ -1,0 +1,6 @@
+{
+  "description": "Advertisement per-user exposures, user reports, reports_count, and last_delivered_at index for ranked delivery",
+  "idempotent": true,
+  "rollback": true,
+  "destructive": false
+}

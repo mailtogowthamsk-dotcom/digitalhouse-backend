@@ -1,0 +1,38 @@
+{
+  "tables": [
+    {
+      "name": "payment_orders",
+      "columns": ["id", "module", "user_id", "reference_id", "amount_paise", "razorpay_order_id", "status"],
+      "indexes": ["PRIMARY", "uq_payment_orders_razorpay_order"]
+    },
+    {
+      "name": "payment_invoices",
+      "columns": ["id", "payment_order_id", "invoice_number"],
+      "indexes": ["PRIMARY", "uq_payment_invoices_order", "uq_payment_invoices_number"]
+    },
+    {
+      "name": "advertisements",
+      "columns": ["id", "user_id", "status", "pricing_snapshot", "payment_order_id", "business_name", "cta_type", "billing_mode", "reports_count"],
+      "indexes": ["PRIMARY", "idx_ads_user_created", "idx_ads_status_start_end", "idx_ads_last_delivered"]
+    },
+    {
+      "name": "advertisement_pricing",
+      "columns": ["id", "type_code", "duration_days", "price_paise", "is_active", "version"]
+    },
+    {
+      "name": "advertisement_daily_stats",
+      "columns": ["id", "advertisement_id", "stat_date"],
+      "indexes": ["PRIMARY", "uq_ad_daily_ad_date"]
+    },
+    {
+      "name": "advertisement_user_exposures",
+      "columns": ["user_id", "advertisement_id", "last_impression_at", "impression_count"],
+      "indexes": ["PRIMARY", "idx_ad_user_exp_user_seen"]
+    },
+    {
+      "name": "advertisement_reports",
+      "columns": ["id", "advertisement_id", "reporter_user_id", "reason", "status"],
+      "indexes": ["PRIMARY", "uq_ad_reports_ad_reporter"]
+    }
+  ]
+}

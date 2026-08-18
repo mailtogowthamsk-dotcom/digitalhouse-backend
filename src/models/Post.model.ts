@@ -120,6 +120,16 @@ export class Post extends Model<InferAttributes<Post>, InferCreationAttributes<P
   declare moderationNotes: string | null;
   declare moderatedBy: string | null;
   declare moderatedAt: Date | null;
+  /** Content-safety gate. Independent of moderationStatus (ACTIVE/HIDDEN). */
+  declare safetyDecision: string;
+  declare safetyCategory: string | null;
+  declare safetyConfidence: number | null;
+  declare safetyModel: string | null;
+  declare safetyModelVersion: string | null;
+  declare safetyPolicyVersion: string | null;
+  declare mediaVersion: number;
+  declare moderatedMediaVersion: number | null;
+  declare safetyFailureReason: string | null;
   declare deletedAt: Date | null;
   declare createdAt: Date;
   declare updatedAt: Date;
@@ -229,6 +239,29 @@ Post.init(
     moderationNotes: { type: DataTypes.TEXT, allowNull: true, field: "moderation_notes" },
     moderatedBy: { type: DataTypes.STRING(191), allowNull: true, field: "moderated_by" },
     moderatedAt: { type: DataTypes.DATE, allowNull: true, field: "moderated_at" },
+    safetyDecision: {
+      type: DataTypes.STRING(32),
+      allowNull: false,
+      defaultValue: "PENDING",
+      field: "safety_decision"
+    },
+    safetyCategory: { type: DataTypes.STRING(32), allowNull: true, field: "safety_category" },
+    safetyConfidence: { type: DataTypes.DECIMAL(6, 5), allowNull: true, field: "safety_confidence" },
+    safetyModel: { type: DataTypes.STRING(64), allowNull: true, field: "safety_model" },
+    safetyModelVersion: { type: DataTypes.STRING(32), allowNull: true, field: "safety_model_version" },
+    safetyPolicyVersion: { type: DataTypes.STRING(32), allowNull: true, field: "safety_policy_version" },
+    mediaVersion: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: false,
+      defaultValue: 1,
+      field: "media_version"
+    },
+    moderatedMediaVersion: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      field: "moderated_media_version"
+    },
+    safetyFailureReason: { type: DataTypes.STRING(255), allowNull: true, field: "safety_failure_reason" },
     deletedAt: { type: DataTypes.DATE, allowNull: true, field: "deleted_at" },
     createdAt: { type: DataTypes.DATE, allowNull: false },
     updatedAt: { type: DataTypes.DATE, allowNull: false }
@@ -239,7 +272,11 @@ Post.init(
     timestamps: true,
     indexes: [
       { name: "idx_posts_user_created", fields: ["userId", "createdAt"] },
-      { name: "idx_posts_type_created", fields: ["postType", "createdAt"] }
+      { name: "idx_posts_type_created", fields: ["postType", "createdAt"] },
+      {
+        name: "idx_posts_safety_moderation_created",
+        fields: ["safetyDecision", "moderationStatus", "createdAt"]
+      }
     ]
   }
 );

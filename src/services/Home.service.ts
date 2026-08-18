@@ -192,28 +192,32 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
     helpingHandRequests,
     communityUpdates
   ] = await Promise.all([
-    Post.count({ include: [approvedInclude], distinct: true }),
+    Post.count({ include: [approvedInclude], distinct: true, where: { moderationStatus: "ACTIVE", safetyDecision: "SAFE" } }),
     Post.count({
       where: {
         postType: "JOB",
+        moderationStatus: "ACTIVE",
+        safetyDecision: "SAFE",
         [Op.or]: [{ jobStatus: "OPEN" }, { jobStatus: null }]
       },
       include: [approvedInclude],
       distinct: true
     }),
     Post.count({
-      where: { postType: "MARKETPLACE", marketplaceStatus: "LIVE" },
+      where: { postType: "MARKETPLACE", marketplaceStatus: "LIVE", moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
       include: [approvedInclude],
       distinct: true
     }),
     Post.count({
-      where: { postType: "MATRIMONY" },
+      where: { postType: "MATRIMONY", moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
       include: [approvedInclude],
       distinct: true
     }),
     Post.count({
       where: {
         postType: "HELP_REQUEST",
+        moderationStatus: "ACTIVE",
+        safetyDecision: "SAFE",
         helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
         [Op.or]: [{ helpExpiresAt: null }, { helpExpiresAt: { [Op.gt]: new Date() } }]
       },
@@ -221,7 +225,7 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
       distinct: true
     }),
     Post.count({
-      where: { postType: "ANNOUNCEMENT" },
+      where: { postType: "ANNOUNCEMENT", moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
       include: [approvedInclude],
       distinct: true
     })
@@ -326,7 +330,7 @@ export async function getHighlights(): Promise<HighlightsDto> {
 
   const [pinnedAnnouncements, upcomingMeetups, urgentHelpRequests] = await Promise.all([
     Post.findAll({
-      where: { visibility: "PUBLIC", postType: "ANNOUNCEMENT", pinned: true },
+      where: { visibility: "PUBLIC", postType: "ANNOUNCEMENT", pinned: true, moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
       include: [approvedInclude],
       attributes: [...highlightAttributes],
       order: [["createdAt", "DESC"]],
@@ -336,7 +340,9 @@ export async function getHighlights(): Promise<HighlightsDto> {
       where: {
         visibility: "PUBLIC",
         postType: "MEETUP",
-        meetupAt: { [Op.gte]: new Date() }
+        meetupAt: { [Op.gte]: new Date() },
+        moderationStatus: "ACTIVE",
+        safetyDecision: "SAFE"
       },
       include: [approvedInclude],
       attributes: [...highlightAttributes],
@@ -349,6 +355,8 @@ export async function getHighlights(): Promise<HighlightsDto> {
         postType: "HELP_REQUEST",
         urgent: true,
         helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
+        moderationStatus: "ACTIVE",
+        safetyDecision: "SAFE",
         [Op.or]: [{ helpExpiresAt: null }, { helpExpiresAt: { [Op.gt]: new Date() } }]
       },
       include: [approvedInclude],

@@ -1,5 +1,5 @@
 import { HELP_MAX_PHOTOS } from "../constants/helpingHands.constants";
-import { toPublicUrlIfR2, toStorageKeyIfR2 } from "./r2Client";
+import { toPublicUrlIfR2, toStorageKeyIfR2, isPrivateR2Object, toPrivateSignedUrlIfR2 } from "./r2Client";
 
 /** Normalize raw gallery JSON + optional cover into a unique URL list. */
 export function parseHelpGallery(raw: unknown, mediaUrl?: string | null): string[] {
@@ -41,6 +41,20 @@ export function resolveHelpMedia(
   return { mediaUrl: urls[0], helpGallery: urls };
 }
 
-export async function publicHelpGallery(urls: string[]): Promise<string[]> {
-  return Promise.all(urls.map(async (u) => (await toPublicUrlIfR2(u)) ?? u));
+export async function publicHelpGallery(
+  urls: string[],
+  options?: { signPrivate?: boolean }
+): Promise<string[]> {
+  const out: string[] = [];
+  for (const u of urls) {
+    if (isPrivateR2Object(u)) {
+      if (!options?.signPrivate) continue;
+      const signed = await toPrivateSignedUrlIfR2(u);
+      if (signed) out.push(signed);
+      continue;
+    }
+    const pub = toPublicUrlIfR2(u);
+    if (pub) out.push(pub);
+  }
+  return out;
 }

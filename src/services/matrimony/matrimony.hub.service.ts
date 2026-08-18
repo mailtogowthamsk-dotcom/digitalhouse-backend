@@ -100,7 +100,7 @@ export async function getUserContext(userId: number) {
   const personal = normalizeJsonColumn(profile?.personal, SECTION_ALLOWED_KEYS.personal) as {
     fatherName?: string | null;
   } | null;
-  const profile_image = (await toPublicUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
+  const profile_image = await toPublicUrlIfR2(user.profilePhoto ?? null);
   return {
     full_name: user.fullName,
     gender: user.gender ?? null,
@@ -143,8 +143,7 @@ export async function getMatrimonyHub(
   const personal = normalizeJsonColumn(profileRow?.personal, SECTION_ALLOWED_KEYS.personal) as {
     fatherName?: string | null;
   } | null;
-  const profile_image =
-    (await toPublicUrlIfR2(user.profilePhoto ?? null)) ?? user.profilePhoto ?? null;
+  const profile_image = await toPublicUrlIfR2(user.profilePhoto ?? null);
   const userContext = {
     full_name: user.fullName,
     gender: user.gender ?? null,

@@ -1,0 +1,6 @@
+{
+  "description": "Idempotent named indexes for central payments and advertisements (covers schemas created by Sequelize sync before SQL CREATE TABLE)",
+  "idempotent": true,
+  "rollback": true,
+  "destructive": false
+}

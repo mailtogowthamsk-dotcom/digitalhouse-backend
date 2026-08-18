@@ -75,6 +75,8 @@ export type PostDetailDto = {
   comment_count: number;
   liked_by_me: boolean;
   saved_by_me: boolean;
+  safety_decision?: string;
+  safety_category?: string | null;
   job_interested_by_me?: boolean;
   job_interest_count?: number;
   job_can_message_poster?: boolean;

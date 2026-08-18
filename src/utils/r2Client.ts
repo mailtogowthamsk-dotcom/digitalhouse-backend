@@ -6,12 +6,14 @@
  * Do NOT expose R2 credentials to client.
  */
 
+import fs from "fs";
 import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
-  DeleteObjectCommand
+  DeleteObjectCommand,
+  CopyObjectCommand
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { R2_CACHE_CONTROL_IMMUTABLE } from "../config/r2Cache.config";
@@ -90,8 +92,22 @@ export function toPublicUrlIfR2(
   let key = extractR2KeyFromUrl(u);
   if (!key) return u;
   key = normalizeR2ObjectKey(key);
-
+  if (isPrivateR2Object(key)) return null;
   return getCdnPublicUrl(key);
+}
+
+/**
+ * Public-client URL: CDN for published R2 objects, pass-through for external https,
+ * never a private/quarantine object key (those must be signed for the owner/admin).
+ */
+export function toClientPublicMediaUrl(url: string | null | undefined): string | null {
+  if (!url || typeof url !== "string" || !url.trim()) return null;
+  const pub = toPublicUrlIfR2(url);
+  if (pub) return pub;
+  if (isPrivateR2Object(url)) return null;
+  const trimmed = url.trim();
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return null;
 }
 
 /**
@@ -255,6 +271,63 @@ export async function getR2ObjectBuffer(
   }
 }
 
+/**
+ * Stream an R2 object to a temp file without holding the whole object in Node memory.
+ * Used for video moderation (FFmpeg reads the path). Images still use getR2ObjectBuffer.
+ */
+export async function downloadR2ObjectToFile(
+  key: string,
+  destPath: string,
+  maxBytes: number
+): Promise<number> {
+  if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
+  const client = getR2Client();
+  const configuredTimeout = Number(process.env.R2_DOWNLOAD_TIMEOUT_MS || 120_000);
+  const timeoutMs = Number.isFinite(configuredTimeout)
+    ? Math.max(10_000, configuredTimeout)
+    : 120_000;
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+  timeout.unref();
+  const out = fs.createWriteStream(destPath);
+  try {
+    const response = await client.send(
+      new GetObjectCommand({ Bucket: bucketName, Key: normalizeR2ObjectKey(key) }),
+      { abortSignal: abortController.signal }
+    );
+    const contentLength = response.ContentLength ?? 0;
+    if (contentLength > maxBytes) {
+      throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
+    }
+    const body = response.Body;
+    if (!body) throw new Error("Empty R2 response body");
+    let written = 0;
+    for await (const chunk of body as AsyncIterable<Uint8Array>) {
+      const buf = Buffer.from(chunk);
+      written += buf.length;
+      if (written > maxBytes) {
+        throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
+      }
+      if (!out.write(buf)) {
+        await new Promise<void>((resolve, reject) => {
+          out.once("drain", resolve);
+          out.once("error", reject);
+        });
+      }
+    }
+    await new Promise<void>((resolve, reject) => {
+      out.end((err?: Error | null) => (err ? reject(err) : resolve()));
+    });
+    return written;
+  } catch (err) {
+    out.destroy();
+    await fs.promises.unlink(destPath).catch(() => undefined);
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /** Validate that an uploaded R2 object exists without downloading its bytes. */
 export async function getR2ObjectMetadata(
   key: string
@@ -315,6 +388,24 @@ export async function putR2ObjectBuffer(
       Body: body,
       ContentType: contentType,
       CacheControl: options?.cacheControl ?? R2_CACHE_CONTROL_IMMUTABLE
+    })
+  );
+}
+
+/** Server-side copy inside the same R2 bucket (quarantine → published). */
+export async function copyR2Object(sourceKey: string, destKey: string): Promise<void> {
+  if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
+  const src = normalizeR2ObjectKey(sourceKey);
+  const dest = normalizeR2ObjectKey(destKey);
+  if (!src || !dest) throw new Error("Invalid R2 copy keys");
+  if (src === dest) return;
+  const client = getR2Client();
+  await client.send(
+    new CopyObjectCommand({
+      Bucket: bucketName,
+      CopySource: `${bucketName}/${src}`,
+      Key: dest,
+      MetadataDirective: "COPY"
     })
   );
 }

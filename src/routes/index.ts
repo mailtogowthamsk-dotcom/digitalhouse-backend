@@ -17,6 +17,7 @@ import { helpingHandsRouter } from "./helpingHands.routes";
 import { platformRouter } from "./platform.routes";
 import { supportRouter } from "./support.routes";
 import { prominentPeopleRouter } from "./prominentPeople.routes";
+import { advertisementRouter } from "./advertisement.routes";
 import { legalRouter } from "./legal.routes";
 
 export const apiRouter = Router();
@@ -38,5 +39,6 @@ apiRouter.use("/connections", connectionsRouter);
 apiRouter.use("/helping-hands", helpingHandsRouter);
 apiRouter.use("/support", supportRouter);
 apiRouter.use("/prominent-people", prominentPeopleRouter);
+apiRouter.use("/advertisements", advertisementRouter);
 apiRouter.use("/legal", legalRouter);
 apiRouter.use("/landing", landingRouter);

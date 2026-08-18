@@ -3,7 +3,7 @@
  * Stores a per-user minimum acceptable `iat` (unix seconds) in Redis (preferred)
  * or in-process memory (single-instance fallback).
  *
- * Call revokeUserTokens() on suspend / soft-delete / future logout-all.
+ * Call revokeUserTokens() on suspend / soft-delete / admin force-logout / registration approve.
  * Middleware rejects tokens with iat < minIat.
  *
  * Future enhancement: persist tokenVersion on users table for multi-store durability.

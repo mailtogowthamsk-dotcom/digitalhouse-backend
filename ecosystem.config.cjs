@@ -72,7 +72,8 @@ module.exports = {
         DB_POOL_MAX: process.env.MEDIA_WORKER_DB_POOL_MAX || "2",
         DB_SESSION_WAIT_TIMEOUT: process.env.DB_SESSION_WAIT_TIMEOUT || "120",
         DB_POOL_IDLE_MS: process.env.DB_POOL_IDLE_MS || "8000",
-        MEDIA_MAX_CONCURRENT: process.env.MEDIA_MAX_CONCURRENT || "2"
+        MEDIA_MAX_CONCURRENT: process.env.MEDIA_MAX_CONCURRENT || "2",
+        MODERATION_MAX_CONCURRENCY: process.env.MODERATION_MAX_CONCURRENCY || "1"
       }
     },
     {

@@ -28,6 +28,7 @@ export const ADMIN_MODULES = [
   "support",
   "notifications",
   "platform",
+  "advertisements",
   "system_scheduler",
   "settings"
 ] as const;
@@ -52,6 +53,7 @@ export const ADMIN_MODULE_LABELS: Record<AdminModule, string> = {
   support: "Help & Support",
   notifications: "Notifications",
   platform: "Platform Management",
+  advertisements: "Advertisements",
   system_scheduler: "System Scheduler",
   settings: "Settings & Roles"
 };
@@ -92,14 +94,17 @@ export const ADMIN_ACTIONS = [
   "platform.maintenance",
   "platform.versions",
   "platform.features",
-  "system_scheduler.manage"
+  "system_scheduler.manage",
+  "advertisements.manage",
+  "advertisements.refund",
+  "advertisements.pricing"
 ] as const;
 
 export type AdminAction = (typeof ADMIN_ACTIONS)[number];
 
 export const ADMIN_ACTION_LABELS: Record<AdminAction, string> = {
   "users.approve": "Approve / reject users",
-  "users.suspend": "Suspend / reactivate users",
+  "users.suspend": "Suspend / reactivate / log out users",
   "users.edit": "Edit user profiles",
   "users.delete": "Soft / hard delete users",
   "jobs.manage": "Manage jobs and applications",
@@ -129,7 +134,10 @@ export const ADMIN_ACTION_LABELS: Record<AdminAction, string> = {
   "platform.maintenance": "Toggle maintenance mode",
   "platform.versions": "Manage app versions",
   "platform.features": "Toggle feature flags / menu",
-  "system_scheduler.manage": "Enable / disable / run scheduled jobs"
+  "system_scheduler.manage": "Enable / disable / run scheduled jobs",
+  "advertisements.manage": "Review, approve, pause, and manage advertisements",
+  "advertisements.refund": "Refund advertisement payments",
+  "advertisements.pricing": "Manage advertisement pricing and durations"
 };
 
 const ALL_MODULES = [...ADMIN_MODULES];
@@ -144,6 +152,7 @@ const MODERATOR_MODULES: AdminModule[] = [
   "support",
   "matrimony_reports",
   "community_content",
+  "advertisements",
   "settings"
 ];
 
@@ -182,7 +191,10 @@ const ADMIN_ROLE_ACTIONS: AdminAction[] = [
   "platform.versions",
   "platform.features",
   "system_scheduler.manage",
-  "settings.legal_manage"
+  "settings.legal_manage",
+  "advertisements.manage",
+  "advertisements.refund",
+  "advertisements.pricing"
 ];
 
 const MODERATOR_ROLE_ACTIONS: AdminAction[] = [
@@ -192,7 +204,8 @@ const MODERATOR_ROLE_ACTIONS: AdminAction[] = [
   "marketplace.manage",
   "posts.manage",
   "helping_hands.manage",
-  "support.write"
+  "support.write",
+  "advertisements.manage"
 ];
 
 export const ROLE_ACTION_ACCESS: Record<AdminRole, readonly AdminAction[]> = {

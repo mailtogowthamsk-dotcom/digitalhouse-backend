@@ -37,7 +37,15 @@ export async function getKulams(_req: Request, res: Response) {
     const items = await masterDataService.listPublicItems({ typeCode: "KULAM" });
     if (items.length > 0) {
       return success(res, {
-        kulams: items.map((i) => ({ id: i.id, name: i.label })),
+        kulams: items.map((i) => {
+          const ta =
+            i.metadata && typeof i.metadata === "object"
+              ? String((i.metadata as { ta?: string }).ta || "").trim()
+              : "";
+          const name = i.label;
+          const displayName = ta && ta.toLowerCase() !== name.toLowerCase() ? `${ta} (${name})` : name;
+          return { id: i.id, name, displayName };
+        }),
         source: "master_data"
       });
     }

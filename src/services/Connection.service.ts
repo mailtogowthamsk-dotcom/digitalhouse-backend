@@ -6,6 +6,7 @@ import {
   notifyConnectionRequestReceived
 } from "./Notification.service";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
+import { uniqueByOtherUser } from "./connectionPair";
 
 export type RelationshipStatus =
   | "none"
@@ -180,6 +181,20 @@ async function acceptRow(row: MemberConnection): Promise<MemberConnection> {
   return row;
 }
 
+/** Keep one live row per unordered pair. Reverse A→B / B→A duplicates caused the Connections list to show the same person twice. */
+async function collapseOtherPairRows(keepId: number, userA: number, userB: number): Promise<void> {
+  await MemberConnection.update(
+    { status: "CANCELLED", respondedAt: new Date() },
+    {
+      where: {
+        id: { [Op.ne]: keepId },
+        status: { [Op.in]: ["PENDING", "ACCEPTED"] },
+        ...pairWhere(userA, userB)
+      }
+    }
+  );
+}
+
 export async function sendRequest(
   requesterId: number,
   recipientId: number
@@ -205,10 +220,7 @@ export async function sendRequest(
   );
   if (incomingPending) {
     await acceptRow(incomingPending);
-    const other = rows.find(
-      (r) => r.status === "PENDING" && r.requesterUserId === requesterId
-    );
-    if (other) await other.update({ status: "CANCELLED", respondedAt: new Date() });
+    await collapseOtherPairRows(incomingPending.id, requesterId, recipientId);
     void notifyConnectionRequestAccepted(recipientId, requesterId).catch(() => {});
     void notifyConnectionRequestAccepted(requesterId, recipientId).catch(() => {});
     return { status: "connected", autoAccepted: true };
@@ -299,6 +311,7 @@ export async function acceptRequest(
   });
   if (!row) serviceError("No pending request found.", 404, "REQUEST_NOT_FOUND");
   await acceptRow(row);
+  await collapseOtherPairRows(row.id, requesterId, recipientId);
   void notifyConnectionRequestAccepted(requesterId, recipientId).catch(() => {});
   return { status: "connected" };
 }
@@ -340,11 +353,16 @@ export async function disconnect(
   userId: number,
   otherUserId: number
 ): Promise<{ status: RelationshipStatus }> {
-  const row = await MemberConnection.findOne({
-    where: { ...pairWhere(userId, otherUserId), status: "ACCEPTED" }
+  const rows = await MemberConnection.findAll({
+    where: { ...pairWhere(userId, otherUserId), status: { [Op.in]: ["ACCEPTED", "PENDING"] } }
   });
-  if (!row) serviceError("You are not connected with this member.", 404, "NOT_CONNECTED");
-  await row.update({ status: "CANCELLED", respondedAt: new Date() });
+  if (!rows.some((r) => r.status === "ACCEPTED")) {
+    serviceError("You are not connected with this member.", 404, "NOT_CONNECTED");
+  }
+  const now = new Date();
+  for (const row of rows) {
+    await row.update({ status: "CANCELLED", respondedAt: now });
+  }
   return { status: "none" };
 }
 
@@ -369,14 +387,18 @@ export async function listIncomingRequests(userId: number): Promise<ConnectionRe
 }
 
 export async function listConnections(userId: number): Promise<ConnectionRequestDto[]> {
-  const rows = await MemberConnection.findAll({
-    where: {
-      status: "ACCEPTED",
-      [Op.or]: [{ requesterUserId: userId }, { recipientUserId: userId }]
-    },
-    order: [["updatedAt", "DESC"]],
-    limit: 200
-  });
+  const rows = uniqueByOtherUser(
+    userId,
+    await MemberConnection.findAll({
+      where: {
+        status: "ACCEPTED",
+        [Op.or]: [{ requesterUserId: userId }, { recipientUserId: userId }]
+      },
+      order: [["updatedAt", "DESC"]],
+      limit: 400
+    }),
+    (row) => ({ requesterUserId: row.requesterUserId, recipientUserId: row.recipientUserId })
+  );
   const otherIds = rows.map((row) =>
     row.requesterUserId === userId ? row.recipientUserId : row.requesterUserId
   );
@@ -394,6 +416,20 @@ export async function listConnections(userId: number): Promise<ConnectionRequest
     });
   }
   return result;
+}
+
+export async function countAcceptedConnections(userId: number): Promise<number> {
+  const rows = await MemberConnection.findAll({
+    where: {
+      status: "ACCEPTED",
+      [Op.or]: [{ requesterUserId: userId }, { recipientUserId: userId }]
+    },
+    attributes: ["requesterUserId", "recipientUserId"]
+  });
+  return uniqueByOtherUser(userId, rows, (row) => ({
+    requesterUserId: row.requesterUserId,
+    recipientUserId: row.recipientUserId
+  })).length;
 }
 
 export async function getIncomingRequestCount(userId: number): Promise<number> {
@@ -426,5 +462,6 @@ export const connectionService = {
   disconnect,
   listIncomingRequests,
   listConnections,
+  countAcceptedConnections,
   getIncomingRequestCount
 };

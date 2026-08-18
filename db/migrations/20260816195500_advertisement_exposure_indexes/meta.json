@@ -1,0 +1,6 @@
+{
+  "description": "Add missing advertisement exposure/report indexes when tables already existed without them",
+  "idempotent": true,
+  "rollback": true,
+  "destructive": false
+}

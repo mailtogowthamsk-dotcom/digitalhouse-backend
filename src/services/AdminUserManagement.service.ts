@@ -527,7 +527,7 @@ export async function getAdminUserDetail(userId: number) {
       passwordResetDate: null as string | null,
       deviceCount: devices.length,
       sessions: null as null,
-      note: "Auth is OTP / Google OAuth — no password sessions stored."
+      note: "Auth is OTP / Google OAuth. Use Log out of app to invalidate current JWTs on all devices."
     },
     roles: {
       userRole: "USER",
@@ -623,6 +623,18 @@ export async function softDeleteUser(
     createdAt: new Date()
   });
   return user.reload();
+}
+
+/** Invalidate all member app JWTs. Does not change account status. */
+export async function logoutUser(userId: number, adminEmail: string): Promise<User> {
+  const user = await User.findByPk(userId);
+  if (!user) throw Object.assign(new Error("User not found"), { status: 404 });
+  if (user.status === "DELETED") {
+    throw Object.assign(new Error("Cannot log out a soft-deleted user"), { status: 400 });
+  }
+  const { revokeUserTokens } = await import("../utils/tokenRevocation");
+  await revokeUserTokens(userId, `admin_logout:${adminEmail}`);
+  return user;
 }
 
 /** Restore a soft-deleted user to APPROVED. */

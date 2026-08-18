@@ -500,6 +500,16 @@ export async function processClaimedMediaJob(job: MediaJob): Promise<void> {
       jobId: job.id,
       mediaId: job.mediaId
     });
+    try {
+      const { moderateProcessedMedia } = await import("./contentSafety/ContentSafety.service");
+      await moderateProcessedMedia(job.mediaId, job.id);
+    } catch (moderationError) {
+      const message =
+        moderationError instanceof Error ? moderationError.message : String(moderationError);
+      console.warn(`[media-worker] moderation failed job=${job.id}: ${message}`);
+      const { markMediaModerationFailed } = await import("./contentSafety/ContentSafety.service");
+      await markMediaModerationFailed(job.mediaId, job.id, message).catch(() => undefined);
+    }
   } catch (error) {
     const message =
       error instanceof Error ? `${error.name}: ${error.message}` : String(error);
@@ -548,7 +558,11 @@ export async function processClaimedMediaJob(job: MediaJob): Promise<void> {
       console.warn(`[media-worker] ignored late failure after claim loss job=${job.id}`);
       return;
     }
-    if (outcome.permanentlyFailed) throw error;
+    if (outcome.permanentlyFailed) {
+      const { markMediaModerationFailed } = await import("./contentSafety/ContentSafety.service");
+      await markMediaModerationFailed(job.mediaId, job.id, message).catch(() => undefined);
+      throw error;
+    }
     console.warn(
       `[media-worker] job=${job.id} attempt=${outcome.retryCount}/${MAX_RETRIES} failed; retrying: ${message}`
     );
@@ -607,9 +621,15 @@ export async function recoverStaleMediaJobs(): Promise<number> {
           { transaction }
         );
       }
-      return true;
+      return { permanentlyAbandoned };
     });
     if (!updated) continue;
+    if (updated && typeof updated === "object" && updated.permanentlyAbandoned) {
+      const { markMediaModerationFailed } = await import("./contentSafety/ContentSafety.service");
+      await markMediaModerationFailed(job.mediaId, job.id, "Worker abandoned the job").catch(
+        () => undefined
+      );
+    }
     recovered += 1;
   }
   return recovered;

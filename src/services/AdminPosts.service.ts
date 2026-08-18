@@ -11,7 +11,7 @@ import {
   User
 } from "../models";
 import { getTagsForPost, syncPostHashtags } from "./Hashtag.service";
-import { toPublicUrlIfR2, deleteR2ImageVariants } from "../utils/r2Client";
+import { toPublicUrlIfR2, deleteR2ImageVariants, isPrivateR2Object, toPrivateSignedUrlIfR2 } from "../utils/r2Client";
 import { parseMarketplaceGallery } from "../utils/marketplaceGallery";
 import { parseHelpGallery } from "../utils/helpGallery";
 
@@ -20,6 +20,7 @@ type ListQuery = {
   limit: number;
   q?: string;
   status?: "all" | "ACTIVE" | "HIDDEN" | "SOFT_DELETED";
+  safetyDecision?: "all" | "PENDING" | "PROCESSING" | "SAFE" | "REVIEW_REQUIRED" | "BLOCKED" | "FAILED";
   postType?: string;
   visibility?: string;
   reportStatus?: "all" | "REPORTED" | "UNREPORTED";
@@ -84,6 +85,12 @@ async function userMap(userIds: number[]): Promise<Map<number, User>> {
   return new Map(rows.map((row) => [row.id, row]));
 }
 
+async function adminMediaUrl(url: string | null | undefined): Promise<string | null> {
+  if (!url) return null;
+  if (isPrivateR2Object(url)) return toPrivateSignedUrlIfR2(url);
+  return toPublicUrlIfR2(url);
+}
+
 async function toListItem(
   post: Post,
   users: Map<number, User>,
@@ -106,9 +113,11 @@ async function toListItem(
     visibility: post.visibility,
     title: post.title,
     description: post.description ?? null,
-    mediaUrl: toPublicUrlIfR2(post.mediaUrl ?? null),
-    thumbnailUrl: toPublicUrlIfR2(post.thumbnailUrl ?? null),
+    mediaUrl: await adminMediaUrl(post.mediaUrl),
+    thumbnailUrl: await adminMediaUrl(post.thumbnailUrl),
     moderationStatus: post.moderationStatus,
+    safetyDecision: post.safetyDecision,
+    safetyCategory: post.safetyCategory ?? null,
     moderationReason: post.moderationReason ?? null,
     reportCount: reportCounts.get(post.id) ?? 0,
     likeCount: post.likeCount ?? 0,
@@ -125,13 +134,17 @@ async function toListItem(
 export async function getPostModerationOverview() {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const [totalPosts, activePosts, hiddenPosts, deletedPosts, todaysReports, allReports] = await Promise.all([
+  const [totalPosts, activePosts, hiddenPosts, deletedPosts, todaysReports, allReports, reviewRequired, blocked, failed, pending] = await Promise.all([
     Post.count(),
     Post.count({ where: { moderationStatus: "ACTIVE" } }),
     Post.count({ where: { moderationStatus: "HIDDEN" } }),
     Post.count({ where: { moderationStatus: "SOFT_DELETED" } }),
     PostReport.count({ where: { createdAt: { [Op.gte]: today } } }),
-    PostReport.count()
+    PostReport.count(),
+    Post.count({ where: { safetyDecision: "REVIEW_REQUIRED" } }),
+    Post.count({ where: { safetyDecision: "BLOCKED" } }),
+    Post.count({ where: { safetyDecision: "FAILED" } }),
+    Post.count({ where: { safetyDecision: { [Op.in]: ["PENDING", "PROCESSING"] } } })
   ]);
   const reportedPostIds = await PostReport.findAll({ attributes: ["postId"] });
   const uniqueReportedPosts = new Set(reportedPostIds.map((row) => row.postId)).size;
@@ -144,13 +157,20 @@ export async function getPostModerationOverview() {
     deletedPosts,
     todaysReports,
     highPriorityReports: escalatedReports,
-    allReports
+    allReports,
+    safetyReviewRequired: reviewRequired,
+    safetyBlocked: blocked,
+    safetyFailed: failed,
+    safetyPending: pending
   };
 }
 
 export async function listAdminPosts(query: ListQuery) {
   const where: WhereOptions = {};
   if (query.status && query.status !== "all") Object.assign(where, { moderationStatus: query.status });
+  if (query.safetyDecision && query.safetyDecision !== "all") {
+    Object.assign(where, { safetyDecision: query.safetyDecision });
+  }
   if (query.postType && query.postType !== "all") Object.assign(where, { postType: query.postType });
   if (query.visibility && query.visibility !== "all") Object.assign(where, { visibility: query.visibility });
   if (query.dateFrom || query.dateTo) {
@@ -242,19 +262,23 @@ export async function getAdminPostDetail(postId: number) {
   const author = await User.findByPk(post.userId, {
     attributes: ["id", "fullName", "email", "mobile", "community", "district", "profilePhoto", "status"]
   });
-  const [reports, actions, views, shares, tags] = await Promise.all([
-    PostReport.findAll({ where: { postId }, order: [["createdAt", "DESC"]] }),
-    ModerationAction.findAll({ where: { postId }, order: [["createdAt", "DESC"]], limit: 50 }),
-    FeedEngagementEvent.count({ where: { postId, eventType: "post_open" } }),
-    FeedEngagementEvent.count({ where: { postId, eventType: "share" } }),
-    getTagsForPost(post.id)
-  ]);
   const mediaUrls = [
     post.mediaUrl,
     post.thumbnailUrl,
     ...parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl),
     ...parseHelpGallery(post.helpGallery, post.mediaUrl)
   ].filter(Boolean) as string[];
+  const [reports, actions, views, shares, tags, scans, mediaUrl, thumbnailUrl, mediaGallery] = await Promise.all([
+    PostReport.findAll({ where: { postId }, order: [["createdAt", "DESC"]] }),
+    ModerationAction.findAll({ where: { postId }, order: [["createdAt", "DESC"]], limit: 50 }),
+    FeedEngagementEvent.count({ where: { postId, eventType: "post_open" } }),
+    FeedEngagementEvent.count({ where: { postId, eventType: "share" } }),
+    getTagsForPost(post.id),
+    (await import("./contentSafety/ContentSafety.service")).listSafetyScans(postId),
+    adminMediaUrl(post.mediaUrl),
+    adminMediaUrl(post.thumbnailUrl),
+    Promise.all(mediaUrls.map((url) => adminMediaUrl(url)))
+  ]);
   return {
     post: {
       id: post.id,
@@ -263,10 +287,20 @@ export async function getAdminPostDetail(postId: number) {
       visibility: post.visibility,
       title: post.title,
       description: post.description ?? null,
-      mediaUrl: toPublicUrlIfR2(post.mediaUrl ?? null),
-      thumbnailUrl: toPublicUrlIfR2(post.thumbnailUrl ?? null),
-      mediaGallery: mediaUrls.map((url) => toPublicUrlIfR2(url)),
+      mediaUrl,
+      thumbnailUrl,
+      mediaGallery,
+      mediaType: post.mediaType,
       moderationStatus: post.moderationStatus,
+      safetyDecision: post.safetyDecision,
+      safetyCategory: post.safetyCategory ?? null,
+      safetyConfidence: post.safetyConfidence ?? null,
+      safetyModel: post.safetyModel ?? null,
+      safetyModelVersion: post.safetyModelVersion ?? null,
+      safetyPolicyVersion: post.safetyPolicyVersion ?? null,
+      mediaVersion: post.mediaVersion,
+      moderatedMediaVersion: post.moderatedMediaVersion,
+      safetyFailureReason: post.safetyFailureReason ?? null,
       moderationReason: post.moderationReason ?? null,
       moderationNotes: post.moderationNotes ?? null,
       moderatedBy: post.moderatedBy ?? null,
@@ -309,6 +343,24 @@ export async function getAdminPostDetail(postId: number) {
       note: action.note,
       createdAt: action.createdAt.toISOString()
     })),
+    scans: scans.map((scan) => ({
+      id: scan.id,
+      mediaId: scan.mediaId,
+      jobId: scan.jobId,
+      mediaVersion: scan.mediaVersion,
+      mediaType: scan.mediaType,
+      model: scan.model,
+      modelVersion: scan.modelVersion,
+      policyVersion: scan.policyVersion,
+      status: scan.status,
+      category: scan.category,
+      confidence: scan.confidence,
+      decision: scan.decision,
+      failureReason: scan.failureReason,
+      processingTimeMs: scan.processingTimeMs,
+      createdAt: scan.createdAt.toISOString(),
+      completedAt: scan.completedAt?.toISOString() ?? null
+    })),
     hashtags: tags
   };
 }
@@ -345,6 +397,10 @@ export async function updateAdminPost(
     adminEmail,
     remarks: payload.remarks
   });
+  if (payload.title !== undefined || payload.description !== undefined) {
+    const { applyEditSafety } = await import("./contentSafety/ContentSafety.service");
+    await applyEditSafety(post, { caption: true, media: false });
+  }
   return getAdminPostDetail(postId);
 }
 
@@ -435,4 +491,26 @@ export async function bulkModeratePosts(
     else results.push(await softDeleteAdminPost(id, adminEmail, reason, remarks));
   }
   return { count: results.length };
+}
+
+export async function allowSafetyPost(
+  postId: number,
+  adminEmail: string,
+  mediaVersion: number,
+  remarks?: string
+) {
+  const { adminAllowPost } = await import("./contentSafety/ContentSafety.service");
+  await adminAllowPost(postId, adminEmail, mediaVersion, remarks);
+  return getAdminPostDetail(postId);
+}
+
+export async function rejectSafetyPost(
+  postId: number,
+  adminEmail: string,
+  mediaVersion: number,
+  reason?: string
+) {
+  const { adminRejectPost } = await import("./contentSafety/ContentSafety.service");
+  await adminRejectPost(postId, adminEmail, mediaVersion, reason);
+  return getAdminPostDetail(postId);
 }

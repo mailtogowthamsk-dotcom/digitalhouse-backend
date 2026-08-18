@@ -18,6 +18,7 @@ import { requireAdminAction, requireAdminModule } from "../middlewares/adminPerm
 import * as PlatformController from "../controllers/Platform.controller";
 import * as ProminentPeopleController from "../controllers/ProminentPeople.controller";
 import * as SystemSchedulerController from "../controllers/SystemScheduler.controller";
+import * as AdvertisementAdminController from "../controllers/AdvertisementAdmin.controller";
 
 export const adminRouter = Router();
 
@@ -109,6 +110,12 @@ adminRouter.post(
   requireAdminModule("users"),
   requireAdminAction("reports.warn"),
   asyncHandler(AdminReportsController.warnUser)
+);
+adminRouter.post(
+  "/users/:id/logout",
+  requireAdminModule("users"),
+  requireAdminAction("users.suspend"),
+  asyncHandler(AdminController.logoutUser)
 );
 adminRouter.post(
   "/users/:id/suspend",
@@ -212,6 +219,18 @@ adminRouter.post(
   requireAdminModule("posts"),
   requireAdminAction("posts.delete_hard"),
   asyncHandler(AdminPostsController.hardDeletePost)
+);
+adminRouter.post(
+  "/posts/:id/safety-allow",
+  requireAdminModule("posts"),
+  requireAdminAction("posts.manage"),
+  asyncHandler(AdminPostsController.allowSafety)
+);
+adminRouter.post(
+  "/posts/:id/safety-reject",
+  requireAdminModule("posts"),
+  requireAdminAction("posts.manage"),
+  asyncHandler(AdminPostsController.rejectSafety)
 );
 
 // ── Matrimony admin ────────────────────────────────────────
@@ -1105,4 +1124,115 @@ adminRouter.post(
   requireAdminModule("prominent_people"),
   requireAdminAction("prominent_people.write"),
   asyncHandler(ProminentPeopleController.adminSetFeatured)
+);
+
+// ── Advertisements ─────────────────────────────────────────
+adminRouter.get(
+  "/advertisement-reports",
+  requireAdminModule("advertisements"),
+  asyncHandler(AdvertisementAdminController.listReports)
+);
+adminRouter.post(
+  "/advertisement-reports/:id/review",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.reviewReport)
+);
+adminRouter.get(
+  "/advertisements/analytics",
+  requireAdminModule("advertisements"),
+  asyncHandler(AdvertisementAdminController.analytics)
+);
+adminRouter.get(
+  "/advertisement-pricing",
+  requireAdminModule("advertisements"),
+  asyncHandler(AdvertisementAdminController.listPricing)
+);
+adminRouter.post(
+  "/advertisement-pricing",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.pricing"),
+  asyncHandler(AdvertisementAdminController.createPricing)
+);
+adminRouter.put(
+  "/advertisement-pricing/:id",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.pricing"),
+  asyncHandler(AdvertisementAdminController.updatePricing)
+);
+adminRouter.get(
+  "/advertisements",
+  requireAdminModule("advertisements"),
+  asyncHandler(AdvertisementAdminController.list)
+);
+adminRouter.post(
+  "/advertisements",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.create)
+);
+adminRouter.put(
+  "/advertisements/:id",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.updateCreative)
+);
+adminRouter.post(
+  "/advertisements/:id/publish",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.publish)
+);
+adminRouter.delete(
+  "/advertisements/:id",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.remove)
+);
+adminRouter.get(
+  "/advertisements/:id",
+  requireAdminModule("advertisements"),
+  asyncHandler(AdvertisementAdminController.detail)
+);
+adminRouter.post(
+  "/advertisements/:id/approve",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.approve)
+);
+adminRouter.post(
+  "/advertisements/:id/reject",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.reject)
+);
+adminRouter.post(
+  "/advertisements/:id/pause",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.pause)
+);
+adminRouter.post(
+  "/advertisements/:id/resume",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.resume)
+);
+adminRouter.post(
+  "/advertisements/:id/cancel",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.cancel)
+);
+adminRouter.post(
+  "/advertisements/:id/extend",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.manage"),
+  asyncHandler(AdvertisementAdminController.extend)
+);
+adminRouter.post(
+  "/advertisements/:id/refund",
+  requireAdminModule("advertisements"),
+  requireAdminAction("advertisements.refund"),
+  asyncHandler(AdvertisementAdminController.refund)
 );

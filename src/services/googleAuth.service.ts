@@ -4,6 +4,7 @@ import { signAccessToken } from "../utils/jwt.util";
 import {
   AUTH_PROVIDERS,
   AUTH_ANALYTICS_EVENTS,
+  DEFAULT_APP_COMMUNITY,
   type AuthProviderCode
 } from "../constants/auth.constants";
 import { trackAuthEvent } from "./authAnalytics.service";
@@ -134,7 +135,7 @@ export async function authenticateWithGoogle(idToken: string): Promise<GoogleAut
         mobile: null,
         occupation: null,
         location: null,
-        community: null,
+        community: DEFAULT_APP_COMMUNITY,
         kulam: null,
         profilePhoto: google.picture || null,
         status: "PENDING",
@@ -194,7 +195,6 @@ export type CompleteGoogleProfileInput = {
   dob: string;
   district: string;
   kulam: string;
-  community?: string | null;
   location?: string | null;
   mobile?: string | null;
   profilePhoto?: string | null;
@@ -242,7 +242,7 @@ export async function completeGoogleProfile(
     dob: input.dob,
     district,
     kulam,
-    community: input.community?.trim() || null,
+    community: DEFAULT_APP_COMMUNITY,
     location: input.location?.trim() || district,
     mobile: input.mobile?.trim() || null,
     profilePhoto: toStorageKeyIfR2(input.profilePhoto ?? null) || user.profilePhoto,
