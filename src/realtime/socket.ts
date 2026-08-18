@@ -69,6 +69,21 @@ async function filterPresencePeers(viewerId: number, ids: number[]): Promise<num
   });
 }
 
+async function snapshotForViewer(
+  viewerId: number,
+  ids: Iterable<number>
+): Promise<{
+  scoped: true;
+  userIds: number[];
+  onlineUserIds: number[];
+  lastSeen: Record<string, string>;
+  hiddenUserIds: number[];
+}> {
+  const raw = await buildPresenceSnapshotFor(ids);
+  const { applyLastSeenPrivacy } = await import("../services/LastSeen.service");
+  return applyLastSeenPrivacy(viewerId, raw);
+}
+
 function extractSocketToken(socket: import("socket.io").Socket): string | undefined {
   const authHeader = socket.handshake.headers.authorization;
   if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
@@ -200,7 +215,7 @@ async function handleConnection(io: Server, socket: import("socket.io").Socket):
   void socket.join(communityRoom(community));
 
   // Never dump the full online set — clients subscribe to peers they can chat with.
-  socket.emit("presence:snapshot", await buildPresenceSnapshotFor([]));
+  socket.emit("presence:snapshot", await snapshotForViewer(userId, []));
 
   if (becameOnline) {
     chatLog("user online", userId);
@@ -214,7 +229,7 @@ async function handleConnection(io: Server, socket: import("socket.io").Socket):
         requested.length > 0
           ? await filterPresencePeers(userId, requested)
           : await filterPresencePeers(userId, Array.from(watched));
-      socket.emit("presence:snapshot", await buildPresenceSnapshotFor(ids));
+      socket.emit("presence:snapshot", await snapshotForViewer(userId, ids));
     })();
   });
 
@@ -237,7 +252,7 @@ async function handleConnection(io: Server, socket: import("socket.io").Socket):
       watched.clear();
       for (const id of next) watched.add(id);
 
-      socket.emit("presence:snapshot", await buildPresenceSnapshotFor(next));
+      socket.emit("presence:snapshot", await snapshotForViewer(userId, next));
     })();
   });
 
@@ -392,11 +407,44 @@ function broadcastPresence(
   online: boolean,
   lastSeenAt: string | null
 ): void {
-  io.to([presenceRoom(userId), userRoom(userId)]).emit("presence:update", {
-    userId,
-    online,
-    lastSeenAt
-  });
+  void (async () => {
+    try {
+      const { revealPresence } = await import("../services/LastSeen.service");
+      const watchers = await io.in(presenceRoom(userId)).fetchSockets();
+      const emitted = new Set<string>();
+      await Promise.all(
+        watchers.map(async (sock) => {
+          const viewerId = (sock.data as AuthedSocketData | undefined)?.userId;
+          if (!viewerId) return;
+          const reveal = await revealPresence(viewerId, userId);
+          emitted.add(sock.id);
+          sock.emit("presence:update", {
+            userId,
+            online: reveal.online,
+            lastSeenAt: reveal.hidden ? null : reveal.lastSeenAt,
+            hidden: reveal.hidden
+          });
+        })
+      );
+      const selfSockets = await io.in(userRoom(userId)).fetchSockets();
+      for (const sock of selfSockets) {
+        if (emitted.has(sock.id)) continue;
+        sock.emit("presence:update", {
+          userId,
+          online,
+          lastSeenAt,
+          hidden: false
+        });
+      }
+    } catch {
+      io.to([presenceRoom(userId), userRoom(userId)]).emit("presence:update", {
+        userId,
+        online,
+        lastSeenAt,
+        hidden: false
+      });
+    }
+  })();
 }
 
 /** Graceful shutdown hook — clear this instance's presence keys + Redis clients. */

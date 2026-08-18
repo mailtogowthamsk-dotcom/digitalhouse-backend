@@ -3,6 +3,7 @@ import { sequelize } from "../config/db";
 import { Message, User } from "../models";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
+import { revealPresenceBatch } from "./LastSeen.service";
 import { emitMessageEvents, emitMessageRead } from "../realtime/messageEvents";
 import { scheduleMessagePush } from "../realtime/messagePushQueue";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
@@ -114,6 +115,7 @@ export async function listThreads(
   const leftIds = await getLeftThreadUserIds(userId);
   const archivedIds = await getArchivedThreadUserIds(userId);
   const prefMap = await getThreadPreferencesMap(userId, otherUserIds);
+  const presenceByUser = await revealPresenceBatch(userId, otherUserIds);
   const includeArchived = opts?.includeArchived === true;
   const archivedOnly = opts?.archivedOnly === true;
 
@@ -151,7 +153,7 @@ export async function listThreads(
           id: otherUserId,
           name: u?.fullName ?? "Unknown",
           profileImage,
-          online: await isOnline(otherUserId)
+          online: presenceByUser[String(otherUserId)]?.online === true
         },
         chatLanes: access?.chatLanes ?? [],
         primaryLane: access?.primaryLane ?? null,

@@ -162,6 +162,49 @@ export async function revealPresence(
   };
 }
 
+export type PresenceSnapshotPrivacy = {
+  scoped: true;
+  userIds: number[];
+  onlineUserIds: number[];
+  lastSeen: Record<string, string>;
+  hiddenUserIds: number[];
+};
+
+/** Strip last-seen / online the viewer is not allowed to see. */
+export async function applyLastSeenPrivacy(
+  viewerId: number,
+  snapshot: {
+    scoped: true;
+    userIds: number[];
+    onlineUserIds: number[];
+    lastSeen: Record<string, string>;
+  }
+): Promise<PresenceSnapshotPrivacy> {
+  const reveals = await revealPresenceBatch(viewerId, snapshot.userIds);
+  const onlineUserIds: number[] = [];
+  const lastSeen: Record<string, string> = {};
+  const hiddenUserIds: number[] = [];
+
+  for (const id of snapshot.userIds) {
+    const reveal = reveals[String(id)];
+    if (!reveal) continue;
+    if (reveal.hidden) {
+      hiddenUserIds.push(id);
+      continue;
+    }
+    if (reveal.online) onlineUserIds.push(id);
+    else if (reveal.lastSeenAt) lastSeen[String(id)] = reveal.lastSeenAt;
+  }
+
+  return {
+    scoped: true,
+    userIds: snapshot.userIds,
+    onlineUserIds,
+    lastSeen,
+    hiddenUserIds
+  };
+}
+
 export async function revealPresenceBatch(
   viewerId: number,
   subjectIds: number[]

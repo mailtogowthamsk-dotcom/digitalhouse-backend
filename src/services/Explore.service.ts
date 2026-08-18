@@ -8,20 +8,29 @@ import { audienceVisibilityWhere } from "./PostVisibility.service";
 
 const APPROVED = "APPROVED";
 
+const EXPLORE_PAGE_MAX = 5;
+const EXPLORE_MIN_QUERY = 3;
+
 export type ExploreSearchParams = {
   q: string;
   page?: number;
+  offset?: number;
   limit?: number;
 };
 
 export type ExploreSearchResult = {
   items: FeedItemDto[];
   page: number;
+  offset: number;
   limit: number;
   total: number;
   hasMore: boolean;
   query: string;
 };
+
+function exploreNeedle(q: string): string {
+  return q.trim().replace(/^[#@]+/, "").trim();
+}
 
 export type ExploreDiscoveryDto = {
   trendingHashtags: Array<{ tag: string; usageCount: number }>;
@@ -61,13 +70,17 @@ export async function searchExplore(
   currentUserId: number,
   params: ExploreSearchParams
 ): Promise<ExploreSearchResult> {
-  const page = Math.max(params.page ?? 1, 1);
-  const limit = Math.min(Math.max(params.limit ?? 20, 1), 50);
+  const limit = Math.min(Math.max(params.limit ?? EXPLORE_PAGE_MAX, 1), EXPLORE_PAGE_MAX);
+  const offset =
+    params.offset != null
+      ? Math.max(params.offset, 0)
+      : (Math.max(params.page ?? 1, 1) - 1) * limit;
+  const page = Math.floor(offset / limit) + 1;
   const query = params.q.trim();
   const tokens = tokenizeSearchQuery(query);
 
-  if (tokens.length === 0) {
-    return { items: [], page, limit, total: 0, hasMore: false, query };
+  if (exploreNeedle(query).length < EXPLORE_MIN_QUERY || tokens.length === 0) {
+    return { items: [], page, offset, limit, total: 0, hasMore: false, query };
   }
 
   const community = await viewerCommunity(currentUserId);
@@ -134,8 +147,6 @@ export async function searchExplore(
     include: [userInclude],
     distinct: true
   });
-  const offset = (page - 1) * limit;
-
   const posts = await Post.findAll({
     where,
     include: [userInclude],
@@ -197,6 +208,7 @@ export async function searchExplore(
   return {
     items,
     page,
+    offset,
     limit,
     total,
     hasMore: offset + items.length < total,
