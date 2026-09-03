@@ -36,6 +36,15 @@ export const otpRequestLimiter = rateLimit({
   legacyHeaders: false
 });
 
+/** Referral code lookup/submit — limits guessing and enumeration. */
+export const referralSubmitLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { ok: false, message: "Too many referral attempts. Please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 /** Public platform bootstrap / ad events. */
 export const publicPlatformLimiter = rateLimit({
   windowMs: 60 * 1000,

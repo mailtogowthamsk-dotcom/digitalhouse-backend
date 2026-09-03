@@ -90,7 +90,7 @@ export type DiscoverDetailDto = MatrimonyCandidatePublic & {
   matchTags?: string[];
   profileOpened?: boolean;
   contactPaymentStatus?: "NONE" | "PENDING" | "PAID";
-  /** Gated last-seen / online (MATCHES_ONLY default). */
+  /** Gated last-seen / online (EVERYONE default). */
   presence?: {
     online: boolean;
     lastSeenAt: string | null;

@@ -18,6 +18,7 @@ export const markNotificationRead = Platform.markNotificationRead;
 export const markAllNotificationsRead = Platform.markAllNotificationsRead;
 export const deleteNotification = Platform.deleteNotification;
 export const deleteNotificationsBulk = Platform.deleteNotificationsBulk;
+export const deleteAllNotifications = Platform.deleteAllNotifications;
 export const getUnreadCounts = Platform.getUnreadCounts;
 export const getPreferences = Platform.getPreferences;
 export const updatePreferences = Platform.updatePreferences;
@@ -37,6 +38,39 @@ export async function createUserNotification(
     title,
     body,
     actionType: NOTIFICATION_ACTIONS.OPEN_NOTIFICATIONS,
+    force: true
+  });
+}
+
+export async function notifyReferralRequested(userId: number): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ACCOUNT_REVIEW,
+    title: "Additional Verification Required",
+    body: "Admin has requested a referral code from an existing Digital House member. Please provide the referral code to continue your verification.",
+    actionType: NOTIFICATION_ACTIONS.OPEN_PENDING_APPROVAL,
+    force: true
+  });
+}
+
+export async function notifyReferralSubmitted(userId: number): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ACCOUNT_REVIEW,
+    title: "Referral submitted",
+    body: "Referral submitted successfully. Your registration is pending admin verification.",
+    actionType: NOTIFICATION_ACTIONS.OPEN_PENDING_APPROVAL,
+    force: true
+  });
+}
+
+export async function notifyReferralRejected(userId: number): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.ACCOUNT_REVIEW,
+    title: "Referral not confirmed",
+    body: "The submitted referral could not be confirmed. You may be asked to provide another referral code.",
+    actionType: NOTIFICATION_ACTIONS.OPEN_PENDING_APPROVAL,
     force: true
   });
 }

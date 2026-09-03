@@ -911,7 +911,7 @@ export async function getMatrimonyRequestDetail(updateId: number) {
       online: presence.online,
       lastSeenAt: presence.lastSeenAt,
       label: presence.label,
-      lastSeenVisibility: user.lastSeenVisibility ?? "MATCHES_ONLY"
+      lastSeenVisibility: user.lastSeenVisibility ?? "EVERYONE"
     },
     submittedAt: row.submittedAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),

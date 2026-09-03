@@ -2,7 +2,7 @@ import { Router } from "express";
 import * as AuthController from "../controllers/auth.controller";
 import { asyncHandler } from "../middlewares/asyncHandler";
 import { authMiddleware, jwtAuthMiddleware } from "../middlewares/auth.middleware";
-import { authLimiter, otpRequestLimiter } from "../middlewares/rateLimit.middleware";
+import { authLimiter, otpRequestLimiter, referralSubmitLimiter } from "../middlewares/rateLimit.middleware";
 
 export const authRouter = Router();
 
@@ -30,3 +30,12 @@ authRouter.post(
 );
 authRouter.get("/me", jwtAuthMiddleware, asyncHandler(AuthController.getMe));
 authRouter.get("/linked-accounts", authMiddleware, asyncHandler(AuthController.linkedAccounts));
+authRouter.get("/referral-code", authMiddleware, asyncHandler(AuthController.getMyReferralCode));
+authRouter.post("/referral-code/regenerate", authMiddleware, asyncHandler(AuthController.regenerateMyReferralCode));
+authRouter.get("/referral-status", jwtAuthMiddleware, asyncHandler(AuthController.getMyReferralStatus));
+authRouter.post(
+  "/referral-submit",
+  jwtAuthMiddleware,
+  referralSubmitLimiter,
+  asyncHandler(AuthController.submitReferralCode)
+);

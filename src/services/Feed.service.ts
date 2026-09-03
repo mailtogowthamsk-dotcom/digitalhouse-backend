@@ -11,12 +11,12 @@ import { deriveImageVariantUrls } from "../utils/mediaVariants";
 const APPROVED = "APPROVED";
 const TRENDING_SCORE_THRESHOLD = 8;
 
-export type FeedSortMode = "recent" | "popular";
+export type FeedSortMode = "recent" | "popular" | "personalized";
 
 export type FeedQueryParams = {
   limit: number;
   page?: number;
-  cursor?: number | null;
+  cursor?: number | string | null;
   sort?: FeedSortMode;
   postType?: string;
   jobStatus?: "open" | "closed" | "all";
@@ -38,7 +38,7 @@ export type FeedQueryParams = {
 };
 
 /** Engagement score using denormalized counters (avoids correlated COUNT subqueries). */
-function engagementScoreSql(): ReturnType<typeof literal> {
+export function engagementScoreSql(): ReturnType<typeof literal> {
   return literal(`(
     (COALESCE(\`Post\`.\`likeCount\`, 0) * 2.0) +
     (COALESCE(\`Post\`.\`commentCount\`, 0) * 3.0)
@@ -46,7 +46,7 @@ function engagementScoreSql(): ReturnType<typeof literal> {
 }
 
 /** Slim post attributes for public feed (excludes admin notes / help phone). */
-const FEED_POST_ATTRIBUTES = [
+export const FEED_POST_ATTRIBUTES = [
   "id",
   "userId",
   "originalPostId",
@@ -98,7 +98,7 @@ const FEED_POST_ATTRIBUTES = [
   "updatedAt"
 ] as const;
 
-async function viewerCommunity(currentUserId: number): Promise<string | null> {
+export async function viewerCommunity(currentUserId: number): Promise<string | null> {
   const me = await User.findByPk(currentUserId, { attributes: ["community"] });
   return me?.community ?? null;
 }
@@ -113,7 +113,7 @@ function toFeedAuthor(user: User): FeedAuthorDto {
   };
 }
 
-function applyPostFilters(
+export function applyPostFilters(
   baseWhere: WhereOptions,
   params: Pick<
     FeedQueryParams,
@@ -285,16 +285,45 @@ function applyPostFilters(
   return andParts.length === 1 ? andParts[0]! : { [Op.and]: andParts };
 }
 
+function chronologicalCursorId(cursor: number | string | null | undefined): number | null {
+  if (cursor == null || cursor === "") return null;
+  if (typeof cursor === "number") {
+    return Number.isInteger(cursor) && cursor > 0 ? cursor : null;
+  }
+  const trimmed = String(cursor).trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const n = Number(trimmed);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
+
 /**
  * Community feed: engagement ranking, cursor (recent) or page (popular), liked/saved flags.
+ * Personalized ranking is flag-gated and never applies to jobs/marketplace/help/mine/saved.
  */
 export async function getFeed(
   params: FeedQueryParams,
-  currentUserId: number
-): Promise<FeedResultDto & { nextCursor: number | null; sort: FeedSortMode }> {
+  currentUserId: number,
+  runtime?: { skipPersonalized?: boolean }
+): Promise<FeedResultDto & { nextCursor: number | string | null; sort: FeedSortMode }> {
+  const started = Date.now();
+  if (!runtime?.skipPersonalized) {
+    try {
+      const { isPersonalizedFeedEnabled, isPersonalizedHomeRequest } = await import("./feedRanking/flag");
+      if (isPersonalizedHomeRequest(params) && (await isPersonalizedFeedEnabled())) {
+        const { getPersonalizedFeed } = await import("./feedRanking/PersonalizedFeed.service");
+        return getPersonalizedFeed(params, currentUserId);
+      }
+    } catch (err) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[feed] personalized path unavailable", err instanceof Error ? err.message : err);
+      }
+    }
+  }
+
   const limit = Math.min(Math.max(params.limit, 1), 50);
   const sort: FeedSortMode = params.sort === "popular" ? "popular" : "recent";
   const page = params.page ?? 1;
+  const cursorId = chronologicalCursorId(params.cursor);
 
   const community = await viewerCommunity(currentUserId);
 
@@ -338,8 +367,8 @@ export async function getFeed(
   let offset = (page - 1) * limit;
 
   // Cursor pagination conflicts with featured-first order — use page offset for marketplace browse
-  if (sort === "recent" && params.cursor && !marketplaceBrowse) {
-    const cursorPost = await Post.findByPk(params.cursor, {
+  if (sort === "recent" && cursorId && !marketplaceBrowse) {
+    const cursorPost = await Post.findByPk(cursorId, {
       attributes: ["id", "createdAt"]
     });
     if (cursorPost) {
@@ -401,6 +430,18 @@ export async function getFeed(
       : null;
 
   const items = await buildFeedItemsFromPosts(pagePosts, currentUserId);
+  if (process.env.FEED_METRICS === "1") {
+    console.info(
+      "[feed-metrics]",
+      JSON.stringify({
+        mode: "chronological",
+        ms: Date.now() - started,
+        resultCount: items.length,
+        hasMore,
+        sort
+      })
+    );
+  }
   return { items, page, limit, total, nextCursor, sort };
 }
 

@@ -11,7 +11,8 @@ import {
   completeGoogleProfileSchema,
   submitRegistrationCorrectionSchema,
   registrationPhotoSchema,
-  registrationIdentitySchema
+  registrationIdentitySchema,
+  submitReferralCodeSchema
 } from "../validations/auth.validation";
 import * as GoogleAuth from "../services/googleAuth.service";
 import { AUTH_PROVIDERS, AUTH_ANALYTICS_EVENTS } from "../constants/auth.constants";
@@ -284,4 +285,51 @@ export async function linkedAccounts(req: Request & { user?: import("../models")
   if (!req.user) return error(res, "Unauthorized", 401);
   const accounts = GoogleAuth.getLinkedAccountsForUser(req.user);
   return success(res, { ...accounts, loginSource: resolveLoginSource(req.user) });
+}
+
+export async function getMyReferralCode(req: Request & { user?: import("../models").User }, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  try {
+    const { referralService } = await import("../services/Referral.service");
+    const data = await referralService.getOrCreateOwnReferralCode(req.user.id);
+    return success(res, data);
+  } catch (e: any) {
+    return error(res, e?.message ?? "Referral code unavailable", e?.status ?? 400);
+  }
+}
+
+export async function regenerateMyReferralCode(
+  req: Request & { user?: import("../models").User },
+  res: Response
+) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  try {
+    const { referralService } = await import("../services/Referral.service");
+    const data = await referralService.regenerateOwnReferralCode(req.user.id);
+    return success(res, data);
+  } catch (e: any) {
+    return error(res, e?.message ?? "Could not regenerate referral code", e?.status ?? 400);
+  }
+}
+
+export async function getMyReferralStatus(req: Request & { user?: import("../models").User }, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const { referralService } = await import("../services/Referral.service");
+  const data = await referralService.getOwnReferralStatus(req.user.id);
+  return success(res, data);
+}
+
+export async function submitReferralCode(req: Request & { user?: import("../models").User }, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const body = submitReferralCodeSchema.parse(req.body);
+  try {
+    const { referralService } = await import("../services/Referral.service");
+    const data = await referralService.submitReferralCode(req.user.id, body.referralCode);
+    return success(res, {
+      message: "Referral submitted successfully. Your registration is pending admin verification.",
+      ...data
+    });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Invalid referral code. Please check the code and try again.", e?.status ?? 400);
+  }
 }

@@ -21,8 +21,8 @@ const helpCategorySchema = z.enum(HELP_CATEGORIES as unknown as [string, ...stri
 const feedQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(50).default(3),
-  cursor: z.coerce.number().int().positive().optional(),
-  sort: z.enum(["recent", "popular"]).default("recent"),
+  cursor: z.string().trim().min(1).max(512).optional(),
+  sort: z.enum(["recent", "popular", "personalized"]).default("recent"),
   postType: postTypeSchema.optional(),
   /** For JOB posts: open (OPEN + legacy null), closed, or all */
   jobStatus: z.enum(["open", "closed", "all"]).optional(),

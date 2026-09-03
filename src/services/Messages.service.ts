@@ -33,6 +33,7 @@ export type ThreadDto = {
   canSend: boolean;
   muted: boolean;
   archived: boolean;
+  left: boolean;
   lastMessage: {
     id: number;
     senderId: number;
@@ -133,7 +134,7 @@ export async function listThreads(
   const threads = await Promise.all(
     filteredRows.map(async (r) => {
       const otherUserId = Number((r as any).otherUserId);
-      if (leftIds.has(otherUserId)) return null;
+      if (leftIds.has(otherUserId) && !archivedOnly && !includeArchived) return null;
       const pref = prefMap.get(otherUserId);
       const isArchived = pref?.archived ?? archivedIds.has(otherUserId);
       if (archivedOnly) {
@@ -160,6 +161,7 @@ export async function listThreads(
         canSend: access?.allowed ?? false,
         muted: pref?.muted ?? false,
         archived: isArchived,
+        left: leftIds.has(otherUserId),
         lastMessage: lm
           ? {
               id: lm.id,

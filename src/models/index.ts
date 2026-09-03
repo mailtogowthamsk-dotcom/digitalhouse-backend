@@ -17,6 +17,7 @@ import { Comment } from "./Comment.model";
 import { SavedPost } from "./SavedPost.model";
 import { PostReport } from "./PostReport.model";
 import { FeedEngagementEvent } from "./FeedEngagementEvent.model";
+import { FeedPostExposure } from "./FeedPostExposure.model";
 import { MediaFile } from "./MediaFile.model";
 import { MediaJob } from "./MediaJob.model";
 import { MatrimonyRequestMeta } from "./MatrimonyRequestMeta.model";
@@ -101,6 +102,8 @@ import {
   AdvertisementReport
 } from "./Advertisement.models";
 import { ContentSafetyScan, ContentSafetyFingerprint } from "./ContentSafety.model";
+import { ReferralCode } from "./ReferralCode.model";
+import { ReferralVerification } from "./ReferralVerification.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
@@ -119,6 +122,12 @@ MatrimonyAdminNote.belongsTo(PendingProfileUpdate, { foreignKey: "pendingUpdateI
 MatrimonyReviewAudit.belongsTo(PendingProfileUpdate, { foreignKey: "pendingUpdateId" });
 User.hasMany(AdminVerification, { foreignKey: "userId" });
 AdminVerification.belongsTo(User, { foreignKey: "userId" });
+User.hasOne(ReferralCode, { foreignKey: "ownerUserId" });
+ReferralCode.belongsTo(User, { foreignKey: "ownerUserId" });
+User.hasMany(ReferralVerification, { foreignKey: "applicantUserId", as: "ApplicantReferralVerifications" });
+ReferralVerification.belongsTo(User, { foreignKey: "applicantUserId", as: "Applicant" });
+ReferralVerification.belongsTo(User, { foreignKey: "referrerUserId", as: "Referrer" });
+ReferralVerification.belongsTo(ReferralCode, { foreignKey: "referralCodeId" });
 
 // Home / feed
 User.hasMany(Post, { foreignKey: "userId" });
@@ -179,6 +188,10 @@ Comment.belongsTo(Comment, { as: "parent", foreignKey: "parentId" });
 Comment.hasMany(Comment, { as: "replies", foreignKey: "parentId" });
 User.hasMany(FeedEngagementEvent, { foreignKey: "userId" });
 FeedEngagementEvent.belongsTo(User, { foreignKey: "userId" });
+User.hasMany(FeedPostExposure, { foreignKey: "userId" });
+FeedPostExposure.belongsTo(User, { foreignKey: "userId" });
+Post.hasMany(FeedPostExposure, { foreignKey: "postId" });
+FeedPostExposure.belongsTo(Post, { foreignKey: "postId" });
 Post.hasMany(SavedPost, { foreignKey: "postId" });
 SavedPost.belongsTo(Post, { foreignKey: "postId" });
 User.hasMany(SavedPost, { foreignKey: "userId" });
@@ -279,6 +292,9 @@ export {
   MediaFile,
   MediaJob,
   FeedEngagementEvent,
+  FeedPostExposure,
+  ReferralCode,
+  ReferralVerification,
   MatrimonyRequestMeta,
   MatrimonyAdminNote,
   MatrimonyReviewAudit,

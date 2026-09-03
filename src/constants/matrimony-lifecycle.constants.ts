@@ -9,7 +9,7 @@ export type MatrimonyLifecycle = (typeof MATRIMONY_LIFECYCLES)[number];
 export const LAST_SEEN_VISIBILITIES = ["EVERYONE", "MATCHES_ONLY", "NOBODY"] as const;
 export type LastSeenVisibility = (typeof LAST_SEEN_VISIBILITIES)[number];
 
-export const DEFAULT_LAST_SEEN_VISIBILITY: LastSeenVisibility = "MATCHES_ONLY";
+export const DEFAULT_LAST_SEEN_VISIBILITY: LastSeenVisibility = "EVERYONE";
 
 /** Treat missing lifecycle as ACTIVE for profiles approved before this feature. */
 export function normalizeMatrimonyLifecycle(

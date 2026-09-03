@@ -247,8 +247,8 @@ export async function getFeed(
   limit: number,
   currentUserId: number,
   options?: {
-    cursor?: number | null;
-    sort?: "recent" | "popular";
+    cursor?: number | string | null;
+    sort?: "recent" | "popular" | "personalized";
     postType?: string;
     jobStatus?: "open" | "closed" | "all";
     q?: string;
@@ -266,7 +266,7 @@ export async function getFeed(
     mine?: boolean;
     saved?: boolean;
   }
-): Promise<FeedResultDto & { nextCursor?: number | null; sort?: string }> {
+): Promise<FeedResultDto & { nextCursor?: number | string | null; sort?: string }> {
   const { feedService } = await import("./Feed.service");
   return feedService.getFeed(
     {

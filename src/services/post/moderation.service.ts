@@ -27,6 +27,15 @@ export async function trackFeedEvents(
       meta: item.meta
     }))
   );
+  const impressionIds = items
+    .filter((item) => item.event_type === "post_impression" && item.post_id)
+    .map((item) => item.post_id!)
+    .filter((id) => Number.isInteger(id) && id > 0);
+  if (impressionIds.length > 0) {
+    void import("../feedRanking/exposureWrite")
+      .then(({ recordFeedImpressions }) => recordFeedImpressions(userId, impressionIds))
+      .catch(() => {});
+  }
 }
 
 export async function reportPost(userId: number, postId: number, reason: string): Promise<{ id: number }> {

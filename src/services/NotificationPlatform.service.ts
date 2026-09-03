@@ -451,6 +451,19 @@ export async function deleteNotificationsBulk(
   return counts;
 }
 
+export async function deleteAllNotifications(
+  userId: number,
+  category?: NotificationCategory | "ALL"
+): Promise<UnreadCountsDto> {
+  const where: Record<string, unknown> = { userId, deletedAt: null };
+  if (category && category !== "ALL") where.category = category;
+  const now = new Date();
+  await Notification.update({ deletedAt: now, readAt: now } as any, { where });
+  const counts = await getUnreadCounts(userId);
+  getIo()?.to(`user:${userId}`).emit("notification:counts", counts);
+  return counts;
+}
+
 export async function getPreferences(userId: number) {
   const row = await ensurePreferences(userId);
   return {

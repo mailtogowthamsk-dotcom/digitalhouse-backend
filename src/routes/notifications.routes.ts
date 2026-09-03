@@ -14,6 +14,7 @@ notificationsRouter.patch("/preferences", asyncHandler(NotificationsController.u
 notificationsRouter.post("/push-token", asyncHandler(NotificationsController.registerPush));
 notificationsRouter.get("/", asyncHandler(NotificationsController.list));
 notificationsRouter.post("/read-all", asyncHandler(NotificationsController.markAllRead));
+notificationsRouter.post("/clear-all", asyncHandler(NotificationsController.clearAll));
 notificationsRouter.post("/bulk-delete", asyncHandler(NotificationsController.bulkRemove));
 notificationsRouter.post("/:id/read", asyncHandler(NotificationsController.markRead));
 notificationsRouter.delete("/:id", asyncHandler(NotificationsController.remove));

@@ -14,6 +14,7 @@ export const registerSchema = z.object({
   profilePhoto: z.string().max(2000).trim().optional().nullable(),
   govtIdType: z.string().max(40).trim().optional().nullable(),
   govtIdFile: z.string().max(2000).trim().optional().nullable(),
+  referralCode: z.string().max(20).trim().optional().nullable(),
   legalAcceptances: z
     .array(
       z.object({
@@ -69,7 +70,12 @@ export const completeGoogleProfileSchema = z.object({
     )
     .min(1)
     .max(20)
-    .optional()
+    .optional(),
+  referralCode: z.string().max(20).trim().optional().nullable()
+});
+
+export const submitReferralCodeSchema = z.object({
+  referralCode: z.string().min(1).max(20).trim()
 });
 
 export type RegisterBody = z.infer<typeof registerSchema>;
@@ -82,7 +88,8 @@ export type CompleteGoogleProfileBody = z.infer<typeof completeGoogleProfileSche
 export const submitRegistrationCorrectionSchema = z.object({
   mobile: z.string().min(10).max(20).trim().optional().nullable(),
   // R2 public URLs can exceed 500 when paths are nested
-  profilePhoto: z.string().min(1).max(2000).trim().optional().nullable()
+  profilePhoto: z.string().min(1).max(2000).trim().optional().nullable(),
+  referralCode: z.string().max(20).trim().optional().nullable()
 });
 export type SubmitRegistrationCorrectionBody = z.infer<typeof submitRegistrationCorrectionSchema>;
 

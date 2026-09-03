@@ -19,6 +19,7 @@ import {
   notifyAccountChangesRequested
 } from "./Notification.service";
 import { toPublicUrlIfR2, toStorageKeyIfR2 } from "../utils/r2Client";
+import { audit } from "./platform/shared";
 
 function httpError(message: string, status: number, code?: string): Error {
   const err = new Error(message);
@@ -97,10 +98,23 @@ export async function requestRegistrationChanges(
     (REGISTRATION_CORRECTION_FIELDS as readonly string[]).includes(f)
   );
   if (fields.length === 0) {
-    throw httpError("Select at least one field to correct (mobile or profile photo).", 400);
+    throw httpError(
+      "Select at least one field to correct (mobile, profile photo, or referral code).",
+      400
+    );
   }
   const note = remarks.trim();
   if (!note) throw httpError("Please provide remarks for the user.", 400);
+
+  if (fields.includes("referralCode")) {
+    const { referralService } = await import("./Referral.service");
+    await referralService.requestReferral({
+      applicantUserId: user.id,
+      adminEmail: verifiedBy,
+      note,
+      skipNotify: true
+    });
+  }
 
   await user.update({
     status: "CHANGES_REQUESTED",
@@ -132,7 +146,7 @@ export async function requestRegistrationChanges(
 
 export async function submitRegistrationCorrection(
   userId: number,
-  input: { mobile?: string | null; profilePhoto?: string | null }
+  input: { mobile?: string | null; profilePhoto?: string | null; referralCode?: string | null }
 ): Promise<User> {
   const user = await User.findByPk(userId);
   if (!user) throw httpError("User not found.", 404);
@@ -177,6 +191,13 @@ export async function submitRegistrationCorrection(
     const photo = toStorageKeyIfR2(input.profilePhoto ?? null);
     if (!photo) throw httpError("Profile photo is required.", 400);
     updates.pendingProfilePhoto = photo;
+  }
+
+  if (fields.includes("referralCode")) {
+    const code = input.referralCode?.trim() || "";
+    if (!code) throw httpError("Please enter a referral code from an existing Digital House member.", 400);
+    const { referralService } = await import("./Referral.service");
+    await referralService.submitReferralCode(userId, code);
   }
 
   updates.status = "PENDING";
@@ -234,6 +255,16 @@ export async function approveRegistration(
   } as any);
 
   try {
+    const { currentDisplayStatus } = await import("./Referral.service");
+    await audit(verifiedBy, "registration.approved", "referral", {
+      applicantUserId: user.id,
+      referralStatus: await currentDisplayStatus(user.id)
+    });
+  } catch {
+    /* best-effort */
+  }
+
+  try {
     const { revokeUserTokens } = await import("../utils/tokenRevocation");
     await revokeUserTokens(userId, "registration_approved");
   } catch (e) {
@@ -281,6 +312,16 @@ export async function rejectRegistration(
     remarks: note,
     createdAt: new Date()
   } as any);
+
+  try {
+    const { currentDisplayStatus } = await import("./Referral.service");
+    await audit(verifiedBy, "registration.rejected", "referral", {
+      applicantUserId: user.id,
+      referralStatus: await currentDisplayStatus(user.id)
+    });
+  } catch {
+    /* best-effort */
+  }
 
   try {
     await sendRejectionEmail(user.email, user.fullName, note);

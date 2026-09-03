@@ -1,7 +1,7 @@
 /**
  * Last-seen / online reveal with privacy.
  * Reuses in-memory presence + durable users.last_seen_at.
- * Default visibility: MATCHES_ONLY.
+ * Default visibility: EVERYONE.
  */
 
 import { User } from "../models";

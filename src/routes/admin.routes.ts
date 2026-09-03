@@ -88,6 +88,24 @@ adminRouter.post(
   asyncHandler(AdminController.requestRegistrationChanges)
 );
 adminRouter.post(
+  "/users/:id/referral/request",
+  requireAdminModule("users"),
+  requireAdminAction("users.approve"),
+  asyncHandler(AdminController.requestUserReferral)
+);
+adminRouter.post(
+  "/users/:id/referral/confirm",
+  requireAdminModule("users"),
+  requireAdminAction("users.approve"),
+  asyncHandler(AdminController.confirmUserReferral)
+);
+adminRouter.post(
+  "/users/:id/referral/reject",
+  requireAdminModule("users"),
+  requireAdminAction("users.approve"),
+  asyncHandler(AdminController.rejectUserReferral)
+);
+adminRouter.post(
   "/users/:id/soft-delete",
   requireAdminModule("users"),
   requireAdminAction("users.delete"),

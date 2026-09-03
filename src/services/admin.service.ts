@@ -354,7 +354,7 @@ export async function requestRegistrationChanges(
   userId: number,
   verifiedBy: string,
   remarks: string,
-  requestedFields: Array<"mobile" | "profilePhoto">
+  requestedFields: Array<"mobile" | "profilePhoto" | "referralCode">
 ): Promise<User> {
   return registrationStatusService.requestRegistrationChanges(
     userId,

@@ -55,6 +55,15 @@ export async function remove(req: Request, res: Response) {
   return success(res, { ok: true, counts });
 }
 
+export async function clearAll(req: Request, res: Response) {
+  const category = (req.query.category as string) || "ALL";
+  const counts = await NotificationService.deleteAllNotifications(
+    userId(req),
+    category as any
+  );
+  return success(res, { ok: true, counts });
+}
+
 export async function bulkRemove(req: Request, res: Response) {
   try {
     const body = bulkDeleteSchema.parse(req.body);

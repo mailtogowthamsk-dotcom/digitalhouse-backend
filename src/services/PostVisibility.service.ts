@@ -1,5 +1,6 @@
 import { Op, type WhereOptions } from "sequelize";
 import { MemberConnection } from "../models";
+import { getBlockedUserIds } from "./MatrimonySafety.service";
 import {
   DEFAULT_POST_VISIBILITY,
   parsePostVisibility,
@@ -73,7 +74,10 @@ export async function audienceVisibilityWhere(
   }
 
   // feed mode
-  const connectedIds = await getAcceptedConnectionUserIds(viewerId);
+  const [connectedIds, blockedIds] = await Promise.all([
+    getAcceptedConnectionUserIds(viewerId),
+    getBlockedUserIds(viewerId).catch(() => new Set<number>())
+  ]);
   const orParts: WhereOptions[] = [
     { visibility: "PUBLIC" },
     { userId: viewerId }
@@ -84,7 +88,9 @@ export async function audienceVisibilityWhere(
       userId: { [Op.in]: connectedIds }
     });
   }
-  return { [Op.or]: orParts };
+  const visibility: WhereOptions = { [Op.or]: orParts };
+  if (blockedIds.size === 0) return visibility;
+  return andWhere(visibility, { userId: { [Op.notIn]: [...blockedIds] } });
 }
 
 /**

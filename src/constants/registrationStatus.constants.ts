@@ -22,7 +22,7 @@ export const USER_REGISTRATION_STATUSES = [
 export type UserRegistrationStatus = (typeof USER_REGISTRATION_STATUSES)[number];
 
 /** Fields an admin may request the user to correct. */
-export const REGISTRATION_CORRECTION_FIELDS = ["mobile", "profilePhoto"] as const;
+export const REGISTRATION_CORRECTION_FIELDS = ["mobile", "profilePhoto", "referralCode"] as const;
 export type RegistrationCorrectionField = (typeof REGISTRATION_CORRECTION_FIELDS)[number];
 
 export type RegistrationGate =

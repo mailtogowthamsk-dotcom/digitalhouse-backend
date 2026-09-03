@@ -198,6 +198,7 @@ export type CompleteGoogleProfileInput = {
   location?: string | null;
   mobile?: string | null;
   profilePhoto?: string | null;
+  referralCode?: string | null;
 };
 
 export async function completeGoogleProfile(
@@ -235,6 +236,12 @@ export async function completeGoogleProfile(
     throw Object.assign(new Error("Please select your district."), { status: 400 });
   }
 
+  const referralCode = input.referralCode?.trim() || "";
+  if (referralCode) {
+    const { referralService } = await import("./Referral.service");
+    await referralService.assertUsableReferralCode(referralCode, userId);
+  }
+
   await user.update({
     username,
     usernameChangedAt: new Date(),
@@ -265,6 +272,11 @@ export async function completeGoogleProfile(
   await profile.update({
     community: { ...current, kulam }
   } as any);
+
+  if (referralCode) {
+    const { referralService } = await import("./Referral.service");
+    await referralService.attachReferralCodeAtRegistration(userId, referralCode);
+  }
 
   await user.reload();
   return toAuthUser(user);

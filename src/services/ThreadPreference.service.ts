@@ -86,6 +86,11 @@ export async function updateThreadPreference(
   }
   if (patch.left === false) {
     updates.leftAt = null;
+    updates.archived = false;
+  }
+  if (patch.archived === false) {
+    updates.archived = false;
+    updates.leftAt = null;
   }
   await row.update(updates as any);
   return toDto(row);

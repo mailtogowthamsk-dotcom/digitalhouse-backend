@@ -301,7 +301,12 @@ export async function getAdminUserDetail(userId: number) {
     matrimonySigned = m;
   }
 
-  const registrationReview = await registrationStatusService.toAdminRegistrationReview(user);
+  const [registrationReview, referral] = await Promise.all([
+    registrationStatusService.toAdminRegistrationReview(user),
+    import("./Referral.service").then(({ referralService }) =>
+      referralService.getAdminReferralPayload(userId)
+    )
+  ]);
 
   const lastDevice = devices[0] ?? null;
   const loginEventCount = await AuthAnalyticsEvent.count({
@@ -403,6 +408,7 @@ export async function getAdminUserDetail(userId: number) {
       family: profile?.family ?? null
     },
     registrationReview,
+    referral,
     verificationHistory: verificationHistory.map((v) => ({
       id: v.id,
       verifiedBy: v.verifiedBy,

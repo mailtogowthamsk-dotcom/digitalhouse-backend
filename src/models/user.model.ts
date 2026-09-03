@@ -40,7 +40,7 @@ export class User extends Model<InferAttributes<User>, InferCreationAttributes<U
   declare lastLoginProvider: AuthProviderCode | null;
   /** Durable last-seen (throttled writes on socket offline). */
   declare lastSeenAt: Date | null;
-  /** Who can see last-seen / online for this user. Default MATCHES_ONLY. */
+  /** Who can see last-seen / online for this user. Default EVERYONE. */
   declare lastSeenVisibility: LastSeenVisibility;
   declare profileComplete: boolean;
   declare linkedProviders: AuthProviderCode[] | null;
@@ -144,7 +144,7 @@ User.init(
     lastSeenVisibility: {
       type: DataTypes.ENUM("EVERYONE", "MATCHES_ONLY", "NOBODY"),
       allowNull: false,
-      defaultValue: "MATCHES_ONLY",
+      defaultValue: "EVERYONE",
       field: "last_seen_visibility"
     },
     profileComplete: {

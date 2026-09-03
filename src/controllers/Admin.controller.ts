@@ -14,7 +14,8 @@ import {
   rejectProfileUpdateSchema,
   updateAdminUserSchema,
   softDeleteUserSchema,
-  hardDeleteUserSchema
+  hardDeleteUserSchema,
+  referralAdminNoteSchema
 } from "../validations/admin.validation";
 import { adminBroadcastSchema } from "../validations/notifications.validation";
 import { adminBroadcast, getNotificationAudienceStats } from "../services/Notification.service";
@@ -195,6 +196,60 @@ export async function requestRegistrationChanges(req: Request, res: Response) {
     return success(res, { message: "Changes requested." });
   } catch (e: any) {
     return error(res, e?.message ?? "Failed to request changes", e?.status ?? 400);
+  }
+}
+
+export async function requestUserReferral(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!id) return error(res, "Invalid user id", 400);
+  const body = referralAdminNoteSchema.parse(req.body || {});
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
+  try {
+    const { referralService } = await import("../services/Referral.service");
+    const result = await referralService.requestReferral({
+      applicantUserId: id,
+      adminEmail: adminId,
+      note: body.note
+    });
+    return success(res, { message: "Referral requested.", ...result });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to request referral", e?.status ?? 400);
+  }
+}
+
+export async function confirmUserReferral(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!id) return error(res, "Invalid user id", 400);
+  const body = referralAdminNoteSchema.parse(req.body || {});
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
+  try {
+    const { referralService } = await import("../services/Referral.service");
+    const result = await referralService.confirmReferral({
+      applicantUserId: id,
+      adminEmail: adminId,
+      note: body.note
+    });
+    return success(res, { message: "Referral confirmed. Registration is still pending approval.", ...result });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to confirm referral", e?.status ?? 400);
+  }
+}
+
+export async function rejectUserReferral(req: Request, res: Response) {
+  const id = Number(req.params.id);
+  if (!id) return error(res, "Invalid user id", 400);
+  const body = referralAdminNoteSchema.parse(req.body || {});
+  const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
+  try {
+    const { referralService } = await import("../services/Referral.service");
+    const result = await referralService.rejectReferral({
+      applicantUserId: id,
+      adminEmail: adminId,
+      note: body.note
+    });
+    return success(res, { message: "Referral rejected. Registration is unchanged.", ...result });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to reject referral", e?.status ?? 400);
   }
 }
 

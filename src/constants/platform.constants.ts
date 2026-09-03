@@ -40,6 +40,11 @@ export const DEFAULT_FEATURE_FLAGS: Array<{ code: string; label: string; enabled
   { code: "jobs", label: "Jobs", enabled: true },
   { code: "events", label: "Events", enabled: false },
   { code: "community_feed", label: "Community Feed", enabled: true },
+  {
+    code: "personalized_feed",
+    label: "Personalized Home Feed",
+    enabled: false
+  },
   { code: "notifications", label: "Notifications", enabled: true },
   { code: "helping_hands", label: "Helping Hands", enabled: true },
   { code: "prominent_people", label: "Prominent People", enabled: true },

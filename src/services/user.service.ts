@@ -23,6 +23,7 @@ export type RegisterInput = {
   profilePhoto?: string | null;
   govtIdType?: string | null;
   govtIdFile?: string | null;
+  referralCode?: string | null;
 };
 
 /** One account per email; one per mobile if provided */
@@ -70,6 +71,12 @@ export async function register(data: RegisterInput): Promise<User> {
     throw Object.assign(new Error("Please select your location."), { status: 400 });
   }
 
+  const referralCode = data.referralCode?.trim() || "";
+  if (referralCode) {
+    const { referralService } = await import("./Referral.service");
+    await referralService.assertUsableReferralCode(referralCode);
+  }
+
   try {
     const user = await User.create({
       fullName: data.fullName.trim(),
@@ -97,6 +104,11 @@ export async function register(data: RegisterInput): Promise<User> {
     await profile.update({
       community: { kulam }
     } as any);
+
+    if (referralCode) {
+      const { referralService } = await import("./Referral.service");
+      await referralService.attachReferralCodeAtRegistration(user.id, referralCode);
+    }
 
     return user;
   } catch (e: any) {

@@ -7,6 +7,10 @@ export const adminLoginSchema = z.object({
 
 export type AdminLoginBody = z.infer<typeof adminLoginSchema>;
 
+export const referralAdminNoteSchema = z.object({
+  note: z.string().max(500).trim().optional().nullable()
+});
+
 export const approveUserSchema = z.object({
   remarks: z.string().max(500).trim().optional().nullable()
 });
@@ -18,9 +22,9 @@ export const rejectUserSchema = z.object({
 export const requestRegistrationChangesSchema = z.object({
   remarks: z.string().min(1).max(500).trim(),
   requestedFields: z
-    .array(z.enum(["mobile", "profilePhoto"]))
+    .array(z.enum(["mobile", "profilePhoto", "referralCode"]))
     .min(1)
-    .max(2)
+    .max(3)
 });
 
 export type ApproveUserBody = z.infer<typeof approveUserSchema>;
