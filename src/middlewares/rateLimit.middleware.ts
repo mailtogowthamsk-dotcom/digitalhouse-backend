@@ -62,3 +62,12 @@ export const advertisementEventLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+
+/** Public website contact form (SMTP cost + spam). */
+export const websiteContactLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  message: { ok: false, message: "Too many messages. Please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false
+});

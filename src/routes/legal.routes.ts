@@ -21,7 +21,13 @@ const aliases = [
   "refund-policy",
   "content-policy",
   "account-deletion",
-  "safety"
+  "safety",
+  "about",
+  "about-us",
+  "cookie-policy",
+  "disclaimer",
+  /** Website filename compatibility — resolves to the same `terms` document. */
+  "terms-and-conditions"
 ] as const;
 
 for (const alias of aliases) {

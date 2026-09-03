@@ -12,6 +12,7 @@ export function corsPreflightMiddleware(req: Request, res: Response, next: NextF
   const origin = req.headers.origin as string | undefined;
 
   if (origin && isAllowedOrigin(origin)) {
+    // Echo exact Origin (including the literal "null" for file:// in non-production).
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Allow-Methods", ALLOW_METHODS);
@@ -21,6 +22,10 @@ export function corsPreflightMiddleware(req: Request, res: Response, next: NextF
   }
 
   if (req.method === "OPTIONS") {
+    if (origin && !isAllowedOrigin(origin)) {
+      res.status(403).end();
+      return;
+    }
     res.status(204).end();
     return;
   }

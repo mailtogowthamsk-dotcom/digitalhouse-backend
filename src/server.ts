@@ -15,6 +15,9 @@ import {
   startAllScheduledJobs,
   stopAllScheduledJobs
 } from "./workers/schedulerRegistry";
+import { assertSmtpConfigAtStartup, closeSmtpTransporter } from "./config/smtp";
+
+assertSmtpConfigAtStartup();
 
 const PORT = Number(process.env.PORT) || 4000;
 
@@ -225,6 +228,11 @@ async function gracefulShutdown(signal: string) {
   await shutdownRealtime().catch((e) =>
     console.warn("[shutdown] realtime:", e)
   );
+  try {
+    closeSmtpTransporter();
+  } catch (e) {
+    console.warn("[shutdown] SMTP close:", e);
+  }
   await new Promise<void>((resolve) => {
     httpServer.close(() => resolve());
     setTimeout(resolve, 5000);

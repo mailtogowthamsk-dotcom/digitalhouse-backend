@@ -29,7 +29,10 @@ export const LEGAL_DOCUMENT_KEYS = [
   "refund_policy",
   "content_policy",
   "account_deletion",
-  "safety"
+  "safety",
+  "about",
+  "cookie_policy",
+  "disclaimer"
 ] as const;
 
 export type LegalDocumentKey = (typeof LEGAL_DOCUMENT_KEYS)[number] | string;
@@ -105,6 +108,33 @@ export const LEGAL_DOCUMENT_TYPE_SEEDS: LegalDocumentTypeSeed[] = [
     slug: "safety",
     description: "Safety tools, reporting, blocking, and escalation for abuse.",
     sortOrder: 70,
+    requiredAtRegistration: false,
+    requiresReacceptance: false
+  },
+  {
+    documentKey: "about",
+    title: "About Us",
+    slug: "about",
+    description: "Who we are, our mission, vision, and community purpose.",
+    sortOrder: 80,
+    requiredAtRegistration: false,
+    requiresReacceptance: false
+  },
+  {
+    documentKey: "cookie_policy",
+    title: "Cookie Policy",
+    slug: "cookie-policy",
+    description: "How cookies and similar technologies are used on the website and apps.",
+    sortOrder: 90,
+    requiredAtRegistration: false,
+    requiresReacceptance: false
+  },
+  {
+    documentKey: "disclaimer",
+    title: "Disclaimer",
+    slug: "disclaimer",
+    description: "Important limitations and disclaimers about information on our platforms.",
+    sortOrder: 100,
     requiredAtRegistration: false,
     requiresReacceptance: false
   }

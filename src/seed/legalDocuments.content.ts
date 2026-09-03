@@ -737,6 +737,101 @@ export function buildLegalSeedDocuments(identity: LegalIdentity): LegalSeedConte
 <p>A member affected by enforcement may appeal using the notice process or by emailing <a href="mailto:${identity.supportEmail}">${identity.supportEmail}</a> with the action reference and relevant new context. We may uphold, modify, or reverse the action. Safety-sensitive information can remain confidential.</p>
 <p>This Policy is interpreted with ${identity.governingLaw}; legal notices should be directed to <a href="mailto:${identity.legalEmail}">${identity.legalEmail}</a>, and relevant proceedings are associated with ${identity.jurisdiction} subject to mandatory law. We may update safety procedures as threats, technology, and the Services evolve.</p>
       `
+    ),
+    document(
+      "about",
+      "About Us",
+      `
+<h2>About ${identity.platformName}</h2>
+<p><strong>${identity.platformName}</strong> is a community platform that helps members stay connected, share updates, discover opportunities, and use community services including the feed, profiles, chat, marketplace, and matrimony features.</p>
+<p>Our purpose is to strengthen healthy relationships, preserve cultural heritage with respect for all communities, and support education, welfare, and digital connection.</p>
+
+<h3>1. Mission</h3>
+<p>To connect members responsibly, protect community values, and provide useful digital tools for communication, discovery, and family-managed matrimony information.</p>
+
+<h3>2. Vision</h3>
+<p>A respectful, educated, and digitally connected community that uses technology to support unity, opportunity, and member safety.</p>
+
+<h3>3. What we offer</h3>
+<ul>
+  <li>Community feed, profiles, and connections</li>
+  <li>Secure messaging and notifications</li>
+  <li>Marketplace and helping-hands style listings where available</li>
+  <li>Matrimony profiles with privacy controls</li>
+  <li>Admin moderation, reporting, and safety tools</li>
+</ul>
+
+<h3>4. Our principles</h3>
+<ul>
+  <li>Respect for all people — we do not promote hatred or caste superiority</li>
+  <li>Privacy and consent first</li>
+  <li>Honesty in profiles, listings, and communications</li>
+  <li>Safety for adults and families using matrimony features</li>
+</ul>
+
+<h3>5. Contact</h3>
+<p>For product support: <a href="mailto:${identity.supportEmail}">${identity.supportEmail}</a>. For privacy questions: <a href="mailto:${identity.privacyEmail}">${identity.privacyEmail}</a>.</p>
+<p>This About page may be updated as the platform and community programs evolve. The published version in Admin is the official text shown in the app and on the website.</p>
+      `
+    ),
+    document(
+      "cookie_policy",
+      "Cookie Policy",
+      `
+<h2>Cookie Policy</h2>
+<p>This Cookie Policy explains how <strong>${identity.platformName}</strong> and related websites use cookies and similar technologies. It should be read with our Privacy Policy.</p>
+
+<h3>1. What are cookies?</h3>
+<p>Cookies are small text files stored on your device when you visit a website. Similar technologies include local storage, session storage, and pixels used for essential functions, preferences, analytics, or security.</p>
+
+<h3>2. How we use cookies</h3>
+<table>
+  <thead><tr><th>Type</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Essential</strong></td><td>Security, load balancing, session continuity, and core site functions. These are generally required for the site to work.</td></tr>
+    <tr><td><strong>Preferences</strong></td><td>Remember language, cookie consent choices, and similar settings.</td></tr>
+    <tr><td><strong>Analytics</strong></td><td>Understand traffic, page performance, and feature usage so we can improve the Services. Analytics cookies are used only after consent where required.</td></tr>
+  </tbody>
+</table>
+
+<h3>3. Consent</h3>
+<p>Where required by law, non-essential cookies (such as analytics) are used only after you accept them. You can change or withdraw consent through the cookie banner controls or your browser settings.</p>
+
+<h3>4. Third-party technologies</h3>
+<p>Embedded content (for example maps or video players) may set their own cookies under their own policies. We do not control those third-party cookies.</p>
+
+<h3>5. Managing cookies</h3>
+<p>Most browsers let you block or delete cookies. Blocking essential cookies may affect login, forms, or other features. Device-level notification and storage settings also affect how preferences are saved.</p>
+
+<h3>6. Updates and contact</h3>
+<p>We may update this Cookie Policy as technology and legal requirements change. Questions: <a href="mailto:${identity.privacyEmail}">${identity.privacyEmail}</a>.</p>
+      `
+    ),
+    document(
+      "disclaimer",
+      "Disclaimer",
+      `
+<h2>Disclaimer</h2>
+<p>Information published on <strong>${identity.platformName}</strong> websites, apps, and related channels is provided for general community information. It is not legal, medical, financial, or professional advice.</p>
+
+<h3>1. No guarantee of accuracy</h3>
+<p>We aim to keep information accurate and current, but content may contain errors, omissions, or outdated details. Members should independently verify important facts before acting.</p>
+
+<h3>2. Member-generated content</h3>
+<p>Posts, profiles, marketplace listings, matrimony profiles, comments, and messages are created by users. ${identity.platformName} does not endorse every statement and is not responsible for private arrangements between members.</p>
+
+<h3>3. Matrimony and marketplace</h3>
+<p>Matrimony and marketplace features are connection and listing tools only. We do not guarantee matches, marriages, product quality, ownership, payment outcomes, or member conduct. Always verify identity, family details, education, employment, and commercial terms yourself.</p>
+
+<h3>4. External links</h3>
+<p>Links to third-party sites or apps are provided for convenience. We are not responsible for their content, policies, or practices.</p>
+
+<h3>5. Limitation</h3>
+<p>To the fullest extent permitted by ${identity.governingLaw}, ${identity.platformName} disclaims liability for indirect, incidental, or consequential losses arising from use of the Services or reliance on published information, subject to non-excludable consumer and other mandatory rights.</p>
+
+<h3>6. Contact</h3>
+<p>Questions about this Disclaimer: <a href="mailto:${identity.legalEmail}">${identity.legalEmail}</a> or <a href="mailto:${identity.supportEmail}">${identity.supportEmail}</a>.</p>
+      `
     )
   ];
 }

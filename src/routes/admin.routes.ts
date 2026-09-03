@@ -804,6 +804,11 @@ adminRouter.patch(
   requireAdminAction("settings.manage_roles"),
   asyncHandler(AdminSettingsController.updateAdminUser)
 );
+adminRouter.post(
+  "/settings/smtp/test",
+  requireAdminModule("settings"),
+  asyncHandler(AdminSettingsController.testSmtp)
+);
 
 // ── Legal Documents (Settings) ─────────────────────────────
 adminRouter.get(

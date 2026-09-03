@@ -34,6 +34,7 @@
     "pm2:deploy": "bash deploy/pm2-deploy.sh",
     "install:deps": "bash deploy/npm-install-deps.sh",
     "verify:deploy": "node -e \"require('fs').accessSync('dist/server.js'); require('fs').accessSync('dist/workers/mediaWorker.js'); require('fs').accessSync('dist/workers/schedulerWorker.js'); require('express'); require('cors'); console.log('API + media worker + scheduler builds OK');\"",
+    "smtp:verify": "ts-node --transpile-only scripts/smtp-verify.ts",
     "db:verify-matrimony": "node scripts/verify-matrimony-schema.js",
     "db:run-matrimony-sql": "node scripts/legacy-db-guard.js scripts/run-matrimony-sql.js",
     "db:run-notifications-sql": "node scripts/legacy-db-guard.js scripts/run-notifications-migration.js",

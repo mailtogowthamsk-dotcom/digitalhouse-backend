@@ -3,9 +3,10 @@ import { sendMail } from "../utils/sendMail";
 async function sendOrThrow(
   to: string,
   subject: string,
-  text: string
+  text: string,
+  emailType: string
 ): Promise<void> {
-  const result = await sendMail({ to, subject, text });
+  const result = await sendMail({ to, subject, text, emailType });
   if (!result.success) {
     throw new Error(result.error);
   }
@@ -16,7 +17,8 @@ export async function sendOtpEmail(to: string, otp: string, expiresMinutes: numb
   await sendOrThrow(
     to,
     "Your Digital House verification code",
-    `Your verification code is ${otp}. It expires in ${expiresMinutes} minutes. Welcome to the community!`
+    `Your verification code is ${otp}. It expires in ${expiresMinutes} minutes. Welcome to the community!`,
+    "otp"
   );
 }
 
@@ -31,7 +33,8 @@ export async function sendApprovalEmail(
   await sendOrThrow(
     to,
     "Your Digital House account has been approved",
-    `Hi${name},\n\nYour Digital House account has been approved. Please sign in again with OTP or Google to start using the app. Welcome to the community!${remarkLine}\n\n— Digital House`
+    `Hi${name},\n\nYour Digital House account has been approved. Please sign in again with OTP or Google to start using the app. Welcome to the community!${remarkLine}\n\n— Digital House`,
+    "registration_approved"
   );
 }
 
@@ -48,7 +51,8 @@ export async function sendRejectionEmail(
   await sendOrThrow(
     to,
     "Your Digital House account was not approved",
-    `Hi${name},\n\nAfter review, your Digital House account was not approved at this time.${remarkLine}\n\n— Digital House`
+    `Hi${name},\n\nAfter review, your Digital House account was not approved at this time.${remarkLine}\n\n— Digital House`,
+    "registration_rejected"
   );
 }
 
@@ -65,6 +69,46 @@ export async function sendRegistrationChangesEmail(
   await sendOrThrow(
     to,
     "Your Digital House registration requires changes",
-    `Hi${name},\n\nYour registration requires changes. Please update the requested information and submit again.${remarkLine}\n\nSign in to Digital House to make corrections.\n\n— Digital House`
+    `Hi${name},\n\nYour registration requires changes. Please update the requested information and submit again.${remarkLine}\n\nSign in to Digital House to make corrections.\n\n— Digital House`,
+    "registration_changes"
   );
+}
+
+export type WebsiteContactPayload = {
+  name: string;
+  email: string;
+  subject: string;
+  message: string;
+};
+
+/** Public website contact form → inbox (reuses SMTP sendMail). */
+export async function sendWebsiteContactEmail(payload: WebsiteContactPayload): Promise<void> {
+  const to = (process.env.WEBSITE_CONTACT_TO || "contact@konguvettuvagounder.com")
+    .trim()
+    .toLowerCase();
+  const fromName = payload.name.trim();
+  const fromEmail = payload.email.trim().toLowerCase();
+  const subjectLine = payload.subject.trim();
+  const body = [
+    "New message from konguvettuvagounder.com contact form",
+    "",
+    `Name: ${fromName}`,
+    `Email: ${fromEmail}`,
+    `Subject: ${subjectLine}`,
+    "",
+    payload.message.trim(),
+    "",
+    "— Kongu Vettuva Gounder website"
+  ].join("\n");
+
+  const result = await sendMail({
+    to,
+    subject: `[Website] ${subjectLine}`,
+    text: body,
+    replyTo: fromEmail,
+    emailType: "website_contact"
+  });
+  if (!result.success) {
+    throw new Error(result.error);
+  }
 }

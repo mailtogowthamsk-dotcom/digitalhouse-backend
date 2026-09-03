@@ -473,15 +473,23 @@ export async function restoreVersion(
 
 /** Public: resolve published document by slug or documentKey. */
 export async function getPublished(slugOrKey: string) {
+  const raw = String(slugOrKey || "").trim();
+  /** Stable website filename → canonical CMS slug (same document as mobile). */
+  const SLUG_ALIASES: Record<string, string> = {
+    "terms-and-conditions": "terms",
+    "about-us": "about"
+  };
+  const lookup = SLUG_ALIASES[raw] || raw;
+
   const type =
     (await LegalDocumentType.findOne({
       where: {
         isActive: true,
-        [Op.or]: [{ slug: slugOrKey }, { documentKey: slugOrKey }]
+        [Op.or]: [{ slug: lookup }, { documentKey: lookup }]
       }
     })) ?? null;
 
-  const documentKey = type?.documentKey ?? slugOrKey;
+  const documentKey = type?.documentKey ?? lookup;
   const row = await LegalDocument.findOne({
     where: { documentKey, isPublished: true }
   });

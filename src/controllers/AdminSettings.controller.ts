@@ -170,3 +170,52 @@ export async function updateAdminUser(req: Request, res: Response) {
     throw e;
   }
 }
+
+const smtpTestSchema = z
+  .object({
+    to: z.string().email().optional()
+  })
+  .strict();
+
+/**
+ * POST /admin/settings/smtp/test
+ * Admin-only: verify SMTP connection/auth and optionally send a short test message.
+ * Never returns credentials.
+ */
+export async function testSmtp(req: Request, res: Response) {
+  const body = smtpTestSchema.parse(req.body ?? {});
+  const { verifySmtpConnection, getSmtpFrom } = await import("../config/smtp");
+  const { sendMail } = await import("../utils/sendMail");
+
+  const verify = await verifySmtpConnection();
+  if (!verify.ok) {
+    return error(res, `SMTP verify failed: ${verify.error}`, 502);
+  }
+
+  const to =
+    body.to?.trim().toLowerCase() ||
+    getAdminEmail(req)?.trim().toLowerCase() ||
+    process.env.SMTP_USER?.trim().toLowerCase();
+
+  if (!to) {
+    return error(res, "No recipient available for test email (pass { to }).", 400);
+  }
+
+  const result = await sendMail({
+    to,
+    subject: "Digital House SMTP test",
+    text: `SMTP test from Digital House at ${new Date().toISOString()}.\nFrom: ${getSmtpFrom() || "(unset)"}\n`,
+    emailType: "smtp_test"
+  });
+
+  if (!result.success) {
+    return error(res, `SMTP connected but send failed: ${result.error}`, 502);
+  }
+
+  return success(res, {
+    verified: true,
+    sent: true,
+    messageId: result.messageId ?? null,
+    message: "SMTP authentication OK and test email accepted."
+  });
+}

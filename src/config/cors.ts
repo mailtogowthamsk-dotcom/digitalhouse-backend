@@ -30,12 +30,20 @@ const allowedExact = new Set([...DEFAULT_ORIGINS, ...EXTRA_ORIGINS]);
 /** Allow localhost and any infosensetechnologies.com host (with or without www). */
 export function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return true;
+  // Browsers send the literal Origin header "null" for file:// pages.
+  // Allow only outside production so local HTML can hit the API during development.
+  if (origin === "null") {
+    return process.env.NODE_ENV !== "production";
+  }
   if (allowedExact.has(origin)) return true;
   try {
     const u = new URL(origin);
     const host = u.hostname.toLowerCase();
     if (host === "localhost" || host === "127.0.0.1") return true;
     if (host === "infosensetechnologies.com" || host.endsWith(".infosensetechnologies.com")) {
+      return true;
+    }
+    if (host === "konguvettuvagounder.com" || host.endsWith(".konguvettuvagounder.com")) {
       return true;
     }
   } catch {

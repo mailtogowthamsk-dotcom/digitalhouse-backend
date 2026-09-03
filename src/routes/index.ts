@@ -19,6 +19,7 @@ import { supportRouter } from "./support.routes";
 import { prominentPeopleRouter } from "./prominentPeople.routes";
 import { advertisementRouter } from "./advertisement.routes";
 import { legalRouter } from "./legal.routes";
+import { websiteRouter } from "./website.routes";
 
 export const apiRouter = Router();
 
@@ -42,3 +43,4 @@ apiRouter.use("/prominent-people", prominentPeopleRouter);
 apiRouter.use("/advertisements", advertisementRouter);
 apiRouter.use("/legal", legalRouter);
 apiRouter.use("/landing", landingRouter);
+apiRouter.use("/website", websiteRouter);
