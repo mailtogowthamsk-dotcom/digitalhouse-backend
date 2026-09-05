@@ -255,6 +255,17 @@ export async function fulfillOrderLocked(
   });
 }
 
+/** After DB commit — PDF + email must never affect payment success. */
+export async function scheduleInvoiceDeliveryForOrder(order: PaymentOrder): Promise<void> {
+  const invoice = await Invoice.getInvoiceByPaymentOrderId(order.id);
+  if (invoice) {
+    Invoice.scheduleInvoiceDelivery(invoice.id);
+    return;
+  }
+  // alreadyPaid race: invoice may have been created by a concurrent fulfill
+  await Invoice.ensureAndScheduleInvoiceDelivery(order);
+}
+
 export async function verifyAndFulfillPayment(
   userId: number,
   razorpayOrderId: string,
@@ -281,6 +292,7 @@ export async function verifyAndFulfillPayment(
     alreadyPaid,
     duplicateCapture
   });
+  void scheduleInvoiceDeliveryForOrder(locked).catch(() => {});
   return { fulfilled: !alreadyPaid && !duplicateCapture, duplicateCapture, order: locked };
 }
 

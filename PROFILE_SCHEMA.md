@@ -66,7 +66,9 @@ One document per user; category-based sections as nested objects. Reusable acros
     facebook: String,
     linkedin: String,
     hobbies: String,
-    fatherName: String
+    fatherName: String,
+    address: String,
+    workStudyDetails: String
   },
   matrimony: {
     matrimonyProfileActive: Boolean,   // if true, show Matrimony section

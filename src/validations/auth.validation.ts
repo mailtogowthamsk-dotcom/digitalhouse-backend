@@ -9,6 +9,9 @@ export const registerSchema = z.object({
   email: z.string().email().max(191),
   mobile: z.string().min(10).max(20).trim(),
   occupation: z.string().max(80).trim().optional().nullable(),
+  fatherName: z.string().max(120).trim().optional().nullable(),
+  address: z.string().max(1000).trim().optional().nullable(),
+  workStudyDetails: z.string().max(2000).trim().optional().nullable(),
   location: z.string().min(1, "Please select your location.").max(120).trim(),
   kulam: z.string().min(1, "Please select your Kulam.").max(80).trim(),
   profilePhoto: z.string().max(2000).trim().optional().nullable(),
@@ -55,6 +58,10 @@ export const completeGoogleProfileSchema = z.object({
   kulam: z.string().min(1, "Please select your Kulam.").max(80).trim(),
   location: z.string().max(120).trim().optional().nullable(),
   mobile: z.string().min(10).max(20).trim().optional().nullable(),
+  occupation: z.string().max(80).trim().optional().nullable(),
+  fatherName: z.string().max(120).trim().optional().nullable(),
+  address: z.string().max(1000).trim().optional().nullable(),
+  workStudyDetails: z.string().max(2000).trim().optional().nullable(),
   profilePhoto: z.string().max(500).trim().optional().nullable(),
   legalAcceptances: z
     .array(

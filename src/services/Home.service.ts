@@ -161,7 +161,14 @@ export async function getSummary(userId: number): Promise<HomeSummaryDto> {
     import("./NotificationPlatform.service").then((m) =>
       m.getUnreadCounts(userId).then((c) => c.total)
     ),
-    Message.count({ where: { recipientId: userId, readAt: null } })
+    Message.count({
+      where: {
+        recipientId: userId,
+        readAt: null,
+        deletedForEveryoneAt: null,
+        deletedForRecipientAt: null
+      }
+    })
   ]);
 
   if (!user) throw new Error("User not found");

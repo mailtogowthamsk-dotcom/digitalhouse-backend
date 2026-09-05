@@ -4,8 +4,8 @@ import { Message, User } from "../models";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
 import { revealPresenceBatch } from "./LastSeen.service";
-import { emitMessageEvents, emitMessageRead } from "../realtime/messageEvents";
-import { scheduleMessagePush } from "../realtime/messagePushQueue";
+import { emitMessageEvents, emitMessageRead, emitMessageDeleted } from "../realtime/messageEvents";
+import { scheduleMessagePush, cancelMessagePush } from "../realtime/messagePushQueue";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
 import {
   assertCanSendMessage,
@@ -58,6 +58,26 @@ export type MessageDto = {
   createdAt: string;
 };
 
+export type MessageDeleteScope = "everyone" | "me";
+
+export type MessageDeleteResult = {
+  messageId: number;
+  conversationPeerId: number;
+  deleteScope: MessageDeleteScope;
+  deletedAt: string;
+};
+
+function httpErr(message: string, status: number, code?: string): Error {
+  return Object.assign(new Error(message), { status, code });
+}
+
+/** SQL fragment: message still visible to :me */
+const VISIBLE_TO_ME_SQL = `
+  deleted_for_everyone_at IS NULL
+  AND NOT (senderId = :me AND deleted_for_sender_at IS NOT NULL)
+  AND NOT (recipientId = :me AND deleted_for_recipient_at IS NOT NULL)
+`;
+
 function toMessageDto(m: Message): MessageDto {
   return {
     id: m.id,
@@ -83,9 +103,14 @@ export async function listThreads(
     SELECT
       IF(senderId = :me, recipientId, senderId) AS otherUserId,
       MAX(id) AS lastMessageId,
-      SUM(CASE WHEN recipientId = :me AND readAt IS NULL THEN 1 ELSE 0 END) AS unreadCount
+      SUM(CASE
+        WHEN recipientId = :me AND readAt IS NULL
+          AND deleted_for_everyone_at IS NULL
+          AND deleted_for_recipient_at IS NULL
+        THEN 1 ELSE 0 END) AS unreadCount
     FROM messages
-    WHERE senderId = :me OR recipientId = :me
+    WHERE (senderId = :me OR recipientId = :me)
+      AND (${VISIBLE_TO_ME_SQL.replace(/\n/g, " ")})
     GROUP BY otherUserId
     ORDER BY MAX(createdAt) DESC
     LIMIT ${Math.min(Math.max(Number(process.env.THREAD_LIST_LIMIT) || 100, 20), 200)}
@@ -190,9 +215,10 @@ export async function getHistory(
   await assertCanViewHistory(me, otherUserId);
 
   const where: any = {
+    deletedForEveryoneAt: null,
     [Op.or]: [
-      { senderId: me, recipientId: otherUserId },
-      { senderId: otherUserId, recipientId: me }
+      { senderId: me, recipientId: otherUserId, deletedForSenderAt: null },
+      { senderId: otherUserId, recipientId: me, deletedForRecipientAt: null }
     ]
   };
 
@@ -207,6 +233,89 @@ export async function getHistory(
   const messages = rows.reverse().map(toMessageDto);
   const nextCursorId = rows.length === limit ? rows[rows.length - 1].id : null;
   return { messages, nextCursorId };
+}
+
+/**
+ * WhatsApp-style delete.
+ * Sender → delete for everyone (server decides; client cannot override).
+ * Non-sender participant → delete for me only.
+ */
+export async function deleteMessage(
+  me: number,
+  messageId: number
+): Promise<MessageDeleteResult> {
+  const msg = await Message.findByPk(messageId);
+  if (!msg) throw httpErr("Message not found", 404, "MESSAGE_NOT_FOUND");
+
+  const isSender = msg.senderId === me;
+  const isRecipient = msg.recipientId === me;
+  if (!isSender && !isRecipient) {
+    throw httpErr("Not a participant in this conversation", 403, "NOT_PARTICIPANT");
+  }
+
+  const peerId = isSender ? msg.recipientId : msg.senderId;
+  const now = new Date();
+  const deletedAt = now.toISOString();
+
+  // Already gone for everyone — idempotent success for both parties.
+  if (msg.deletedForEveryoneAt) {
+    return {
+      messageId: msg.id,
+      conversationPeerId: peerId,
+      deleteScope: "everyone",
+      deletedAt: msg.deletedForEveryoneAt.toISOString()
+    };
+  }
+
+  if (isSender) {
+    // Delete for everyone — never trust a client flag.
+    await msg.update({
+      deletedForEveryoneAt: now,
+      deletedBy: me
+    } as any);
+    cancelMessagePush(msg.id);
+    const result: MessageDeleteResult = {
+      messageId: msg.id,
+      conversationPeerId: peerId,
+      deleteScope: "everyone",
+      deletedAt
+    };
+    emitMessageDeleted({
+      messageId: msg.id,
+      senderId: msg.senderId,
+      recipientId: msg.recipientId,
+      deleteScope: "everyone",
+      deletedAt
+    });
+    return result;
+  }
+
+  // Receiver: delete for me only
+  if (msg.deletedForRecipientAt) {
+    return {
+      messageId: msg.id,
+      conversationPeerId: peerId,
+      deleteScope: "me",
+      deletedAt: msg.deletedForRecipientAt.toISOString()
+    };
+  }
+
+  await msg.update({ deletedForRecipientAt: now } as any);
+  const result: MessageDeleteResult = {
+    messageId: msg.id,
+    conversationPeerId: peerId,
+    deleteScope: "me",
+    deletedAt
+  };
+  emitMessageDeleted({
+    messageId: msg.id,
+    senderId: msg.senderId,
+    recipientId: msg.recipientId,
+    deleteScope: "me",
+    deletedForUserId: me,
+    deletedAt
+  });
+  return result;
 }
 
 export async function sendMessage(
@@ -248,7 +357,15 @@ export async function markRead(me: number, otherUserId: number): Promise<{ readA
   // never see a blue tick on a message still marked undelivered.
   const [updated] = await Message.update(
     { readAt: now, deliveredAt: sequelize.fn("COALESCE", sequelize.col("deliveredAt"), now) } as any,
-    { where: { senderId: otherUserId, recipientId: me, readAt: null } }
+    {
+      where: {
+        senderId: otherUserId,
+        recipientId: me,
+        readAt: null,
+        deletedForEveryoneAt: null,
+        deletedForRecipientAt: null
+      }
+    }
   );
   const readAt = now.toISOString();
   // Always emit, including on a no-op re-read: a sender that missed the first
@@ -258,7 +375,14 @@ export async function markRead(me: number, otherUserId: number): Promise<{ readA
 }
 
 export async function unreadCount(me: number): Promise<number> {
-  return Message.count({ where: { recipientId: me, readAt: null } });
+  return Message.count({
+    where: {
+      recipientId: me,
+      readAt: null,
+      deletedForEveryoneAt: null,
+      deletedForRecipientAt: null
+    }
+  });
 }
 
 export async function messageAccess(
@@ -281,6 +405,7 @@ export const messagesService = {
   listThreads,
   getHistory,
   sendMessage,
+  deleteMessage,
   markRead,
   unreadCount,
   messageAccess,

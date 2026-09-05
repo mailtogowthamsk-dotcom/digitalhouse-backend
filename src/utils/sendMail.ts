@@ -20,6 +20,11 @@ export interface SendMailOptions {
   replyTo?: string;
   /** Log label only — never include secrets or full body. */
   emailType?: string;
+  attachments?: Array<{
+    filename: string;
+    content: Buffer | string;
+    contentType?: string;
+  }>;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -133,7 +138,8 @@ export async function sendMail(options: SendMailOptions): Promise<SendMailResult
           subject: options.subject,
           text: options.text,
           ...(options.html ? { html: options.html } : {}),
-          ...(replyTo ? { replyTo } : {})
+          ...(replyTo ? { replyTo } : {}),
+          ...(options.attachments?.length ? { attachments: options.attachments } : {})
         }),
         SEND_TIMEOUT_MS
       );

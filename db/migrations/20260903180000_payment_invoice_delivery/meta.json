@@ -1,0 +1,4 @@
+{
+  "id": "20260903180000_payment_invoice_delivery",
+  "description": "Extend payment_invoices with seller/buyer snapshots, PDF storage, and email delivery status"
+}

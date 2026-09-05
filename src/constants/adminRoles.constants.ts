@@ -29,6 +29,7 @@ export const ADMIN_MODULES = [
   "notifications",
   "platform",
   "advertisements",
+  "invoices",
   "system_scheduler",
   "settings"
 ] as const;
@@ -54,6 +55,7 @@ export const ADMIN_MODULE_LABELS: Record<AdminModule, string> = {
   notifications: "Notifications",
   platform: "Platform Management",
   advertisements: "Advertisements",
+  invoices: "Invoices",
   system_scheduler: "System Scheduler",
   settings: "Settings & Roles"
 };
@@ -97,7 +99,9 @@ export const ADMIN_ACTIONS = [
   "system_scheduler.manage",
   "advertisements.manage",
   "advertisements.refund",
-  "advertisements.pricing"
+  "advertisements.pricing",
+  "invoices.download",
+  "invoices.resend"
 ] as const;
 
 export type AdminAction = (typeof ADMIN_ACTIONS)[number];
@@ -137,7 +141,9 @@ export const ADMIN_ACTION_LABELS: Record<AdminAction, string> = {
   "system_scheduler.manage": "Enable / disable / run scheduled jobs",
   "advertisements.manage": "Review, approve, pause, and manage advertisements",
   "advertisements.refund": "Refund advertisement payments",
-  "advertisements.pricing": "Manage advertisement pricing and durations"
+  "advertisements.pricing": "Manage advertisement pricing and durations",
+  "invoices.download": "Download invoice PDFs",
+  "invoices.resend": "Resend invoice emails"
 };
 
 const ALL_MODULES = [...ADMIN_MODULES];
@@ -194,7 +200,9 @@ const ADMIN_ROLE_ACTIONS: AdminAction[] = [
   "settings.legal_manage",
   "advertisements.manage",
   "advertisements.refund",
-  "advertisements.pricing"
+  "advertisements.pricing",
+  "invoices.download",
+  "invoices.resend"
 ];
 
 const MODERATOR_ROLE_ACTIONS: AdminAction[] = [

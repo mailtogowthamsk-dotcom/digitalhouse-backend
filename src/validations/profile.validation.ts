@@ -79,6 +79,8 @@ const communitySectionSchema = z.object({
 const personalSectionSchema = z.object({
   currentLocation: z.string().trim().max(120).nullable().optional(),
   occupation: z.string().trim().max(80).nullable().optional(),
+  address: z.string().trim().max(1000).nullable().optional(),
+  workStudyDetails: z.string().trim().max(2000).nullable().optional(),
   instagram: z.string().trim().max(255).nullable().optional(),
   facebook: z.string().trim().max(255).nullable().optional(),
   linkedin: z.string().trim().max(255).nullable().optional(),

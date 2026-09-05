@@ -90,3 +90,16 @@ export async function updateThreadPreference(req: AuthRequest, res: Response) {
   }
 }
 
+/** DELETE /api/messages/:messageId — WhatsApp-style delete (scope decided server-side). */
+export async function deleteMessage(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const messageId = Number(req.params.messageId);
+  if (!messageId || messageId < 1) return error(res, "Invalid message", 400);
+  try {
+    const result = await messagesService.deleteMessage(req.user.id, messageId);
+    return success(res, { deletion: result });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to delete message", e?.status ?? 400);
+  }
+}
+

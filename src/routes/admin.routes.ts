@@ -19,6 +19,7 @@ import * as PlatformController from "../controllers/Platform.controller";
 import * as ProminentPeopleController from "../controllers/ProminentPeople.controller";
 import * as SystemSchedulerController from "../controllers/SystemScheduler.controller";
 import * as AdvertisementAdminController from "../controllers/AdvertisementAdmin.controller";
+import * as AdminInvoiceController from "../controllers/AdminInvoice.controller";
 
 export const adminRouter = Router();
 
@@ -1258,4 +1259,28 @@ adminRouter.post(
   requireAdminModule("advertisements"),
   requireAdminAction("advertisements.refund"),
   asyncHandler(AdvertisementAdminController.refund)
+);
+
+// ── Invoices (central payment_invoices ledger) ─────────────
+adminRouter.get(
+  "/invoices",
+  requireAdminModule("invoices"),
+  asyncHandler(AdminInvoiceController.listInvoices)
+);
+adminRouter.get(
+  "/invoices/:id/pdf",
+  requireAdminModule("invoices"),
+  requireAdminAction("invoices.download"),
+  asyncHandler(AdminInvoiceController.downloadInvoicePdf)
+);
+adminRouter.post(
+  "/invoices/:id/resend-email",
+  requireAdminModule("invoices"),
+  requireAdminAction("invoices.resend"),
+  asyncHandler(AdminInvoiceController.resendInvoiceEmail)
+);
+adminRouter.get(
+  "/invoices/:id",
+  requireAdminModule("invoices"),
+  asyncHandler(AdminInvoiceController.getInvoice)
 );

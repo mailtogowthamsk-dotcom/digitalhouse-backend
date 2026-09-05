@@ -1,5 +1,5 @@
 /** Central payment modules. Advertisement and future products reuse this catalog. */
-export const PAYMENT_MODULES = ["advertisement"] as const;
+export const PAYMENT_MODULES = ["advertisement", "matrimony"] as const;
 export type PaymentModule = (typeof PAYMENT_MODULES)[number];
 
 export const PAYMENT_ORDER_STATUSES = ["CREATED", "PAID", "FAILED", "REFUNDED"] as const;

@@ -179,7 +179,18 @@ export type ProfilePostsResultDto = {
 /** Allowed keys per JSON section – only these are persisted to avoid corrupted (string-spread) data. Exported for admin.service. */
 export const SECTION_ALLOWED_KEYS: Record<string, Set<string>> = {
   community: new Set(["kulam", "kulaDeivam", "nativeVillage", "nativeTaluk"]),
-  personal: new Set(["currentLocation", "occupation", "instagram", "facebook", "linkedin", "hobbies", "fatherName", "maritalStatus"]),
+  personal: new Set([
+    "currentLocation",
+    "occupation",
+    "address",
+    "workStudyDetails",
+    "instagram",
+    "facebook",
+    "linkedin",
+    "hobbies",
+    "fatherName",
+    "maritalStatus"
+  ]),
   matrimony: new Set([
     "matrimonyProfileActive",
     "lookingFor",
@@ -765,6 +776,15 @@ export async function updateProfileSection(
       cleaned.kulam = await assertValidKulam(String(cleaned.kulam));
       await user.update({ kulam: cleaned.kulam } as any);
     }
+  }
+
+  if (section === "personal" && cleaned.occupation !== undefined) {
+    const occ =
+      cleaned.occupation == null || cleaned.occupation === ""
+        ? null
+        : String(cleaned.occupation).trim() || null;
+    cleaned.occupation = occ;
+    await user.update({ occupation: occ } as any);
   }
 
   await profile.update({ [section]: cleaned } as any);

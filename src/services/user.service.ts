@@ -18,6 +18,9 @@ export type RegisterInput = {
   email: string;
   mobile?: string | null;
   occupation?: string | null;
+  fatherName?: string | null;
+  address?: string | null;
+  workStudyDetails?: string | null;
   location?: string | null;
   kulam?: string | null;
   profilePhoto?: string | null;
@@ -99,10 +102,20 @@ export async function register(data: RegisterInput): Promise<User> {
       linkedProviders: [AUTH_PROVIDERS.EXISTING_LOGIN]
     } as any);
 
-    // Seed community profile so Edit Profile / completion see kulam immediately.
+    // Seed community + personal so Edit Profile / signup extras are available immediately.
     const profile = await ensureUserProfile(user.id);
+    const occupation = data.occupation?.trim() || null;
+    const fatherName = data.fatherName?.trim() || null;
+    const address = data.address?.trim() || null;
+    const workStudyDetails = data.workStudyDetails?.trim() || null;
+    const personal: Record<string, string> = {};
+    if (occupation) personal.occupation = occupation;
+    if (fatherName) personal.fatherName = fatherName;
+    if (address) personal.address = address;
+    if (workStudyDetails) personal.workStudyDetails = workStudyDetails;
     await profile.update({
-      community: { kulam }
+      community: { kulam },
+      ...(Object.keys(personal).length ? { personal } : {})
     } as any);
 
     if (referralCode) {

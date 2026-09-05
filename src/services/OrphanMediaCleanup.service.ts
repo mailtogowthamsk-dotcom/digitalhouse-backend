@@ -9,7 +9,7 @@ const JOB_INTERVAL_MS = Number(
   process.env.MEDIA_ORPHAN_CLEANUP_INTERVAL_MS || 60 * 60 * 1000
 );
 const JOB_ENABLED = process.env.MEDIA_ORPHAN_CLEANUP_ENABLED !== "false";
-const OLDER_THAN_HOURS = Number(process.env.MEDIA_ORPHAN_CLEANUP_HOURS || 24);
+const OLDER_THAN_HOURS = Number(process.env.MEDIA_ORPHAN_CLEANUP_HOURS || 2);
 const BATCH_LIMIT = Number(process.env.MEDIA_ORPHAN_CLEANUP_BATCH || 100);
 const SCHEDULER_JOB_KEY = "media_orphan_cleanup" as const;
 

@@ -24,4 +24,5 @@ messagesRouter.get("/with/:userId", asyncHandler(MessagesController.getWithUser)
 messagesRouter.post("/", asyncHandler(MessagesController.send));
 messagesRouter.post("/with/:userId/read", asyncHandler(MessagesController.markRead));
 messagesRouter.patch("/threads/:userId", asyncHandler(MessagesController.updateThreadPreference));
+messagesRouter.delete("/:messageId", asyncHandler(MessagesController.deleteMessage));
 

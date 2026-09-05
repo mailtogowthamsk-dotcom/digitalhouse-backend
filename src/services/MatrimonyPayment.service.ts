@@ -15,6 +15,7 @@ import {
   verifyPaymentSignature
 } from "./Razorpay.service";
 import * as Notifications from "./Notification.service";
+import * as Invoice from "./payments/Invoice.service";
 
 let paymentOrdersReady: boolean | null = null;
 let webhookEventsReady: boolean | null = null;
@@ -66,6 +67,29 @@ async function notifyOrderFulfilled(order: MatrimonyPaymentOrder): Promise<void>
     const meta = (order.meta ?? {}) as { plan?: "GOLD" | "PLATINUM" };
     const plan = meta.plan ?? (order.purpose === "SUBSCRIPTION_GOLD" ? "GOLD" : "PLATINUM");
     await Notifications.notifyMatrimonySubscriptionActivated(order.userId, plan);
+  }
+}
+
+/** Mirror into central payment_invoices + email PDF. Never fails the payment. */
+async function ensureMatrimonyInvoiceDelivery(order: MatrimonyPaymentOrder): Promise<void> {
+  try {
+    const invoice = await Invoice.ensureInvoiceForMatrimonyOrder({
+      id: order.id,
+      userId: order.userId,
+      purpose: order.purpose,
+      amountPaise: order.amountPaise,
+      currency: order.currency || "INR",
+      description: purposeDescription(order.purpose),
+      razorpayOrderId: order.razorpayOrderId,
+      razorpayPaymentId: order.razorpayPaymentId,
+      meta: order.meta
+    });
+    Invoice.scheduleInvoiceDelivery(invoice.id);
+  } catch (err) {
+    console.error("[invoice] matrimony mirror/delivery failed", {
+      matrimonyOrderId: order.id,
+      error: err instanceof Error ? err.message : String(err)
+    });
   }
 }
 
@@ -276,6 +300,7 @@ export async function verifyAndFulfillPayment(
   }
 
   const { alreadyPaid, order: lockedOrder } = await fulfillOrderLocked(order.id, razorpayPaymentId);
+  void ensureMatrimonyInvoiceDelivery(lockedOrder).catch(() => {});
 
   if (lockedOrder.purpose === "CONTACT_REVEAL") {
     const targetUserId = contactTargetFromMeta(lockedOrder.meta);
@@ -352,6 +377,7 @@ export async function processRazorpayWebhook(
   if (!order) return;
 
   const { alreadyPaid, order: lockedOrder } = await fulfillOrderLocked(order.id, paymentId);
+  void ensureMatrimonyInvoiceDelivery(lockedOrder).catch(() => {});
   if (!alreadyPaid) {
     void notifyOrderFulfilled(lockedOrder).catch(() => {});
   }

@@ -1,0 +1,4 @@
+{
+  "id": "20260903120000_message_soft_delete",
+  "description": "Add soft-delete columns for WhatsApp-style message deletion"
+}

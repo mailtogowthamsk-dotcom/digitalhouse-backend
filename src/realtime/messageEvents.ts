@@ -52,3 +52,39 @@ export function emitMessageRead(readerId: number, withUserId: number, readAt: st
     readAt
   });
 }
+
+export type MessageDeletedEventDto = {
+  messageId: number;
+  senderId: number;
+  recipientId: number;
+  deleteScope: "everyone" | "me";
+  /** Set when deleteScope is "me" — only this user should remove the message. */
+  deletedForUserId?: number;
+  deletedAt: string;
+};
+
+/**
+ * Realtime deletion sync.
+ * - everyone → notify both sender and recipient rooms
+ * - me → notify only the deleting user's room
+ */
+export function emitMessageDeleted(payload: MessageDeletedEventDto): void {
+  const io = getIo();
+  if (!io) return;
+  chatLog("message:deleted", {
+    messageId: payload.messageId,
+    deleteScope: payload.deleteScope,
+    deletedForUserId: payload.deletedForUserId ?? null
+  });
+
+  if (payload.deleteScope === "everyone") {
+    io.to(`user:${payload.senderId}`).emit("message:deleted", payload);
+    io.to(`user:${payload.recipientId}`).emit("message:deleted", payload);
+    return;
+  }
+
+  const target = payload.deletedForUserId;
+  if (target) {
+    io.to(`user:${target}`).emit("message:deleted", payload);
+  }
+}

@@ -16,6 +16,10 @@ export type CommunitySection = {
 export type PersonalSection = {
   currentLocation?: string | null;
   occupation?: string | null;
+  /** User's own residential / full address (not father's address). */
+  address?: string | null;
+  /** Free-text description of work, business, profession, or studies. */
+  workStudyDetails?: string | null;
   instagram?: string | null;
   facebook?: string | null;
   linkedin?: string | null;

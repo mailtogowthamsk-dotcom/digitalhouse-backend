@@ -197,6 +197,10 @@ export type CompleteGoogleProfileInput = {
   kulam: string;
   location?: string | null;
   mobile?: string | null;
+  occupation?: string | null;
+  fatherName?: string | null;
+  address?: string | null;
+  workStudyDetails?: string | null;
   profilePhoto?: string | null;
   referralCode?: string | null;
 };
@@ -252,6 +256,7 @@ export async function completeGoogleProfile(
     community: DEFAULT_APP_COMMUNITY,
     location: input.location?.trim() || district,
     mobile: input.mobile?.trim() || null,
+    occupation: input.occupation?.trim() || null,
     profilePhoto: toStorageKeyIfR2(input.profilePhoto ?? null) || user.profilePhoto,
     profileComplete: true
   } as any);
@@ -269,8 +274,30 @@ export async function completeGoogleProfile(
   } else if (rawCommunity && typeof rawCommunity === "object" && !Array.isArray(rawCommunity)) {
     current = { ...(rawCommunity as Record<string, unknown>) };
   }
+
+  const rawPersonal = profile.personal as unknown;
+  let personalCurrent: Record<string, unknown> = {};
+  if (typeof rawPersonal === "string") {
+    try {
+      personalCurrent = JSON.parse(rawPersonal) as Record<string, unknown>;
+    } catch {
+      personalCurrent = {};
+    }
+  } else if (rawPersonal && typeof rawPersonal === "object" && !Array.isArray(rawPersonal)) {
+    personalCurrent = { ...(rawPersonal as Record<string, unknown>) };
+  }
+  const occupation = input.occupation?.trim() || null;
+  const fatherName = input.fatherName?.trim() || null;
+  const address = input.address?.trim() || null;
+  const workStudyDetails = input.workStudyDetails?.trim() || null;
+  if (occupation) personalCurrent.occupation = occupation;
+  if (fatherName) personalCurrent.fatherName = fatherName;
+  if (address) personalCurrent.address = address;
+  if (workStudyDetails) personalCurrent.workStudyDetails = workStudyDetails;
+
   await profile.update({
-    community: { ...current, kulam }
+    community: { ...current, kulam },
+    personal: Object.keys(personalCurrent).length ? personalCurrent : profile.personal
   } as any);
 
   if (referralCode) {

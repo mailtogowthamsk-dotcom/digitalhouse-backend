@@ -86,8 +86,20 @@ export class PaymentInvoice extends Model<
   declare gstAmountPaise: number;
   declare amountBeforeGstPaise: number;
   declare currency: string;
+  declare sellerName: string | null;
+  declare sellerGstin: string | null;
+  declare buyerName: string | null;
+  declare buyerEmail: string | null;
+  declare buyerAddress: string | null;
+  declare buyerGstin: string | null;
+  declare pdfStorageKey: string | null;
+  declare pdfStatus: string;
+  declare emailStatus: string;
+  declare emailError: string | null;
+  declare emailedAt: Date | null;
   declare issuedAt: Date;
   declare createdAt: CreationOptional<Date>;
+  declare updatedAt: Date | null;
 }
 
 PaymentInvoice.init(
@@ -123,8 +135,30 @@ PaymentInvoice.init(
       field: "amount_before_gst_paise"
     },
     currency: { type: DataTypes.CHAR(3), allowNull: false, defaultValue: "INR" },
+    sellerName: { type: DataTypes.STRING(120), allowNull: true, field: "seller_name" },
+    sellerGstin: { type: DataTypes.STRING(20), allowNull: true, field: "seller_gstin" },
+    buyerName: { type: DataTypes.STRING(191), allowNull: true, field: "buyer_name" },
+    buyerEmail: { type: DataTypes.STRING(191), allowNull: true, field: "buyer_email" },
+    buyerAddress: { type: DataTypes.STRING(500), allowNull: true, field: "buyer_address" },
+    buyerGstin: { type: DataTypes.STRING(20), allowNull: true, field: "buyer_gstin" },
+    pdfStorageKey: { type: DataTypes.STRING(512), allowNull: true, field: "pdf_storage_key" },
+    pdfStatus: {
+      type: DataTypes.STRING(16),
+      allowNull: false,
+      defaultValue: "pending",
+      field: "pdf_status"
+    },
+    emailStatus: {
+      type: DataTypes.STRING(16),
+      allowNull: false,
+      defaultValue: "pending",
+      field: "email_status"
+    },
+    emailError: { type: DataTypes.STRING(500), allowNull: true, field: "email_error" },
+    emailedAt: { type: DataTypes.DATE, allowNull: true, field: "emailed_at" },
     issuedAt: { type: DataTypes.DATE, allowNull: false, field: "issued_at" },
-    createdAt: { type: DataTypes.DATE, allowNull: false, field: "created_at" }
+    createdAt: { type: DataTypes.DATE, allowNull: false, field: "created_at" },
+    updatedAt: { type: DataTypes.DATE, allowNull: true, field: "updated_at" }
   },
   { sequelize, tableName: "payment_invoices", timestamps: false }
 );

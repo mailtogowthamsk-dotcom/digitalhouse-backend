@@ -83,6 +83,7 @@ export async function processRazorpayWebhookPayload(
       duplicateCapture,
       event
     });
+    void Payment.scheduleInvoiceDeliveryForOrder(order).catch(() => {});
     if (!alreadyPaid && !duplicateCapture && order.module === "advertisement") {
       const { notifyPaymentSuccessAfterCommit } = await import(
         "../advertisement/AdvertisementPaymentHandler"

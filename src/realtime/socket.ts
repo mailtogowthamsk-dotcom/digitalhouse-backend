@@ -334,6 +334,7 @@ async function handleConnection(io: Server, socket: import("socket.io").Socket):
         const msg = await Message.findByPk(messageId);
         if (!msg) return cb?.({ ok: false });
         if (msg.recipientId !== userId) return cb?.({ ok: false });
+        if ((msg as any).deletedForEveryoneAt) return cb?.({ ok: true });
 
         cancelMessagePush(messageId);
 
