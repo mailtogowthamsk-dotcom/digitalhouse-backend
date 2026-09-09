@@ -25,6 +25,28 @@ export async function getCentralGstPercent(): Promise<number> {
   return Math.min(100, n);
 }
 
+/**
+ * Catalog/list price is taxable; GST is added on top.
+ * Charged total = pricePaise + gstAmountPaise.
+ */
+export function applyGstExclusive(pricePaise: number, gstPercent: number): {
+  gstPercent: number;
+  gstAmountPaise: number;
+  amountBeforeGstPaise: number;
+  amountPaise: number;
+} {
+  const base = Math.max(0, Math.round(Number(pricePaise) || 0));
+  const pct = Math.max(0, Number(gstPercent) || 0);
+  const gstAmountPaise = pct > 0 ? Math.round((base * pct) / 100) : 0;
+  return {
+    gstPercent: pct,
+    amountBeforeGstPaise: base,
+    gstAmountPaise,
+    amountPaise: base + gstAmountPaise
+  };
+}
+
+/** @deprecated Prefer applyGstExclusive for new checkouts. Kept for legacy inclusive invoices. */
 export function splitGstInclusive(amountPaise: number, gstPercent: number): {
   gstPercent: number;
   gstAmountPaise: number;
@@ -38,6 +60,36 @@ export function splitGstInclusive(amountPaise: number, gstPercent: number): {
     amountBeforeGstPaise: before,
     gstAmountPaise: Math.max(0, amountPaise - before)
   };
+}
+
+function taxSplitFromOrderMeta(
+  amountPaise: number,
+  gstPercent: number,
+  meta: Record<string, unknown> | null | undefined
+): { gstPercent: number; gstAmountPaise: number; amountBeforeGstPaise: number } {
+  const before = Number(meta?.amountBeforeGstPaise);
+  const gst = Number(meta?.gstAmountPaise);
+  const pct =
+    typeof meta?.gstPercent === "number" && Number.isFinite(meta.gstPercent)
+      ? Math.max(0, Number(meta.gstPercent))
+      : gstPercent;
+
+  if (
+    Number.isFinite(before) &&
+    Number.isFinite(gst) &&
+    before >= 0 &&
+    gst >= 0 &&
+    Math.round(before) + Math.round(gst) === amountPaise
+  ) {
+    return {
+      gstPercent: pct,
+      amountBeforeGstPaise: Math.round(before),
+      gstAmountPaise: Math.round(gst)
+    };
+  }
+
+  // Legacy rows charged a GST-inclusive catalog total.
+  return splitGstInclusive(amountPaise, pct);
 }
 
 function invoiceNumberFor(order: PaymentOrder, issuedAt: Date): string {
@@ -85,7 +137,7 @@ export async function ensureInvoiceForOrder(
     typeof order.meta?.gstPercent === "number"
       ? Number(order.meta.gstPercent)
       : await getCentralGstPercent();
-  const split = splitGstInclusive(order.amountPaise, gstPercent);
+  const split = taxSplitFromOrderMeta(order.amountPaise, gstPercent, order.meta as Record<string, unknown>);
   const issuedAt = new Date();
   const buyer = await loadBuyerSnapshot(order.userId, transaction);
 
@@ -155,7 +207,13 @@ export async function ensureInvoiceForMatrimonyOrder(input: {
       typeof (input.meta as { gstPercent?: number } | null)?.gstPercent === "number"
         ? Number((input.meta as { gstPercent?: number }).gstPercent)
         : await getCentralGstPercent();
-    const split = splitGstInclusive(input.amountPaise, gstPercent);
+    const split = taxSplitFromOrderMeta(
+      input.amountPaise,
+      gstPercent,
+      (typeof input.meta === "object" && input.meta
+        ? (input.meta as Record<string, unknown>)
+        : null)
+    );
     const description =
       (input.description && String(input.description).trim()) ||
       purposeLabel(input.purpose);

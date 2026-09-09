@@ -38,6 +38,58 @@ function genderFromLookingFor(lookingFor: string | null | undefined): string | n
   return null;
 }
 
+/** Normalize stored/account gender to MALE | FEMALE only (no transgender). */
+export function normalizeBinaryGender(gender: string | null | undefined): "MALE" | "FEMALE" | null {
+  const s = String(gender ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z]/g, "");
+  if (s === "MALE" || s === "M" || s === "MAN" || s === "BOY") return "MALE";
+  if (s === "FEMALE" || s === "F" || s === "WOMAN" || s === "GIRL") return "FEMALE";
+  return null;
+}
+
+/**
+ * Bride/groom gender for this matrimony profile:
+ * SON/BROTHER → male, DAUGHTER/SISTER → female, SELF → account gender.
+ */
+export function resolveCandidateBinaryGender(
+  lookingFor: string | null | undefined,
+  accountGender: string | null | undefined
+): "MALE" | "FEMALE" | null {
+  const fromRelation = normalizeBinaryGender(genderFromLookingFor(lookingFor));
+  if (fromRelation) return fromRelation;
+  if (String(lookingFor ?? "").toUpperCase() === "SELF") {
+    return normalizeBinaryGender(accountGender);
+  }
+  return null;
+}
+
+/** Opposite gender only — matrimony partner preference (no transgender). */
+export function oppositePartnerGender(
+  candidateGender: "MALE" | "FEMALE" | null | undefined
+): "MALE" | "FEMALE" | null {
+  if (candidateGender === "MALE") return "FEMALE";
+  if (candidateGender === "FEMALE") return "MALE";
+  return null;
+}
+
+/** Apply auto partner preference + candidateGender from lookingFor (+ account gender for SELF). */
+export function applyAutoPartnerGenderPreference(
+  section: Record<string, unknown>,
+  accountGender: string | null | undefined
+): Record<string, unknown> {
+  const lookingFor = (section.lookingFor as string | null | undefined) ?? null;
+  const candidateGender =
+    resolveCandidateBinaryGender(lookingFor, accountGender) ??
+    normalizeBinaryGender(section.candidateGender as string | null | undefined);
+  const partnerGenderPreference = oppositePartnerGender(candidateGender);
+  const next = { ...section };
+  if (candidateGender) next.candidateGender = candidateGender;
+  if (partnerGenderPreference) next.partnerGenderPreference = partnerGenderPreference;
+  return next;
+}
+
 /** Public bride/groom identity — never account owner fields for family profiles. */
 export function resolveMatrimonyCandidate(
   user: Pick<User, "id" | "fullName" | "gender" | "dob" | "district" | "occupation" | "education">,

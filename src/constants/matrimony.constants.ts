@@ -52,8 +52,6 @@ export const MATRIMONY_REQUIRED_KEYS = [
   "familyType",
   "partnerAgeMin",
   "partnerAgeMax",
-  "preferredDistrictIds",
-  "preferredKulamIds",
   "candidatePhotoUrl",
   "horoscopeDocumentUrl"
 ] as const;

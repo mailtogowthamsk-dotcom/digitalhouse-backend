@@ -152,11 +152,17 @@ export async function signMatrimonySection(
   const out = { ...section } as Record<string, unknown>;
   const profilePhotoUrl = out.profilePhotoUrl;
   if (typeof profilePhotoUrl === "string" && profilePhotoUrl.trim()) {
-    out.profilePhotoUrl = (await toPublicUrlIfR2(profilePhotoUrl)) ?? profilePhotoUrl;
+    out.profilePhotoUrl =
+      (await toPublicUrlIfR2(profilePhotoUrl)) ??
+      (await toPrivateSignedUrlIfR2(profilePhotoUrl)) ??
+      profilePhotoUrl;
   }
   const candidatePhotoUrl = out.candidatePhotoUrl;
   if (typeof candidatePhotoUrl === "string" && candidatePhotoUrl.trim()) {
-    out.candidatePhotoUrl = (await toPublicUrlIfR2(candidatePhotoUrl)) ?? candidatePhotoUrl;
+    out.candidatePhotoUrl =
+      (await toPublicUrlIfR2(candidatePhotoUrl)) ??
+      (await toPrivateSignedUrlIfR2(candidatePhotoUrl)) ??
+      candidatePhotoUrl;
   }
   const horoscopeDocumentUrl = out.horoscopeDocumentUrl;
   if (typeof horoscopeDocumentUrl === "string" && horoscopeDocumentUrl.trim()) {

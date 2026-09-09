@@ -7,6 +7,7 @@ import {
   getR2ObjectMetadata,
   getR2ObjectPrefix,
   isPrivateR2Object,
+  toPrivateSignedUrlIfR2,
   toPublicUrlIfR2,
   toStorageKeyIfR2
 } from "../utils/r2Client";
@@ -154,6 +155,38 @@ function provisionalResult(row: MediaFile, byteSize = 0): FinalizeMediaResult {
   };
 }
 
+/** Quarantine / private keys are not CDN-readable — mint signed GETs for the uploader. */
+async function withClientDeliveryUrls(result: FinalizeMediaResult): Promise<FinalizeMediaResult> {
+  const signOne = async (value: string | null | undefined): Promise<string | null | undefined> => {
+    if (value == null) return value;
+    const trimmed = String(value).trim();
+    if (!trimmed) return value;
+    if (/^https?:\/\//i.test(trimmed) && !isPrivateR2Object(trimmed)) return trimmed;
+    if (!isPrivateR2Object(trimmed) && !trimmed.startsWith("digital-house/")) return trimmed;
+    const signed = await toPrivateSignedUrlIfR2(trimmed);
+    return signed ?? trimmed;
+  };
+
+  const [publicUrl, thumb, medium, full, thumbnailUrl] = await Promise.all([
+    signOne(result.publicUrl),
+    signOne(result.variants.thumb),
+    signOne(result.variants.medium),
+    signOne(result.variants.full),
+    result.thumbnailUrl != null ? signOne(result.thumbnailUrl) : Promise.resolve(result.thumbnailUrl)
+  ]);
+
+  return {
+    ...result,
+    publicUrl: publicUrl ?? result.publicUrl,
+    variants: {
+      thumb: thumb ?? result.variants.thumb,
+      medium: medium ?? result.variants.medium,
+      full: full ?? result.variants.full
+    },
+    thumbnailUrl: thumbnailUrl === undefined ? result.thumbnailUrl : thumbnailUrl
+  };
+}
+
 function stateFor(
   row: MediaFile,
   job: MediaJob | null,
@@ -174,6 +207,16 @@ function stateFor(
     ...(job?.status === "failed" ? { errorMessage: job.errorMessage } : {}),
     ...(queue ? { queue } : {})
   };
+}
+
+async function stateForClient(
+  row: MediaFile,
+  job: MediaJob | null,
+  byteSize = 0
+): Promise<MediaFinalizeState> {
+  const state = stateFor(row, job, byteSize);
+  const delivered = await withClientDeliveryUrls(state);
+  return { ...state, ...delivered };
 }
 
 async function ownedMedia(mediaFileId: number, userId: number): Promise<MediaFile> {
@@ -199,7 +242,7 @@ export async function enqueueMediaFinalize(
   if (completed) {
     const job = await MediaJob.findOne({ where: { mediaId: current.id } });
     mediaTimingLog("finalize.already_completed", Date.now() - t0, { mediaFileId });
-    return stateFor(current, job);
+    return stateForClient(current, job);
   }
 
   const objectKey = current.objectKey ?? extractR2KeyFromUrl(current.fileUrl);
@@ -302,7 +345,7 @@ export async function enqueueMediaFinalize(
     jobId: result.job.id
   });
 
-  return stateFor(result.row, result.job, metadata.byteSize);
+  return stateForClient(result.row, result.job, metadata.byteSize);
 }
 
 const statusUnclaimedWarnAt = new Map<number, number>();
@@ -314,7 +357,7 @@ export async function getMediaFinalizeStatus(
   const t0 = Date.now();
   const row = await ownedMedia(mediaFileId, userId);
   const job = await MediaJob.findOne({ where: { mediaId: row.id } });
-  const state = stateFor(row, job);
+  const state = await stateForClient(row, job);
   if (state.queue?.hint) {
     const last = statusUnclaimedWarnAt.get(mediaFileId) ?? 0;
     if (Date.now() - last >= 30_000) {

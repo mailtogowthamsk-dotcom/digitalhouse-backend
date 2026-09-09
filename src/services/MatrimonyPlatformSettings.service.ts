@@ -167,10 +167,10 @@ function applyPlanOverride(
 function withGstFields(item: MatrimonyPlanCatalogItem): PublicPlanCatalogItem {
   const gstPercent = Math.max(0, Number(item.gstPercent) || 0);
   const priceInr = Math.max(0, Number(item.priceInr) || 0);
-  // priceInr is treated as the charged amount (GST-inclusive display helper).
-  const priceInrBeforeGst =
-    gstPercent > 0 ? Math.round((priceInr * 100) / (100 + gstPercent)) : priceInr;
-  const gstAmountInr = Math.max(0, priceInr - priceInrBeforeGst);
+  // Catalog priceInr is taxable (ex-GST). GST is added at checkout.
+  const gstAmountInr =
+    gstPercent > 0 ? Math.round((priceInr * gstPercent) / 100) : 0;
+  const priceInrBeforeGst = priceInr;
   return { ...item, gstPercent, gstAmountInr, priceInrBeforeGst };
 }
 
@@ -397,6 +397,19 @@ export function planPricePaise(plan: "GOLD" | "PLATINUM"): number {
   const s = getMatrimonyPlatformSettings();
   const inr = plan === "GOLD" ? s.goldPriceInr : s.platinumPriceInr;
   return inr * 100;
+}
+
+/** GST % applied on top of catalog price at checkout. */
+export function gstPercentForPurpose(purpose: "CONTACT_REVEAL" | "SUBSCRIPTION_GOLD" | "SUBSCRIPTION_PLATINUM"): number {
+  if (purpose === "CONTACT_REVEAL") {
+    return Math.max(0, Number(getMatrimonyPlatformSettings().gstPercent) || 0);
+  }
+  const plan = purpose === "SUBSCRIPTION_GOLD" ? "GOLD" : "PLATINUM";
+  const row = getDynamicPlanCatalog({ includeInactive: true }).find((p) => p.plan === plan);
+  if (row?.gstPercent != null && Number.isFinite(Number(row.gstPercent))) {
+    return Math.max(0, Number(row.gstPercent));
+  }
+  return Math.max(0, Number(getMatrimonyPlatformSettings().gstPercent) || 0);
 }
 
 export function contactRevealAmountPaise(): number {

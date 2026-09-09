@@ -33,10 +33,27 @@ import {
   serializeCreative
 } from "../../../src/services/advertisement/advertisementCreative";
 
+/** Mirrors Invoice.applyGstExclusive — catalog price + GST on top. */
+function applyGstExclusive(pricePaise: number, gstPercent: number) {
+  const base = Math.max(0, Math.round(Number(pricePaise) || 0));
+  const pct = Math.max(0, Number(gstPercent) || 0);
+  const gstAmountPaise = pct > 0 ? Math.round((base * pct) / 100) : 0;
+  return {
+    gstPercent: pct,
+    amountBeforeGstPaise: base,
+    gstAmountPaise,
+    amountPaise: base + gstAmountPaise
+  };
+}
+
 function splitGstInclusive(amountPaise: number, gstPercent: number) {
   const pct = Math.max(0, Number(gstPercent) || 0);
   const before = pct > 0 ? Math.round((amountPaise * 100) / (100 + pct)) : amountPaise;
-  return { gstPercent: pct, amountBeforeGstPaise: before, gstAmountPaise: Math.max(0, amountPaise - before) };
+  return {
+    gstPercent: pct,
+    amountBeforeGstPaise: before,
+    gstAmountPaise: Math.max(0, amountPaise - before)
+  };
 }
 
 describe("AdvertisementState.service", () => {
@@ -294,15 +311,23 @@ describe("payment request schemas reject client price manipulation", () => {
 });
 
 describe("invoice GST split", () => {
-  it("keeps charged amount as source of truth", () => {
-    const split = splitGstInclusive(119900, 18);
-    expect(split.amountBeforeGstPaise + split.gstAmountPaise).toBe(119900);
+  it("adds GST on top of catalog price for checkout", () => {
+    const tax = applyGstExclusive(100000, 18);
+    expect(tax.amountBeforeGstPaise).toBe(100000);
+    expect(tax.gstAmountPaise).toBe(18000);
+    expect(tax.amountPaise).toBe(118000);
   });
 
   it("uses zero GST without changing amount", () => {
-    const split = splitGstInclusive(50000, 0);
-    expect(split.amountBeforeGstPaise).toBe(50000);
-    expect(split.gstAmountPaise).toBe(0);
+    const tax = applyGstExclusive(50000, 0);
+    expect(tax.amountBeforeGstPaise).toBe(50000);
+    expect(tax.gstAmountPaise).toBe(0);
+    expect(tax.amountPaise).toBe(50000);
+  });
+
+  it("legacy inclusive split still balances", () => {
+    const split = splitGstInclusive(119900, 18);
+    expect(split.amountBeforeGstPaise + split.gstAmountPaise).toBe(119900);
   });
 });
 

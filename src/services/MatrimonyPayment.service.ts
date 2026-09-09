@@ -16,6 +16,7 @@ import {
 } from "./Razorpay.service";
 import * as Notifications from "./Notification.service";
 import * as Invoice from "./payments/Invoice.service";
+import { applyGstExclusive } from "./payments/Invoice.service";
 
 let paymentOrdersReady: boolean | null = null;
 let webhookEventsReady: boolean | null = null;
@@ -216,9 +217,16 @@ export async function createPaymentOrder(
     });
   }
 
-  const amountPaise = purposeAmountPaise(purpose);
+  const basePaise = purposeAmountPaise(purpose);
+  const gstPercent = PlatformSettings.gstPercentForPurpose(purpose);
+  const tax = applyGstExclusive(basePaise, gstPercent);
   const durationMonths = Math.min(24, Math.max(1, PlatformSettings.planDurationMonths() || 6));
-  const meta: Record<string, unknown> = { durationMonths };
+  const meta: Record<string, unknown> = {
+    durationMonths,
+    gstPercent: tax.gstPercent,
+    gstAmountPaise: tax.gstAmountPaise,
+    amountBeforeGstPaise: tax.amountBeforeGstPaise
+  };
 
   if (purpose === "CONTACT_REVEAL") {
     if (!targetUserId) {
@@ -242,7 +250,7 @@ export async function createPaymentOrder(
 
   const receipt = `mat_${userId}_${purpose}_${Date.now()}`.slice(0, 40);
   const rzp = await createRazorpayOrder({
-    amountPaise,
+    amountPaise: tax.amountPaise,
     receipt,
     notes: {
       userId: String(userId),

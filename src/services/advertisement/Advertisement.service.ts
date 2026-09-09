@@ -37,7 +37,7 @@ import { mediaService } from "../Media.service";
 import * as Notifications from "../Notification.service";
 import * as Payment from "../payments/Payment.service";
 import * as Invoice from "../payments/Invoice.service";
-import { getCentralGstPercent, splitGstInclusive } from "../payments/Invoice.service";
+import { applyGstExclusive, getCentralGstPercent } from "../payments/Invoice.service";
 import * as Pricing from "./AdvertisementPricing.service";
 import { assertTransition, canTransition, isModifiableDraft, isUnpaidDraftDeletable, isLiveCreativeEditable } from "./AdvertisementState.service";
 import {
@@ -541,12 +541,12 @@ export async function quotePrice(userId: number, id: number, pricingId: number) 
   const pricing = await Pricing.resolvePurchasablePricing(pricingId, ad.typeCode);
   const snapshot = Pricing.snapshotFromPricing(pricing);
   const gstPercent = await getCentralGstPercent();
-  const tax = splitGstInclusive(snapshot.pricePaise, gstPercent);
+  const tax = applyGstExclusive(snapshot.pricePaise, gstPercent);
   return {
     advertisementId: ad.id,
     pricing: snapshot,
-    amountPaise: snapshot.pricePaise,
-    amountInr: snapshot.pricePaise / 100,
+    amountPaise: tax.amountPaise,
+    amountInr: tax.amountPaise / 100,
     currency: snapshot.currency,
     gstPercent: tax.gstPercent,
     gstAmountPaise: tax.gstAmountPaise,
@@ -607,7 +607,7 @@ export async function createAdvertisementPayment(
     const pricing = await Pricing.resolvePurchasablePricing(pricingId, ad.typeCode);
     const snapshot = Pricing.snapshotFromPricing(pricing);
     const gstPercent = await getCentralGstPercent();
-    const tax = splitGstInclusive(snapshot.pricePaise, gstPercent);
+    const tax = applyGstExclusive(snapshot.pricePaise, gstPercent);
     const start = scheduledStartAt && scheduledStartAt.getTime() > Date.now()
       ? scheduledStartAt
       : new Date();
@@ -626,7 +626,7 @@ export async function createAdvertisementPayment(
       userId,
       referenceId: ad.id,
       product: `ad_pricing_${snapshot.pricingId}_v${snapshot.pricingVersion}`,
-      amountPaise: snapshot.pricePaise,
+      amountPaise: tax.amountPaise,
       description: `Advertisement: ${ad.title} (${snapshot.durationDays} days)`,
       receiptPrefix: "ad",
       transaction,
@@ -664,7 +664,8 @@ export async function createAdvertisementPayment(
         currency: snapshot.currency,
         durationDays: snapshot.durationDays,
         gstPercent: tax.gstPercent,
-        gstAmountPaise: tax.gstAmountPaise
+        gstAmountPaise: tax.gstAmountPaise,
+        amountBeforeGstPaise: tax.amountBeforeGstPaise
       },
       order
     };

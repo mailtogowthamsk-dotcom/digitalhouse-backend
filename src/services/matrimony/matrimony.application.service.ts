@@ -1,4 +1,5 @@
 import { User, PendingProfileUpdate, MatrimonyRequestMeta } from "../../models";
+import { applyAutoPartnerGenderPreference } from "../../utils/matrimonyCandidate.util";
 import { computeMatrimonyCompletion } from "../MatrimonyCompletion.service";
 import { writeAudit } from "../MatrimonyAudit.service";
 import { computeFieldChanges } from "../../utils/matrimonyChanges.util";
@@ -57,8 +58,9 @@ export async function saveMatrimonyDraft(
     ...incoming,
     kulamSnapshot: (payload.kulamSnapshot as string | null | undefined) ?? (base.kulamSnapshot as string | null | undefined) ?? ctx.kulam ?? null
   });
-  await upsertMatrimonyPending(userId, merged, false);
-  await markMatrimonyMediaAttached(userId, merged);
+  const withPartnerPref = applyAutoPartnerGenderPreference(merged, ctx.gender);
+  await upsertMatrimonyPending(userId, withPartnerPref, false);
+  await markMatrimonyMediaAttached(userId, withPartnerPref);
   return getMatrimonyHub(userId);
 }
 
@@ -123,6 +125,15 @@ export async function submitMatrimonyProfile(
   ) {
     merged.candidatePhotoUrl = accountPhotoRaw;
     merged = syncMatrimonyPhotoFields(merged);
+  }
+
+  merged = applyAutoPartnerGenderPreference(merged, ctx.gender);
+
+  const maritalRaw = String(merged.maritalStatus ?? "").trim().toLowerCase();
+  if (maritalRaw === "married") {
+    const err = new Error("Married is not allowed for matrimony profiles. Choose Single, Widowed, or Divorced.");
+    (err as any).status = 400;
+    throw err;
   }
 
   const photoCheck = validateCandidatePhotoRules(merged, accountPhotoRaw);
