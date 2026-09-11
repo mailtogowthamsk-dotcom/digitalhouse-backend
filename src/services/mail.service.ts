@@ -81,7 +81,74 @@ export type WebsiteContactPayload = {
   message: string;
 };
 
-/** Public website contact form → inbox (reuses SMTP sendMail). */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/** Acknowledgment to the person who submitted the website contact form. */
+async function sendWebsiteContactAckEmail(payload: WebsiteContactPayload): Promise<void> {
+  const name = payload.name.trim() || "there";
+  const subjectLine = payload.subject.trim();
+  const support = (process.env.WEBSITE_CONTACT_TO || "contact@konguvettuvagounder.com")
+    .trim()
+    .toLowerCase();
+
+  const text = [
+    `Dear ${name},`,
+    "",
+    "Thank you for contacting Kongu Vettuva Gounder.",
+    "",
+    "We have received your message and our team will review it shortly. You can expect a response from us as soon as possible.",
+    "",
+    "For your reference, here is a copy of what you submitted:",
+    `Subject: ${subjectLine}`,
+    "",
+    "If your enquiry is urgent, you may also write to us at " + support + ".",
+    "",
+    "With regards,",
+    "Kongu Vettuva Gounder Team",
+    "https://konguvettuvagounder.com"
+  ].join("\n");
+
+  const safeName = escapeHtml(name);
+  const safeSubject = escapeHtml(subjectLine);
+  const safeSupport = escapeHtml(support);
+
+  const html = `
+  <div style="font-family:Arial,Helvetica,sans-serif;line-height:1.6;color:#23201c;max-width:560px;margin:0 auto;padding:24px">
+    <p style="margin:0 0 16px">Dear ${safeName},</p>
+    <p style="margin:0 0 16px">Thank you for contacting <strong>Kongu Vettuva Gounder</strong>.</p>
+    <p style="margin:0 0 16px">We have received your message and our team will review it shortly. You can expect a response from us as soon as possible.</p>
+    <div style="margin:20px 0;padding:14px 16px;background:#f4f7f4;border-left:4px solid #128a3c;border-radius:6px">
+      <p style="margin:0;font-size:13px;color:#6b645a">Your enquiry</p>
+      <p style="margin:4px 0 0;font-weight:600">${safeSubject}</p>
+    </div>
+    <p style="margin:0 0 16px">If your enquiry is urgent, please write to us at
+      <a href="mailto:${safeSupport}" style="color:#128a3c">${safeSupport}</a>.
+    </p>
+    <p style="margin:24px 0 0">With regards,<br>
+      <strong>Kongu Vettuva Gounder Team</strong><br>
+      <a href="https://konguvettuvagounder.com" style="color:#128a3c">konguvettuvagounder.com</a>
+    </p>
+  </div>`.trim();
+
+  const result = await sendMail({
+    to: payload.email.trim().toLowerCase(),
+    subject: "We received your message — Kongu Vettuva Gounder",
+    text,
+    html,
+    emailType: "website_contact_ack"
+  });
+  if (!result.success) {
+    throw new Error(result.error);
+  }
+}
+
+/** Public website contact form → inbox (reuses SMTP sendMail), then ack to submitter. */
 export async function sendWebsiteContactEmail(payload: WebsiteContactPayload): Promise<void> {
   const to = (process.env.WEBSITE_CONTACT_TO || "contact@konguvettuvagounder.com")
     .trim()
@@ -110,5 +177,13 @@ export async function sendWebsiteContactEmail(payload: WebsiteContactPayload): P
   });
   if (!result.success) {
     throw new Error(result.error);
+  }
+
+  // Acknowledgment is best-effort — inbox delivery already succeeded.
+  try {
+    await sendWebsiteContactAckEmail(payload);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[website/contact] acknowledgment email failed:", msg);
   }
 }
