@@ -50,16 +50,20 @@ pm2 monit
 
 ## 2b. Dedicated app server + **local MySQL** (4-core EliteDesk / similar)
 
-Host check: `nproc` → **4** on i5-6500T. Use `ecosystem.8core.cjs` (sized for 4 cores).
+Host check: `nproc` → **4** on i5-6500T. Use **`ecosystem.4core.config.cjs`**
+(PM2 only loads `*.config.cjs` as multi-app ecosystem — not `ecosystem.8core.cjs`).
 
 ```bash
 grep DB_HOST /var/www/konguvettuvagounder/backend/.env
 # expect: DB_HOST=127.0.0.1   or   localhost
 
 cd /var/www/konguvettuvagounder/backend
-pm2 delete digitalhouse-api digitalhouse-media-worker digitalhouse-scheduler
-pm2 start ecosystem.8core.cjs
+# upload ecosystem.4core.config.cjs first
+pm2 delete digitalhouse-api digitalhouse-media-worker digitalhouse-scheduler 2>/dev/null
+pm2 start ecosystem.4core.config.cjs
 pm2 save
+pm2 status
+# must show 3 apps: digitalhouse-api, digitalhouse-media-worker, digitalhouse-scheduler
 ```
 
 | Process | Conservative | This profile (4-core) |

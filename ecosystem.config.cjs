@@ -4,9 +4,10 @@
  *   total_app_connections ≈ API pool + media worker pool + scheduler pool
  * Default (conservative / shared DB): API≈3–4 + media≈2 + scheduler≈2.
  *
- * Dedicated ~8-core app server + **local MySQL**: use ecosystem.8core.cjs
- *   (API pool 20 or 4×8 with Redis, media concurrent 4, scheduler pool 8).
- *   npm run pm2:start:8core
+ * Dedicated ~4-core app server + local MySQL: use ecosystem.4core.config.cjs
+ *   (API pool 12 or 2×8 with Redis, media concurrent 2, scheduler pool 6).
+ *   npm run pm2:start:4core
+ *   Filename MUST end with .config.cjs or PM2 runs it as one script.
  *
  * NEVER enable cluster/instances>1 without Redis + sizing DB_POOL_MAX.
  *

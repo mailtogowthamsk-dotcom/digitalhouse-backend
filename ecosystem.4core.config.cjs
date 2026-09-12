@@ -13,8 +13,10 @@
  *
  * Start:
  *   pm2 delete digitalhouse-api digitalhouse-media-worker digitalhouse-scheduler
- *   pm2 start ecosystem.8core.cjs && pm2 save
- *   (filename kept for compatibility; sized for 4 cores)
+ *   pm2 start ecosystem.4core.config.cjs && pm2 save
+ *
+ * IMPORTANT: PM2 only treats *.config.cjs as an ecosystem file.
+ *   ecosystem.8core.cjs would be started as a single script (wrong).
  */
 const path = require("path");
 
