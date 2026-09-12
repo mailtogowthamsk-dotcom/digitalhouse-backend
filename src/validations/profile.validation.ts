@@ -32,9 +32,11 @@ export function validateProfilePostsQuery(query: unknown): ProfilePostsQuery {
 // ---------------------------------------------------------------------------
 
 const stringOptional = z.string().trim().max(500).nullable().optional();
+/** Keys ~120 chars; quarantine uploads may briefly send signed GET URLs (>500). */
+const profileImageOptional = z.string().trim().max(2048).nullable().optional();
 
 export const updateProfileSchema = z.object({
-  profile_image: stringOptional,
+  profile_image: profileImageOptional,
   city: z.string().trim().max(80).nullable().optional(),
   district: z.string().trim().max(80).nullable().optional(),
   education: stringOptional,

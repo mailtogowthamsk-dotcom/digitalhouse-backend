@@ -62,7 +62,7 @@ export const completeGoogleProfileSchema = z.object({
   fatherName: z.string().max(120).trim().optional().nullable(),
   address: z.string().max(1000).trim().optional().nullable(),
   workStudyDetails: z.string().max(2000).trim().optional().nullable(),
-  profilePhoto: z.string().max(500).trim().optional().nullable(),
+  profilePhoto: z.string().max(2048).trim().optional().nullable(),
   legalAcceptances: z
     .array(
       z.object({
@@ -94,15 +94,15 @@ export type CompleteGoogleProfileBody = z.infer<typeof completeGoogleProfileSche
 /** Resubmit registration corrections (mobile / pending profile photo). */
 export const submitRegistrationCorrectionSchema = z.object({
   mobile: z.string().min(10).max(20).trim().optional().nullable(),
-  // R2 public URLs can exceed 500 when paths are nested
-  profilePhoto: z.string().min(1).max(2000).trim().optional().nullable(),
+  // R2 keys ~120 chars; signed GET URLs for quarantine can exceed 500
+  profilePhoto: z.string().min(1).max(2048).trim().optional().nullable(),
   referralCode: z.string().max(20).trim().optional().nullable()
 });
 export type SubmitRegistrationCorrectionBody = z.infer<typeof submitRegistrationCorrectionSchema>;
 
 /** Optional profile photo right after email registration (PENDING session). */
 export const registrationPhotoSchema = z.object({
-  profilePhoto: z.string().min(1).max(2000).trim()
+  profilePhoto: z.string().min(1).max(2048).trim()
 });
 export type RegistrationPhotoBody = z.infer<typeof registrationPhotoSchema>;
 
