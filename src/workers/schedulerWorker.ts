@@ -26,9 +26,7 @@ let shuttingDown = false;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 async function pulseWorkerHeartbeats(): Promise<void> {
-  for (const jobKey of SCHEDULER_JOB_KEYS) {
-    await SchedulerTracking.touchHeartbeat(jobKey).catch(() => undefined);
-  }
+  await SchedulerTracking.touchAllHeartbeats([...SCHEDULER_JOB_KEYS]).catch(() => undefined);
 }
 
 async function main(): Promise<void> {

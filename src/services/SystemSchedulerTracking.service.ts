@@ -150,6 +150,20 @@ export async function touchHeartbeat(jobKey: string): Promise<void> {
   }
 }
 
+/** Single UPDATE for all job keys — avoids N slow round-trips on remote MySQL. */
+export async function touchAllHeartbeats(jobKeys: string[]): Promise<void> {
+  if (!jobKeys.length || !(await probeTables())) return;
+  const now = new Date();
+  try {
+    await SystemSchedulerJob.update(
+      { lastHeartbeatAt: now, updatedAt: now } as any,
+      { where: { jobKey: jobKeys } }
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function trackExecution(
   jobKey: SchedulerJobKey | string,
   triggerType: SchedulerTriggerType,
