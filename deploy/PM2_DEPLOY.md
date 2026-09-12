@@ -48,42 +48,32 @@ pm2 status
 pm2 monit
 ```
 
-## 2b. Dedicated ~8-core app server + **local MySQL** (Mauritius VPS)
+## 2b. Dedicated app server + **local MySQL** (4-core EliteDesk / similar)
 
-Use `ecosystem.8core.cjs`. Confirm live `.env` has local DB:
+Host check: `nproc` → **4** on i5-6500T. Use `ecosystem.8core.cjs` (sized for 4 cores).
 
 ```bash
 grep DB_HOST /var/www/konguvettuvagounder/backend/.env
 # expect: DB_HOST=127.0.0.1   or   localhost
-```
 
-```bash
 cd /var/www/konguvettuvagounder/backend
 pm2 delete digitalhouse-api digitalhouse-media-worker digitalhouse-scheduler
 pm2 start ecosystem.8core.cjs
 pm2 save
-pm2 status
 ```
 
-| Process | Conservative default | 8-core + local DB |
-|---------|----------------------|-------------------|
-| API pool | ~3 | **20** (1 process) or **4×8** with Redis |
-| Scheduler pool | ~2–4 | **8** |
-| Media ffmpeg | 2 | **4** concurrent |
-| UV threadpool | 4 | **16** |
+| Process | Conservative | This profile (4-core) |
+|---------|--------------|------------------------|
+| API pool | ~3 | **12** (1 process) or **2×8** with Redis |
+| Scheduler pool | ~2–4 | **6** |
+| Media ffmpeg | 2 | **2** concurrent |
+| UV threadpool | 4 | **8** |
 
-**To use multiple CPU cores for HTTP**, install Redis on the same VPS and set in `.env`:
-
-```bash
-REDIS_URL=redis://127.0.0.1:6379
-```
-
-Then restart 8core — API auto-scales to **4 cluster workers**. Override with `API_INSTANCES=2` if you want milder.
+Redis optional later: `REDIS_URL=redis://127.0.0.1:6379` → **2** API workers (not 4 — only 4 cores total).
 
 ```bash
-pm2 logs --lines 50 | grep MYSQL_POOL
-# no Redis: API max=20, scheduler max=8, media max=6
-# with Redis: API max=8 (×4 workers), scheduler max=8, media max=6
+pm2 logs --lines 40 | grep MYSQL_POOL
+# expect API max=12, scheduler max=6, media max=4
 ```
 
 ## 3. Start PM2 on server reboot
