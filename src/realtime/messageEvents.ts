@@ -88,3 +88,18 @@ export function emitMessageDeleted(payload: MessageDeletedEventDto): void {
     io.to(`user:${target}`).emit("message:deleted", payload);
   }
 }
+
+export type ConversationDeletedEventDto = {
+  deletedByUserId: number;
+  otherUserId: number;
+  deletedAt: string;
+};
+
+/** Notify both participants that the shared conversation was permanently deleted. */
+export function emitConversationDeleted(payload: ConversationDeletedEventDto): void {
+  const io = getIo();
+  if (!io) return;
+  chatLog("conversation:deleted", payload);
+  io.to(`user:${payload.deletedByUserId}`).emit("conversation:deleted", payload);
+  io.to(`user:${payload.otherUserId}`).emit("conversation:deleted", payload);
+}

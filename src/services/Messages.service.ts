@@ -1,10 +1,15 @@
 import { Op, QueryTypes } from "sequelize";
 import { sequelize } from "../config/db";
-import { Message, User } from "../models";
+import { Message, MessageThreadPreference, User } from "../models";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
 import { revealPresenceBatch } from "./LastSeen.service";
-import { emitMessageEvents, emitMessageRead, emitMessageDeleted } from "../realtime/messageEvents";
+import {
+  emitMessageEvents,
+  emitMessageRead,
+  emitMessageDeleted,
+  emitConversationDeleted
+} from "../realtime/messageEvents";
 import { scheduleMessagePush, cancelMessagePush } from "../realtime/messagePushQueue";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
 import {
@@ -64,6 +69,13 @@ export type MessageDeleteResult = {
   messageId: number;
   conversationPeerId: number;
   deleteScope: MessageDeleteScope;
+  deletedAt: string;
+};
+
+export type ConversationDeleteResult = {
+  otherUserId: number;
+  deletedMessageCount: number;
+  deletedPreferenceCount: number;
   deletedAt: string;
 };
 
@@ -401,11 +413,80 @@ export async function updateThreadPreference(
   return updatePref(me, otherUserId, patch);
 }
 
+/**
+ * Permanently delete the conversation between `me` and `otherUserId` from the DB.
+ *
+ * Hard-deletes shared `messages` for this pair and both users' thread preferences.
+ * Does NOT touch connections, blocks, profiles, or matrimony relationship tables.
+ */
+export async function deleteConversation(
+  me: number,
+  otherUserId: number
+): Promise<ConversationDeleteResult> {
+  if (!Number.isFinite(otherUserId) || otherUserId < 1 || otherUserId === me) {
+    throw httpErr("Invalid user", 400, "INVALID_USER");
+  }
+
+  const deletedAt = new Date();
+  const pairWhere = {
+    [Op.or]: [
+      { senderId: me, recipientId: otherUserId },
+      { senderId: otherUserId, recipientId: me }
+    ]
+  };
+
+  const result = await sequelize.transaction(async (transaction) => {
+    const messageIds = (
+      await Message.findAll({
+        where: pairWhere,
+        attributes: ["id"],
+        transaction
+      })
+    ).map((m) => m.id);
+
+    for (const id of messageIds) {
+      cancelMessagePush(id);
+    }
+
+    const deletedMessageCount = await Message.destroy({
+      where: pairWhere,
+      transaction
+    });
+
+    // Chat metadata only for this pair — not connections.
+    const deletedPreferenceCount = await MessageThreadPreference.destroy({
+      where: {
+        [Op.or]: [
+          { userId: me, otherUserId },
+          { userId: otherUserId, otherUserId: me }
+        ]
+      },
+      transaction
+    });
+
+    return { deletedMessageCount, deletedPreferenceCount };
+  });
+
+  emitConversationDeleted({
+    deletedByUserId: me,
+    otherUserId,
+    deletedAt: deletedAt.toISOString()
+  });
+
+  return {
+    otherUserId,
+    deletedMessageCount: result.deletedMessageCount,
+    deletedPreferenceCount: result.deletedPreferenceCount,
+    deletedAt: deletedAt.toISOString()
+  };
+}
+
 export const messagesService = {
   listThreads,
   getHistory,
   sendMessage,
   deleteMessage,
+  deleteConversation,
   markRead,
   unreadCount,
   messageAccess,

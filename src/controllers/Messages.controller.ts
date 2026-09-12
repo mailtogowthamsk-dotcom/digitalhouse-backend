@@ -90,6 +90,19 @@ export async function updateThreadPreference(req: AuthRequest, res: Response) {
   }
 }
 
+/** DELETE /api/messages/threads/:userId — permanently delete this conversation (not connections). */
+export async function deleteConversation(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const otherUserId = Number(req.params.userId);
+  if (!otherUserId || otherUserId === req.user.id) return error(res, "Invalid user", 400);
+  try {
+    const deletion = await messagesService.deleteConversation(req.user.id, otherUserId);
+    return success(res, { deletion });
+  } catch (e: any) {
+    return error(res, e?.message ?? "Failed to delete chat", e?.status ?? 400);
+  }
+}
+
 /** DELETE /api/messages/:messageId — WhatsApp-style delete (scope decided server-side). */
 export async function deleteMessage(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);

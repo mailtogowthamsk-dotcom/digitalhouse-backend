@@ -9,7 +9,7 @@
     "dev:media-worker": "DB_POOL_MAX=2 node --max-old-space-size=4096 ./node_modules/ts-node-dev/lib/bin.js --respawn --transpile-only --exit-child src/workers/mediaWorker.ts",
     "dev:scheduler": "node --max-old-space-size=2048 ./node_modules/ts-node-dev/lib/bin.js --respawn --transpile-only --exit-child src/workers/schedulerWorker.ts",
     "dev:stack": "echo 'Open two terminals: (1) npm run dev  (2) npm run dev:media-worker  — finalize polling requires the media worker'",
-    "build": "tsc -p tsconfig.json",
+    "build": "npx tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "worker:media": "DB_POOL_MAX=2 node dist/workers/mediaWorker.js",
     "worker:scheduler": "node dist/workers/schedulerWorker.js",
