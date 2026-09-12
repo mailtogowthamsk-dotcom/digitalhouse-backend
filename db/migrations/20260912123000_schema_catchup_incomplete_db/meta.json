@@ -1,0 +1,6 @@
+{
+  "description": "Idempotent schema catch-up for incomplete DBs (media upload, moderation, posts/users gaps)",
+  "idempotent": true,
+  "rollback": false,
+  "destructive": false
+}

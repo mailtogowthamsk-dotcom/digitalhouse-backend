@@ -19,6 +19,7 @@
     "db:fix-indexes": "node scripts/legacy-db-guard.js scripts/fix-duplicate-indexes.js",
     "db:migrate-media": "node scripts/legacy-db-guard.js scripts/migrate-media-files-columns.js",
     "db:run-media-jobs-sql": "node scripts/legacy-db-guard.js scripts/run-media-jobs-sql.js",
+    "db:run-all-legacy": "bash scripts/run-all-legacy-db-scripts.sh",
     "db:migrate": "node scripts/migrate/cli.js up",
     "db:migrate:status": "node scripts/migrate/cli.js status",
     "db:migrate:down": "node scripts/migrate/cli.js down",
