@@ -18,8 +18,14 @@ import {
   notifyAccountRejected,
   notifyAccountChangesRequested
 } from "./Notification.service";
-import { toPublicUrlIfR2, toStorageKeyIfR2 } from "../utils/r2Client";
+import { isPrivateR2Object, toPublicUrlIfR2, toPrivateSignedUrlIfR2, toStorageKeyIfR2 } from "../utils/r2Client";
 import { audit } from "./platform/shared";
+
+async function adminProfilePhotoUrl(url: string | null | undefined): Promise<string | null> {
+  if (!url || typeof url !== "string" || !url.trim()) return null;
+  if (isPrivateR2Object(url)) return toPrivateSignedUrlIfR2(url);
+  return toPublicUrlIfR2(url);
+}
 
 function httpError(message: string, status: number, code?: string): Error {
   const err = new Error(message);
@@ -333,10 +339,10 @@ export async function rejectRegistration(
   return user;
 }
 
-/** Admin detail payload with public CDN photo URLs for side-by-side review. */
+/** Admin detail payload with viewable photo URLs for side-by-side review. */
 export async function toAdminRegistrationReview(user: User) {
-  const currentPhoto = toPublicUrlIfR2(user.profilePhoto ?? null);
-  const pendingPhoto = toPublicUrlIfR2(user.pendingProfilePhoto ?? null);
+  const currentPhoto = await adminProfilePhotoUrl(user.profilePhoto);
+  const pendingPhoto = await adminProfilePhotoUrl(user.pendingProfilePhoto);
   return {
     status: user.status,
     gate: getRegistrationGate(user),
@@ -344,8 +350,8 @@ export async function toAdminRegistrationReview(user: User) {
     registrationRequestedFields: parseRequestedFields(user.registrationRequestedFields),
     mobile: user.mobile ?? null,
     pendingMobile: user.pendingMobile ?? null,
-    profilePhoto: currentPhoto ?? user.profilePhoto ?? null,
-    pendingProfilePhoto: pendingPhoto ?? user.pendingProfilePhoto ?? null,
+    profilePhoto: currentPhoto,
+    pendingProfilePhoto: pendingPhoto,
     registrationResubmittedAt: user.registrationResubmittedAt
       ? user.registrationResubmittedAt.toISOString()
       : null,

@@ -6,7 +6,14 @@ import { resolveLoginSource } from "../utils/authProvider.util";
 import type { MatrimonySection, BusinessSection } from "../models/UserProfile.model";
 import { signAdminToken } from "../utils/jwt.util";
 import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
-import { toPublicUrlIfR2, toPrivateSignedUrlIfR2 } from "../utils/r2Client";
+import { isPrivateR2Object, toPublicUrlIfR2, toPrivateSignedUrlIfR2 } from "../utils/r2Client";
+
+/** Admin UI: CDN for public keys; signed GET for quarantine/private — never return a bare R2 key. */
+async function adminProfilePhotoUrl(url: string | null | undefined): Promise<string | null> {
+  if (!url || typeof url !== "string" || !url.trim()) return null;
+  if (isPrivateR2Object(url)) return toPrivateSignedUrlIfR2(url);
+  return toPublicUrlIfR2(url);
+}
 import { getPendingReportCount } from "./AdminReports.service";
 import { resolveAdminRole } from "./AdminRoles.service";
 import { ADMIN_ROLE_LABELS } from "../constants/adminRoles.constants";
@@ -287,9 +294,7 @@ export async function listUsers(
     users: await Promise.all(
       rows.map(async (u) => {
         const sub = subByUser.get(u.id);
-        const photo = u.profilePhoto
-          ? toPublicUrlIfR2(u.profilePhoto) ?? u.profilePhoto
-          : null;
+        const photo = await adminProfilePhotoUrl(u.profilePhoto);
         return {
           id: u.id,
           fullName: u.fullName,

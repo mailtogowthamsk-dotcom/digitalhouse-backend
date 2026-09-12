@@ -52,11 +52,19 @@ import type { MatrimonySection } from "../models/UserProfile.model";
 import { userService } from "./user.service";
 import { registrationStatusService } from "./RegistrationStatus.service";
 import {
+  isPrivateR2Object,
   toPublicUrlIfR2,
   toPrivateSignedUrlIfR2,
   deleteR2ImageVariants
 } from "../utils/r2Client";
 import { resolveLoginSource } from "../utils/authProvider.util";
+
+/** Admin UI: CDN for public keys; signed GET for quarantine/private — never return a bare R2 key. */
+async function adminProfilePhotoUrl(url: string | null | undefined): Promise<string | null> {
+  if (!url || typeof url !== "string" || !url.trim()) return null;
+  if (isPrivateR2Object(url)) return toPrivateSignedUrlIfR2(url);
+  return toPublicUrlIfR2(url);
+}
 
 function ageFromDob(dob: Date | string | null | undefined): number | null {
   if (!dob) return null;
@@ -273,12 +281,8 @@ export async function getAdminUserDetail(userId: number) {
   const likesReceived = Number(likesReceivedRow?.[0]?.total ?? 0);
   const totalStorageBytes = storageRows.reduce((sum, r) => sum + Number(r.bytes || 0), 0);
 
-  const profilePhotoSigned = user.profilePhoto
-    ? toPublicUrlIfR2(user.profilePhoto) ?? user.profilePhoto
-    : null;
-  const pendingPhotoSigned = user.pendingProfilePhoto
-    ? toPublicUrlIfR2(user.pendingProfilePhoto) ?? user.pendingProfilePhoto
-    : null;
+  const profilePhotoSigned = await adminProfilePhotoUrl(user.profilePhoto);
+  const pendingPhotoSigned = await adminProfilePhotoUrl(user.pendingProfilePhoto);
   const govtIdSigned = await toPrivateSignedUrlIfR2(user.govtIdFile);
 
   let matrimonySigned = profile?.matrimony ?? null;
