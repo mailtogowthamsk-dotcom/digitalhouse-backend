@@ -106,13 +106,16 @@ export async function listAllExceptMe(meId: number): Promise<DirectoryUserDto[]>
     where: {
       status: APPROVED,
       id: { [Op.ne]: meId },
-      username: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] }
+      username: { [Op.ne]: null }
     },
     attributes: [...SEARCH_ATTRS],
     order: [["fullName", "ASC"]],
     limit: 100
   });
-  return filterAndMap(meId, users);
+  return filterAndMap(
+    meId,
+    users.filter((u) => Boolean(String(u.username ?? "").trim()))
+  );
 }
 
 export async function searchMembers(meId: number, q: string): Promise<DirectoryUserDto[]> {
@@ -124,9 +127,11 @@ export async function searchMembers(meId: number, q: string): Promise<DirectoryU
     status: APPROVED,
     id: { [Op.ne]: meId }
   };
+  // Prefer IS NOT NULL (Op.ne null). Avoid Op.and with != '' — some MySQL/Sequelize
+  // paths can over-filter discoverable members.
   const discoverableWhere = {
     ...approvedNotSelf,
-    username: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] }
+    username: { [Op.ne]: null }
   };
 
   const usernameQuery = query.startsWith("@")
@@ -150,6 +155,7 @@ export async function searchMembers(meId: number, q: string): Promise<DirectoryU
     limit: 20
   });
 
+  // Name search: same discoverable set (must have username to connect later).
   const nameMatches = await User.findAll({
     where: {
       ...discoverableWhere,
@@ -215,6 +221,12 @@ export async function searchMembers(meId: number, q: string): Promise<DirectoryU
   const qLower = query.toLowerCase();
   const wantsAvailableOnly = /\b(available|can help|help)\b/.test(qLower);
 
+  const identityMatchIds = new Set<number>([
+    ...exactUsername.map((u) => u.id),
+    ...prefixUsername.map((u) => u.id),
+    ...nameMatches.map((u) => u.id)
+  ]);
+
   const merged: User[] = [];
   const seen = new Set<number>();
   for (const u of [
@@ -227,6 +239,7 @@ export async function searchMembers(meId: number, q: string): Promise<DirectoryU
     ...expertiseMatches
   ]) {
     if (seen.has(u.id) || blocked.has(u.id)) continue;
+    if (!String(u.username ?? "").trim()) continue;
     seen.add(u.id);
     merged.push(u);
   }
@@ -246,11 +259,20 @@ export async function searchMembers(meId: number, q: string): Promise<DirectoryU
     number,
     { profession: string | null; availableForHelp: boolean | null; visibility: "PUBLIC" | "CONNECTIONS_ONLY" | "HIDDEN" }
   >();
-  for (const r of professionalRows) {
-    professionalByUserId.set(r.userId, {
-      profession: r.profession ?? null,
-      availableForHelp: typeof r.availableForHelp === "boolean" ? r.availableForHelp : null,
-      visibility: (r.visibility ?? "PUBLIC") as any
+  for (const r of professionalRows as unknown as Array<Record<string, unknown>>) {
+    const userId = Number(r.userId ?? r.user_id);
+    if (!Number.isFinite(userId)) continue;
+    professionalByUserId.set(userId, {
+      profession: (r.profession as string | null) ?? null,
+      availableForHelp: typeof r.availableForHelp === "boolean"
+        ? r.availableForHelp
+        : typeof r.available_for_help === "boolean"
+          ? (r.available_for_help as boolean)
+          : null,
+      visibility: ((r.visibility as string | undefined) ?? "PUBLIC") as
+        | "PUBLIC"
+        | "CONNECTIONS_ONLY"
+        | "HIDDEN"
     });
   }
 
@@ -258,9 +280,16 @@ export async function searchMembers(meId: number, q: string): Promise<DirectoryU
   for (const u of merged) {
     const rel = statusMap.get(u.id) ?? "none";
     const p = professionalByUserId.get(u.id);
-    const visibility = p?.visibility ?? "PUBLIC";
-    if (visibility === "HIDDEN") continue;
-    if (visibility === "CONNECTIONS_ONLY" && rel !== "connected") continue;
+    const matchedByNameOrUsername = identityMatchIds.has(u.id);
+
+    // Professional visibility gates *discovery-by-profession* only.
+    // Name / @username search must still find the member (connect needs them visible).
+    if (!matchedByNameOrUsername) {
+      const visibility = p?.visibility ?? "PUBLIC";
+      if (visibility === "HIDDEN") continue;
+      if (visibility === "CONNECTIONS_ONLY" && rel !== "connected") continue;
+    }
+
     if (wantsAvailableOnly && (p?.availableForHelp ?? false) !== true) continue;
     visibleIds.push(u.id);
   }
@@ -290,11 +319,13 @@ export async function searchMembers(meId: number, q: string): Promise<DirectoryU
 
   const labelsByUserId = new Map<number, string[]>();
   for (const r of selectionRows as any[]) {
-    const label = labelById.get(r.expertiseItemId);
-    if (!label) continue;
-    const arr = labelsByUserId.get(r.userId) ?? [];
+    const uid = Number(r.userId ?? r.user_id);
+    const eid = Number(r.expertiseItemId ?? r.expertise_item_id);
+    const label = labelById.get(eid);
+    if (!label || !Number.isFinite(uid)) continue;
+    const arr = labelsByUserId.get(uid) ?? [];
     arr.push(label);
-    labelsByUserId.set(r.userId, arr);
+    labelsByUserId.set(uid, arr);
   }
 
   const expertiseSummaryByUserId = new Map<number, string | null>();
