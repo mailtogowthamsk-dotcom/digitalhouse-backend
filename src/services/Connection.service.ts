@@ -57,8 +57,15 @@ async function assertEligibleUsers(requesterId: number, recipientId: number): Pr
   const recipient = await User.findByPk(recipientId, {
     attributes: ["id", "status", "username", "allowConnectionRequests"]
   });
-  if (!recipient || recipient.status !== "APPROVED" || !recipient.username) {
+  if (!recipient || recipient.status !== "APPROVED") {
     serviceError("Member not found.", 404, "MEMBER_NOT_FOUND");
+  }
+  if (!recipient.username) {
+    serviceError(
+      "This member hasn't set a username yet, so you can't connect.",
+      400,
+      "USERNAME_REQUIRED"
+    );
   }
   if (recipient.allowConnectionRequests === false) {
     serviceError("This member is not accepting connection requests.", 403, "CONNECTION_REQUESTS_DISABLED");

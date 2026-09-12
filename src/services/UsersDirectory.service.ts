@@ -106,7 +106,7 @@ export async function listAllExceptMe(meId: number): Promise<DirectoryUserDto[]>
     where: {
       status: APPROVED,
       id: { [Op.ne]: meId },
-      username: { [Op.ne]: null }
+      username: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] }
     },
     attributes: [...SEARCH_ATTRS],
     order: [["fullName", "ASC"]],
@@ -152,7 +152,7 @@ export async function searchMembers(meId: number, q: string): Promise<DirectoryU
 
   const nameMatches = await User.findAll({
     where: {
-      ...approvedNotSelf,
+      ...discoverableWhere,
       fullName: { [Op.like]: `%${query}%` },
       id: {
         [Op.notIn]: [...exactUsername, ...prefixUsername].map((u) => u.id).concat(meId)
