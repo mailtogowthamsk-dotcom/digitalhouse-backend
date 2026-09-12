@@ -1,9 +1,20 @@
 import { z } from "zod";
 
+const usernameSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(3)
+  .max(30)
+  .regex(
+    /^[a-z][a-z0-9_]*$/,
+    "Username must start with a letter and use only lowercase letters, numbers, or underscores."
+  );
+
 /** Full registration payload: fullName, email, mobile, location, kulam required */
 export const registerSchema = z.object({
   fullName: z.string().min(1).max(120).trim(),
-  username: z.string().trim().min(3).max(30),
+  username: usernameSchema,
   gender: z.string().max(20).trim().optional().nullable(),
   dob: z.string().max(20).trim().optional().nullable(),
   email: z.string().email().max(191),
@@ -51,7 +62,7 @@ export const googleAuthSchema = z.object({
 });
 
 export const completeGoogleProfileSchema = z.object({
-  username: z.string().trim().min(3).max(30),
+  username: usernameSchema,
   gender: z.string().min(1).max(20).trim(),
   dob: z.string().min(8).max(20).trim(),
   district: z.string().min(1, "Please select your district.").max(80).trim(),

@@ -148,6 +148,22 @@ export async function notifyConnectionRequestAccepted(
   });
 }
 
+export async function notifyFamilyMemberAdded(
+  toUserId: number,
+  fromUserId: number
+): Promise<void> {
+  const name = await senderName(fromUserId);
+  await Platform.dispatchNotification({
+    userId: toUserId,
+    type: NOTIFICATION_TYPES.FAMILY_MEMBER_ADDED,
+    title: "Added as family",
+    body: `${name} added you as a family member on their profile.`,
+    actorUserId: fromUserId,
+    actionType: NOTIFICATION_ACTIONS.OPEN_MEMBER_PROFILE,
+    actionTargetId: fromUserId
+  });
+}
+
 export async function notifyMatrimonyInterestReceived(
   toUserId: number,
   fromUserId: number

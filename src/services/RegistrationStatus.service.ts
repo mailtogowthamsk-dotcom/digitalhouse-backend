@@ -238,6 +238,33 @@ export async function approveRegistration(
     throw httpError("User is not pending approval.", 400);
   }
 
+  const username = typeof user.username === "string" ? user.username.trim() : "";
+  if (!username) {
+    throw httpError(
+      "Cannot approve: this member has no @username yet. Ask them to finish profile setup (Google complete profile / choose username), then approve.",
+      400,
+      "USERNAME_REQUIRED"
+    );
+  }
+
+  const kulam = typeof user.kulam === "string" ? user.kulam.trim() : "";
+  if (!kulam) {
+    throw httpError(
+      "Cannot approve: this member has no Kulam. Ask them to select Kulam in registration / complete profile, then approve.",
+      400,
+      "KULAM_REQUIRED"
+    );
+  }
+
+  // Google accounts must finish complete-profile before approval.
+  if (user.signupProvider === "GOOGLE" && user.profileComplete === false) {
+    throw httpError(
+      "Cannot approve: Google signup profile is incomplete. Member must submit username and required details first.",
+      400,
+      "PROFILE_INCOMPLETE"
+    );
+  }
+
   const nextMobile = user.pendingMobile?.trim() || user.mobile;
   const nextPhoto = user.pendingProfilePhoto?.trim() || user.profilePhoto;
 

@@ -586,6 +586,56 @@ export async function updateAdminUser(userId: number, input: AdminUserUpdateInpu
   assign("profileVisibility");
   assign("allowConnectionRequests");
 
+  if (Object.prototype.hasOwnProperty.call(updates, "username")) {
+    const cleared =
+      updates.username === null ||
+      (typeof updates.username === "string" && !updates.username.trim());
+    if (cleared) {
+      throw Object.assign(new Error("Username cannot be cleared. Every member needs an @username."), {
+        status: 400,
+        code: "USERNAME_REQUIRED"
+      });
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, "kulam")) {
+    const cleared =
+      updates.kulam === null ||
+      (typeof updates.kulam === "string" && !updates.kulam.trim());
+    if (cleared) {
+      throw Object.assign(new Error("Kulam cannot be cleared. Every member needs a Kulam."), {
+        status: 400,
+        code: "KULAM_REQUIRED"
+      });
+    }
+  }
+
+  // APPROVED members must always keep username + kulam.
+  if (user.status === "APPROVED") {
+    const nextUsername =
+      updates.username !== undefined
+        ? String(updates.username ?? "").trim()
+        : String(user.username ?? "").trim();
+    if (!nextUsername) {
+      throw Object.assign(
+        new Error("Cannot leave an APPROVED member without an @username."),
+        { status: 400, code: "USERNAME_REQUIRED" }
+      );
+    }
+    const nextKulam =
+      updates.kulam !== undefined
+        ? String(updates.kulam ?? "").trim()
+        : String(user.kulam ?? "").trim();
+    if (!nextKulam) {
+      throw Object.assign(
+        new Error("Cannot leave an APPROVED member without a Kulam."),
+        { status: 400, code: "KULAM_REQUIRED" }
+      );
+    }
+  }
+
+  if (Object.keys(updates).length === 0) return user;
+
   if (input.email && input.email !== user.email) {
     const existing = await User.findOne({ where: { email: input.email } });
     if (existing && existing.id !== userId) {
@@ -653,6 +703,18 @@ export async function restoreSoftDeletedUser(userId: number, adminEmail: string)
   if (!user) throw Object.assign(new Error("User not found"), { status: 404 });
   if (user.status !== "DELETED") {
     throw Object.assign(new Error("User is not soft-deleted"), { status: 400 });
+  }
+  if (!String(user.username ?? "").trim()) {
+    throw Object.assign(
+      new Error("Cannot restore: member has no @username. Set username in admin edit first, then restore."),
+      { status: 400, code: "USERNAME_REQUIRED" }
+    );
+  }
+  if (!String(user.kulam ?? "").trim()) {
+    throw Object.assign(
+      new Error("Cannot restore: member has no Kulam. Set Kulam in admin edit first, then restore."),
+      { status: 400, code: "KULAM_REQUIRED" }
+    );
   }
   await user.update({
     status: "APPROVED",

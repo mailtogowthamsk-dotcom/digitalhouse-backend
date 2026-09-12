@@ -6,7 +6,6 @@ import { getBlockedUserIds } from "./MatrimonySafety.service";
 import { normalizeUsername } from "./Username.service";
 import { getRelationshipStatusMap, type RelationshipStatus } from "./Connection.service";
 import type { ProfileVisibility } from "../models/user.model";
-import { masterDataService } from "./MasterData.service";
 
 export type DirectoryUserDto = {
   id: number;
@@ -30,6 +29,19 @@ export type DirectoryUserDto = {
 
 const APPROVED = "APPROVED";
 
+/** Core columns only — incomplete live schemas must not break name/@username search. */
+const SEARCH_ATTRS = [
+  "id",
+  "fullName",
+  "username",
+  "profilePhoto",
+  "status",
+  "city",
+  "district",
+  "profileVisibility",
+  "occupation"
+] as const;
+
 async function toDto(
   u: User,
   relationshipStatus: RelationshipStatus = "none",
@@ -41,7 +53,7 @@ async function toDto(
 ): Promise<DirectoryUserDto> {
   const profileImage = u.profilePhoto ? await toPublicUrlIfR2(u.profilePhoto) : null;
 
-  const profession = opts?.profession ?? u.occupation ?? u.jobTitle ?? null;
+  const profession = opts?.profession ?? u.occupation ?? null;
   return {
     id: u.id,
     fullName: u.fullName,
@@ -60,45 +72,14 @@ async function toDto(
   };
 }
 
-const SEARCH_ATTRS = [
-  "id",
-  "fullName",
-  "username",
-  "profilePhoto",
-  "status",
-  "city",
-  "district",
-  "profileVisibility",
-  "occupation",
-  "jobTitle",
-  "company",
-  "skills"
-] as const;
-
-async function filterAndMap(
-  meId: number,
-  users: User[],
-  opts?: {
-    professionByUserId?: Map<number, string | null>;
-    expertiseSummaryByUserId?: Map<number, string | null>;
-    availableByUserId?: Map<number, boolean | null>;
-  }
-): Promise<DirectoryUserDto[]> {
-  const blocked = await getBlockedUserIds(meId);
-  const visible = users.filter((u) => !blocked.has(u.id));
+async function filterAndMap(meId: number, users: User[]): Promise<DirectoryUserDto[]> {
+  const blocked = await getBlockedUserIds(meId).catch(() => new Set<number>());
+  const visible = users.filter((u) => !blocked.has(u.id) && String(u.username ?? "").trim());
   const statusMap = await getRelationshipStatusMap(
     meId,
     visible.map((u) => u.id)
-  );
-  return Promise.all(
-    visible.map((u) =>
-      toDto(u, statusMap.get(u.id) ?? "none", {
-        profession: opts?.professionByUserId?.get(u.id) ?? null,
-        expertiseSummary: opts?.expertiseSummaryByUserId?.get(u.id) ?? null,
-        availableForHelp: opts?.availableByUserId?.get(u.id) ?? null
-      })
-    )
-  );
+  ).catch(() => new Map<number, RelationshipStatus>());
+  return Promise.all(visible.map((u) => toDto(u, statusMap.get(u.id) ?? "none")));
 }
 
 export async function listAllExceptMe(meId: number): Promise<DirectoryUserDto[]> {
@@ -112,120 +93,102 @@ export async function listAllExceptMe(meId: number): Promise<DirectoryUserDto[]>
     order: [["fullName", "ASC"]],
     limit: 100
   });
-  return filterAndMap(
-    meId,
-    users.filter((u) => Boolean(String(u.username ?? "").trim()))
-  );
+  return filterAndMap(meId, users);
 }
 
+/**
+ * Member directory search.
+ * Name / @username matches are authoritative and are never hidden by professional
+ * visibility or optional enrichment failures.
+ */
 export async function searchMembers(meId: number, q: string): Promise<DirectoryUserDto[]> {
   const query = q.trim();
   if (!query) return [];
 
-  const blocked = await getBlockedUserIds(meId);
-  const approvedNotSelf = {
-    status: APPROVED,
-    id: { [Op.ne]: meId }
-  };
-  // Prefer IS NOT NULL (Op.ne null). Avoid Op.and with != '' — some MySQL/Sequelize
-  // paths can over-filter discoverable members.
-  const discoverableWhere = {
-    ...approvedNotSelf,
-    username: { [Op.ne]: null }
-  };
-
+  const blocked = await getBlockedUserIds(meId).catch(() => new Set<number>());
   const usernameQuery = query.startsWith("@")
     ? normalizeUsername(query.slice(1))
     : normalizeUsername(query);
 
-  const exactUsername = await User.findAll({
-    where: { ...discoverableWhere, username: usernameQuery },
-    attributes: [...SEARCH_ATTRS],
-    limit: 10
-  });
+  const baseWhere = {
+    status: APPROVED,
+    id: { [Op.ne]: meId },
+    username: { [Op.ne]: null as unknown as string }
+  };
 
-  const prefixUsername = await User.findAll({
-    where: {
-      ...discoverableWhere,
-      username: { [Op.like]: `${usernameQuery}%` },
-      id: { [Op.notIn]: exactUsername.map((u) => u.id).concat(meId) }
-    },
-    attributes: [...SEARCH_ATTRS],
-    order: [["username", "ASC"]],
-    limit: 20
-  });
-
-  // Name search: same discoverable set (must have username to connect later).
-  const nameMatches = await User.findAll({
-    where: {
-      ...discoverableWhere,
-      fullName: { [Op.like]: `%${query}%` },
-      id: {
-        [Op.notIn]: [...exactUsername, ...prefixUsername].map((u) => u.id).concat(meId)
-      }
-    },
-    attributes: [...SEARCH_ATTRS],
-    order: [["fullName", "ASC"]],
-    limit: 30
-  });
-
-  // Community discovery matches (lightweight LIKE-based matching)
-  const [occupationMatches, companyMatches, skillsMatches] = await Promise.all([
+  const [exactUsername, prefixUsername, nameMatches] = await Promise.all([
+    usernameQuery
+      ? User.findAll({
+          where: { ...baseWhere, username: usernameQuery },
+          attributes: [...SEARCH_ATTRS],
+          limit: 10
+        })
+      : Promise.resolve([] as User[]),
+    usernameQuery
+      ? User.findAll({
+          where: {
+            ...baseWhere,
+            username: { [Op.like]: `${usernameQuery}%` }
+          },
+          attributes: [...SEARCH_ATTRS],
+          order: [["username", "ASC"]],
+          limit: 25
+        })
+      : Promise.resolve([] as User[]),
     User.findAll({
-      where: { ...discoverableWhere, occupation: { [Op.like]: `%${query}%` } },
+      where: {
+        ...baseWhere,
+        fullName: { [Op.like]: `%${query}%` }
+      },
       attributes: [...SEARCH_ATTRS],
-      limit: 20
-    }),
-    User.findAll({
-      where: { ...discoverableWhere, company: { [Op.like]: `%${query}%` } },
-      attributes: [...SEARCH_ATTRS],
-      limit: 20
-    }),
-    User.findAll({
-      where: { ...discoverableWhere, skills: { [Op.like]: `%${query}%` } },
-      attributes: [...SEARCH_ATTRS],
-      limit: 20
+      order: [["fullName", "ASC"]],
+      limit: 30
     })
   ]);
 
-  const expertiseItems = await MasterDataItem.findAll({
-    where: {
-      typeCode: "EXPERTISE",
-      isActive: true,
-      label: { [Op.like]: `%${query}%` }
-    },
-    attributes: ["id"],
-    limit: 15,
-    order: [["label", "ASC"]]
-  });
-
-  const expertiseItemIds = expertiseItems.map((i) => i.id);
-  let expertiseMatches: User[] = [];
-  if (expertiseItemIds.length > 0) {
-    const selectionRows = await MemberExpertiseSelection.findAll({
-      where: { expertiseItemId: { [Op.in]: expertiseItemIds } },
-      attributes: ["userId"],
-      limit: 400
+  let occupationMatches: User[] = [];
+  try {
+    occupationMatches = await User.findAll({
+      where: { ...baseWhere, occupation: { [Op.like]: `%${query}%` } },
+      attributes: [...SEARCH_ATTRS],
+      limit: 20
     });
-    const userIds = Array.from(new Set(selectionRows.map((r) => r.userId)));
-    if (userIds.length > 0) {
-      expertiseMatches = await User.findAll({
-        where: { ...discoverableWhere, id: { [Op.in]: userIds } },
-        attributes: [...SEARCH_ATTRS],
-        order: [["fullName", "ASC"]],
-        limit: 30
-      });
-    }
+  } catch {
+    /* optional */
   }
 
-  const qLower = query.toLowerCase();
-  const wantsAvailableOnly = /\b(available|can help|help)\b/.test(qLower);
-
-  const identityMatchIds = new Set<number>([
-    ...exactUsername.map((u) => u.id),
-    ...prefixUsername.map((u) => u.id),
-    ...nameMatches.map((u) => u.id)
-  ]);
+  let expertiseMatches: User[] = [];
+  try {
+    const expertiseItems = await MasterDataItem.findAll({
+      where: {
+        typeCode: "EXPERTISE",
+        isActive: true,
+        label: { [Op.like]: `%${query}%` }
+      },
+      attributes: ["id"],
+      limit: 15,
+      order: [["label", "ASC"]]
+    });
+    const expertiseItemIds = expertiseItems.map((i) => i.id);
+    if (expertiseItemIds.length > 0) {
+      const selectionRows = await MemberExpertiseSelection.findAll({
+        where: { expertiseItemId: { [Op.in]: expertiseItemIds } },
+        attributes: ["userId"],
+        limit: 400
+      });
+      const userIds = Array.from(new Set(selectionRows.map((r) => r.userId)));
+      if (userIds.length > 0) {
+        expertiseMatches = await User.findAll({
+          where: { ...baseWhere, id: { [Op.in]: userIds } },
+          attributes: [...SEARCH_ATTRS],
+          order: [["fullName", "ASC"]],
+          limit: 30
+        });
+      }
+    }
+  } catch {
+    /* optional */
+  }
 
   const merged: User[] = [];
   const seen = new Set<number>();
@@ -234,8 +197,6 @@ export async function searchMembers(meId: number, q: string): Promise<DirectoryU
     ...prefixUsername,
     ...nameMatches,
     ...occupationMatches,
-    ...companyMatches,
-    ...skillsMatches,
     ...expertiseMatches
   ]) {
     if (seen.has(u.id) || blocked.has(u.id)) continue;
@@ -247,127 +208,83 @@ export async function searchMembers(meId: number, q: string): Promise<DirectoryU
   if (merged.length === 0) return [];
 
   const ids = merged.map((u) => u.id);
-  const statusMap = await getRelationshipStatusMap(meId, ids);
-
-  const professionalRows = await MemberProfessionalIdentity.findAll({
-    where: { userId: { [Op.in]: ids } },
-    attributes: ["userId", "profession", "availableForHelp", "visibility"],
-    raw: true
-  });
+  const statusMap = await getRelationshipStatusMap(meId, ids).catch(
+    () => new Map<number, RelationshipStatus>()
+  );
 
   const professionalByUserId = new Map<
     number,
-    { profession: string | null; availableForHelp: boolean | null; visibility: "PUBLIC" | "CONNECTIONS_ONLY" | "HIDDEN" }
+    { profession: string | null; availableForHelp: boolean | null }
   >();
-  for (const r of professionalRows as unknown as Array<Record<string, unknown>>) {
-    const userId = Number(r.userId ?? r.user_id);
-    if (!Number.isFinite(userId)) continue;
-    professionalByUserId.set(userId, {
-      profession: (r.profession as string | null) ?? null,
-      availableForHelp: typeof r.availableForHelp === "boolean"
-        ? r.availableForHelp
-        : typeof r.available_for_help === "boolean"
-          ? (r.available_for_help as boolean)
-          : null,
-      visibility: ((r.visibility as string | undefined) ?? "PUBLIC") as
-        | "PUBLIC"
-        | "CONNECTIONS_ONLY"
-        | "HIDDEN"
-    });
-  }
-
-  const visibleIds: number[] = [];
-  for (const u of merged) {
-    const rel = statusMap.get(u.id) ?? "none";
-    const p = professionalByUserId.get(u.id);
-    const matchedByNameOrUsername = identityMatchIds.has(u.id);
-
-    // Professional visibility gates *discovery-by-profession* only.
-    // Name / @username search must still find the member (connect needs them visible).
-    if (!matchedByNameOrUsername) {
-      const visibility = p?.visibility ?? "PUBLIC";
-      if (visibility === "HIDDEN") continue;
-      if (visibility === "CONNECTIONS_ONLY" && rel !== "connected") continue;
-    }
-
-    if (wantsAvailableOnly && (p?.availableForHelp ?? false) !== true) continue;
-    visibleIds.push(u.id);
-  }
-
-  if (visibleIds.length === 0) return [];
-
-  const selectionRows = await MemberExpertiseSelection.findAll({
-    where: { userId: { [Op.in]: visibleIds } },
-    attributes: ["userId", "expertiseItemId"],
-    limit: 1200
-  });
-  const expertiseIds = Array.from(
-    new Set(selectionRows.map((r) => r.expertiseItemId))
-  );
-
-  const expertiseLabels = expertiseIds.length
-    ? await MasterDataItem.findAll({
-        where: { id: { [Op.in]: expertiseIds } },
-        attributes: ["id", "label"],
-        raw: true
-      })
-    : [];
-
-  const labelById = new Map<number, string>(
-    expertiseLabels.map((r: any) => [r.id, r.label])
-  );
-
-  const labelsByUserId = new Map<number, string[]>();
-  for (const r of selectionRows as any[]) {
-    const uid = Number(r.userId ?? r.user_id);
-    const eid = Number(r.expertiseItemId ?? r.expertise_item_id);
-    const label = labelById.get(eid);
-    if (!label || !Number.isFinite(uid)) continue;
-    const arr = labelsByUserId.get(uid) ?? [];
-    arr.push(label);
-    labelsByUserId.set(uid, arr);
-  }
-
   const expertiseSummaryByUserId = new Map<number, string | null>();
-  for (const userId of visibleIds) {
-    const labels = labelsByUserId.get(userId) ?? [];
-    const unique = Array.from(new Set(labels)).slice(0, 2);
-    expertiseSummaryByUserId.set(userId, unique.length ? unique.join(", ") : null);
-  }
 
-  const needsExpertiseFallback = visibleIds.some((id) => expertiseSummaryByUserId.get(id) == null);
-  if (needsExpertiseFallback) {
-    const allExpertise = await masterDataService.listPublicItems({ typeCode: "EXPERTISE" });
-    for (const u of merged) {
-      if (!visibleIds.includes(u.id)) continue;
-      if (expertiseSummaryByUserId.get(u.id) != null) continue;
-      const textLower = [u.skills, u.occupation, u.jobTitle].filter(Boolean).join(" ").toLowerCase();
-      if (!textLower.trim()) continue;
-
-      const matched = allExpertise
-        .filter((i) => {
-          const labelLower = (i.label ?? "").toLowerCase();
-          const aliasHit =
-            Array.isArray(i.aliases) && i.aliases.length
-              ? i.aliases.some((a) => (a ?? "").toLowerCase().includes(textLower))
-              : false;
-          const labelHit = labelLower && textLower.includes(labelLower);
-          return labelHit || aliasHit;
-        })
-        .map((i) => i.label)
-        .filter(Boolean);
-
-      const unique = Array.from(new Set(matched)).slice(0, 2);
-      expertiseSummaryByUserId.set(u.id, unique.length ? unique.join(", ") : null);
+  try {
+    const professionalRows = await MemberProfessionalIdentity.findAll({
+      where: { userId: { [Op.in]: ids } },
+      attributes: ["userId", "profession", "availableForHelp"],
+      raw: true
+    });
+    for (const r of professionalRows as unknown as Array<Record<string, unknown>>) {
+      const userId = Number(r.userId ?? r.user_id);
+      if (!Number.isFinite(userId)) continue;
+      professionalByUserId.set(userId, {
+        profession: (r.profession as string | null) ?? null,
+        availableForHelp:
+          typeof r.availableForHelp === "boolean"
+            ? r.availableForHelp
+            : typeof r.available_for_help === "boolean"
+              ? (r.available_for_help as boolean)
+              : null
+      });
     }
+
+    const selectionRows = await MemberExpertiseSelection.findAll({
+      where: { userId: { [Op.in]: ids } },
+      attributes: ["userId", "expertiseItemId"],
+      limit: 1200
+    });
+    const expertiseIds = Array.from(
+      new Set(
+        selectionRows.map((r) =>
+          Number((r as any).expertiseItemId ?? (r as any).expertise_item_id)
+        )
+      )
+    ).filter((n) => Number.isFinite(n));
+
+    const expertiseLabels = expertiseIds.length
+      ? await MasterDataItem.findAll({
+          where: { id: { [Op.in]: expertiseIds } },
+          attributes: ["id", "label"],
+          raw: true
+        })
+      : [];
+    const labelById = new Map<number, string>(
+      expertiseLabels.map((r: any) => [Number(r.id), String(r.label)])
+    );
+    const labelsByUserId = new Map<number, string[]>();
+    for (const r of selectionRows as any[]) {
+      const uid = Number(r.userId ?? r.user_id);
+      const eid = Number(r.expertiseItemId ?? r.expertise_item_id);
+      const label = labelById.get(eid);
+      if (!label || !Number.isFinite(uid)) continue;
+      const arr = labelsByUserId.get(uid) ?? [];
+      arr.push(label);
+      labelsByUserId.set(uid, arr);
+    }
+    for (const userId of ids) {
+      const labels = labelsByUserId.get(userId) ?? [];
+      const unique = Array.from(new Set(labels)).slice(0, 2);
+      expertiseSummaryByUserId.set(userId, unique.length ? unique.join(", ") : null);
+    }
+  } catch {
+    /* badges optional — never empty the result set */
   }
 
-  const visibleUsers = merged.filter((u) => visibleIds.includes(u.id));
   return Promise.all(
-    visibleUsers.map(async (u) => {
+    merged.map(async (u) => {
       const p = professionalByUserId.get(u.id);
       return toDto(u, statusMap.get(u.id) ?? "none", {
-        profession: p?.profession ?? null,
+        profession: p?.profession ?? u.occupation ?? null,
         expertiseSummary: expertiseSummaryByUserId.get(u.id) ?? null,
         availableForHelp: p?.availableForHelp ?? null
       });

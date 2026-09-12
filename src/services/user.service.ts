@@ -184,8 +184,14 @@ export function toAuthUser(user: User) {
     mobile: user.mobile ?? null,
     status: user.status,
     createdAt: user.createdAt,
-    profileComplete: user.profileComplete !== false,
-    needsUsernameSetup: user.status === "APPROVED" && !user.username,
+    // Google incomplete must stay false; do not coerce null→true for GOOGLE.
+    profileComplete:
+      user.signupProvider === AUTH_PROVIDERS.GOOGLE
+        ? user.profileComplete === true
+        : user.profileComplete !== false,
+    needsUsernameSetup:
+      !String(user.username ?? "").trim() &&
+      (user.status === "APPROVED" || user.profileComplete === true),
     profileVisibility: user.profileVisibility ?? "PUBLIC",
     allowConnectionRequests: user.allowConnectionRequests !== false,
     signupProvider: user.signupProvider ?? AUTH_PROVIDERS.EXISTING_LOGIN,

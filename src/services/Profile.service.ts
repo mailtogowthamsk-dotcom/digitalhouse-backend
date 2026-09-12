@@ -770,12 +770,14 @@ export async function updateProfileSection(
   ) as Record<string, unknown>;
 
   if (section === "community" && cleaned.kulam !== undefined) {
-    if (cleaned.kulam == null || cleaned.kulam === "") {
-      cleaned.kulam = null;
-    } else {
-      cleaned.kulam = await assertValidKulam(String(cleaned.kulam));
-      await user.update({ kulam: cleaned.kulam } as any);
+    if (cleaned.kulam == null || String(cleaned.kulam).trim() === "") {
+      throw Object.assign(new Error("Kulam is required. It cannot be cleared."), {
+        status: 400,
+        code: "KULAM_REQUIRED"
+      });
     }
+    cleaned.kulam = await assertValidKulam(String(cleaned.kulam));
+    await user.update({ kulam: cleaned.kulam } as any);
   }
 
   if (section === "personal" && cleaned.occupation !== undefined) {
@@ -785,6 +787,75 @@ export async function updateProfileSection(
         : String(cleaned.occupation).trim() || null;
     cleaned.occupation = occ;
     await user.update({ occupation: occ } as any);
+  }
+
+  if (section === "family") {
+    const FAMILY_KEYS = [
+      "familyMemberId1",
+      "familyMemberId2",
+      "familyMemberId3",
+      "familyMemberId4",
+      "familyMemberId5"
+    ] as const;
+    const prevIds = new Set<number>();
+    for (const key of FAMILY_KEYS) {
+      const raw = current[key];
+      const n = typeof raw === "number" ? raw : Number(raw);
+      if (Number.isInteger(n) && n > 0) prevIds.add(n);
+    }
+
+    const nextIds: number[] = [];
+    const seen = new Set<number>();
+    for (const key of FAMILY_KEYS) {
+      const raw = cleaned[key];
+      if (raw == null || raw === "") {
+        cleaned[key] = null;
+        continue;
+      }
+      const n = typeof raw === "number" ? raw : Number(raw);
+      if (!Number.isInteger(n) || n <= 0) {
+        throw Object.assign(new Error("Invalid family member."), { status: 400, code: "FAMILY_INVALID" });
+      }
+      if (n === userId) {
+        throw Object.assign(new Error("You cannot add yourself as a family member."), {
+          status: 400,
+          code: "FAMILY_SELF"
+        });
+      }
+      if (seen.has(n)) {
+        throw Object.assign(new Error("Each family member can only be added once."), {
+          status: 400,
+          code: "FAMILY_DUPLICATE"
+        });
+      }
+      seen.add(n);
+      nextIds.push(n);
+      cleaned[key] = n;
+    }
+
+    if (nextIds.length > 0) {
+      const { hasAcceptedConnection } = await import("./Connection.service");
+      for (const memberId of nextIds) {
+        const ok = await hasAcceptedConnection(userId, memberId);
+        if (!ok) {
+          throw Object.assign(
+            new Error(
+              "You can only add connected members as family. Search by username among your connections."
+            ),
+            { status: 400, code: "FAMILY_NOT_CONNECTED" }
+          );
+        }
+      }
+    }
+
+    const newlyAdded = nextIds.filter((id) => !prevIds.has(id));
+    if (newlyAdded.length > 0) {
+      void import("./Notification.service")
+        .then(({ notifyFamilyMemberAdded }) =>
+          Promise.all(newlyAdded.map((id) => notifyFamilyMemberAdded(id, userId)))
+        )
+        .catch(() => {});
+    }
   }
 
   await profile.update({ [section]: cleaned } as any);

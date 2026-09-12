@@ -72,7 +72,8 @@ const basicSectionSchema = z.object({
 }).strict();
 
 const communitySectionSchema = z.object({
-  kulam: z.string().trim().max(80).nullable().optional(),
+  /** Required when present — empty/null rejected (kulam is mandatory). */
+  kulam: z.string().trim().min(1, "Please select your Kulam.").max(80).optional(),
   kulaDeivam: z.string().trim().max(80).nullable().optional(),
   nativeVillage: z.string().trim().max(120).nullable().optional(),
   nativeTaluk: z.string().trim().max(80).nullable().optional()

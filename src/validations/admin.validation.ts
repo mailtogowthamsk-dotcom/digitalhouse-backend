@@ -41,7 +41,7 @@ export const updateAdminUserSchema = z.object({
   occupation: z.string().trim().max(80).nullable().optional(),
   location: z.string().trim().max(120).nullable().optional(),
   community: z.string().trim().max(80).nullable().optional(),
-  kulam: z.string().trim().max(80).nullable().optional(),
+  kulam: z.string().trim().min(1, "Please select your Kulam.").max(80).optional(),
   bloodGroup: z.string().trim().max(10).nullable().optional(),
   education: z.string().trim().max(120).nullable().optional(),
   jobTitle: z.string().trim().max(80).nullable().optional(),

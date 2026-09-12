@@ -2,8 +2,13 @@
  *
  * Connection budget (remote MySQL):
  *   total_app_connections ≈ API pool + media worker pool + scheduler pool
- * Current default: API=3 + media worker=2 + scheduler=2.
- * NEVER enable cluster/instances>1 on shared MySQL without lowering DB_POOL_MAX.
+ * Default (conservative / shared DB): API≈3–4 + media≈2 + scheduler≈2.
+ *
+ * Dedicated ~8-core app server + **local MySQL**: use ecosystem.8core.cjs
+ *   (API pool 20 or 4×8 with Redis, media concurrent 4, scheduler pool 8).
+ *   npm run pm2:start:8core
+ *
+ * NEVER enable cluster/instances>1 without Redis + sizing DB_POOL_MAX.
  *
  * Multi-instance Socket.IO:
  *   Set REDIS_URL (and optionally REDIS_KEY_PREFIX) in .env / ecosystem.local.
