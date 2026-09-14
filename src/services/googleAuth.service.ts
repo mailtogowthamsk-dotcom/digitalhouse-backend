@@ -195,8 +195,8 @@ export type CompleteGoogleProfileInput = {
   dob: string;
   district: string;
   kulam: string;
+  mobile: string;
   location?: string | null;
-  mobile?: string | null;
   occupation?: string | null;
   fatherName?: string | null;
   address?: string | null;
@@ -215,15 +215,15 @@ export async function completeGoogleProfile(
     throw Object.assign(new Error("Profile already completed"), { status: 400 });
   }
 
-  if (input.mobile?.trim()) {
-    const existingMobile = await User.findOne({
-      where: { mobile: input.mobile.trim() }
+  const { assertValidMobile } = await import("../utils/mobile.util");
+  const mobile = assertValidMobile(input.mobile);
+  const existingMobile = await User.findOne({
+    where: { mobile }
+  });
+  if (existingMobile && existingMobile.id !== userId) {
+    throw Object.assign(new Error("An account with this mobile number already exists."), {
+      status: 409
     });
-    if (existingMobile && existingMobile.id !== userId) {
-      throw Object.assign(new Error("An account with this mobile number already exists."), {
-        status: 409
-      });
-    }
   }
 
   const { usernameService } = await import("./Username.service");
@@ -235,9 +235,16 @@ export async function completeGoogleProfile(
 
   const { assertValidKulam } = await import("./kulamValidation.service");
   const kulam = await assertValidKulam(input.kulam);
-  const district = input.district.trim();
+  const district = String(input.district ?? "").trim();
   if (!district) {
     throw Object.assign(new Error("Please select your district."), { status: 400 });
+  }
+  const gender = String(input.gender ?? "").trim();
+  if (!gender || !["Male", "Female", "Other"].includes(gender)) {
+    throw Object.assign(new Error("Please select gender."), { status: 400 });
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(input.dob ?? "").trim())) {
+    throw Object.assign(new Error("Please select a valid date of birth."), { status: 400 });
   }
 
   const referralCode = input.referralCode?.trim() || "";
@@ -249,13 +256,13 @@ export async function completeGoogleProfile(
   await user.update({
     username,
     usernameChangedAt: new Date(),
-    gender: input.gender.trim(),
+    gender,
     dob: input.dob,
     district,
     kulam,
     community: DEFAULT_APP_COMMUNITY,
     location: input.location?.trim() || district,
-    mobile: input.mobile?.trim() || null,
+    mobile,
     occupation: input.occupation?.trim() || null,
     profilePhoto: toStorageKeyIfR2(input.profilePhoto ?? null) || user.profilePhoto,
     profileComplete: true

@@ -256,10 +256,19 @@ export async function approveRegistration(
     );
   }
 
+  const mobile = typeof user.mobile === "string" ? user.mobile.trim() : "";
+  if (!mobile) {
+    throw httpError(
+      "Cannot approve: this member has no mobile number. Ask them to complete profile with mobile, then approve.",
+      400,
+      "MOBILE_REQUIRED"
+    );
+  }
+
   // Google accounts must finish complete-profile before approval.
   if (user.signupProvider === "GOOGLE" && user.profileComplete === false) {
     throw httpError(
-      "Cannot approve: Google signup profile is incomplete. Member must submit username and required details first.",
+      "Cannot approve: Google signup profile is incomplete. Member must submit username, mobile, gender, district, and kulam first.",
       400,
       "PROFILE_INCOMPLETE"
     );

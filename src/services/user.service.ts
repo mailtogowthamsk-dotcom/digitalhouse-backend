@@ -50,13 +50,16 @@ export async function register(data: RegisterInput): Promise<User> {
   }
 
   if (data.mobile && data.mobile.trim()) {
-    const existingMobile = await User.findOne({ where: { mobile: data.mobile.trim() } });
+    const { assertValidMobile } = await import("../utils/mobile.util");
+    const mobile = assertValidMobile(data.mobile);
+    const existingMobile = await User.findOne({ where: { mobile } });
     if (existingMobile) {
       throw Object.assign(new Error("This mobile number is already registered."), {
         status: 409,
         code: "MOBILE_ALREADY_REGISTERED"
       });
     }
+    data = { ...data, mobile };
   }
 
   const username = usernameService.normalizeUsername(data.username);
