@@ -28,12 +28,33 @@ import {
 } from "../constants/postMedia.constants";
 import { POST_VISIBILITIES } from "../constants/postVisibility.constants";
 
+/**
+ * Media refs may be:
+ * - short R2 object keys (preferred for persistence)
+ * - CDN public URLs
+ * - temporary signed GET URLs from finalize (can exceed 500 chars; write layer stores the key)
+ */
+const mediaRefSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(10000)
+  .refine(
+    (v) =>
+      /^https?:\/\//i.test(v) ||
+      v.startsWith("digital-house/") ||
+      (v.includes("/") && !v.includes(" ")),
+    { message: "Invalid media reference" }
+  );
+
+const optionalMediaRef = mediaRefSchema.nullable().optional();
+
 const postTypeSchema = z.enum(POST_TYPES as unknown as [string, ...string[]]);
 const mediaTypeSchema = z.enum(POST_MEDIA_TYPES as unknown as [string, ...string[]]);
 
 const optionalMediaFieldsSchema = {
   media_type: mediaTypeSchema.optional(),
-  thumbnail_url: z.string().trim().url().max(500).nullable().optional(),
+  thumbnail_url: optionalMediaRef,
   video_duration: z.coerce
     .number()
     .int()
@@ -107,7 +128,7 @@ const marketplaceFieldsSchema = {
   marketplace_negotiable: z.boolean().optional(),
   marketplace_district: z.string().trim().max(255).nullable().optional(),
   marketplace_gallery: z
-    .array(z.string().trim().url().max(500))
+    .array(mediaRefSchema)
     .max(MARKETPLACE_PHOTOS_ABSOLUTE_MAX)
     .optional()
 };
@@ -118,7 +139,7 @@ const helpFieldsSchema = {
   help_urgency: helpUrgencySchema.nullable().optional(),
   help_location: z.string().trim().max(255).nullable().optional(),
   help_contact_phone: z.string().trim().max(32).nullable().optional(),
-  help_gallery: z.array(z.string().trim().url().max(500)).max(HELP_MAX_PHOTOS).optional()
+  help_gallery: z.array(mediaRefSchema).max(HELP_MAX_PHOTOS).optional()
 };
 
 function refineSalaryRange<
@@ -425,7 +446,7 @@ export const createPostSchema = z
     description: z.string().trim().max(5000).nullable().optional(),
     /** Optional explicit hashtags; also parsed from title/description. */
     hashtags: z.array(z.string().trim().min(1).max(65)).max(20).optional(),
-    media_url: z.string().trim().url().max(500).nullable().optional(),
+    media_url: optionalMediaRef,
     ...optionalMediaFieldsSchema,
     pinned: z.boolean().optional().default(false),
     urgent: z.boolean().optional().default(false),
@@ -457,7 +478,7 @@ export const updatePostSchema = z
     visibility: postVisibilitySchema.optional(),
     description: z.string().trim().max(5000).nullable().optional(),
     hashtags: z.array(z.string().trim().min(1).max(65)).max(20).optional(),
-    media_url: z.string().trim().url().max(500).nullable().optional(),
+    media_url: optionalMediaRef,
     ...optionalMediaFieldsSchema,
     pinned: z.boolean().optional(),
     urgent: z.boolean().optional(),

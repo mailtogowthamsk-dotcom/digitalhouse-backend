@@ -155,13 +155,13 @@ Post.init(
     },
     title: { type: DataTypes.STRING(255), allowNull: false },
     description: { type: DataTypes.TEXT, allowNull: true },
-    mediaUrl: { type: DataTypes.STRING(500), allowNull: true },
+    mediaUrl: { type: DataTypes.STRING(2048), allowNull: true },
     mediaType: {
       type: DataTypes.ENUM(...POST_MEDIA_TYPES),
       allowNull: false,
       defaultValue: "none"
     },
-    thumbnailUrl: { type: DataTypes.STRING(500), allowNull: true },
+    thumbnailUrl: { type: DataTypes.STRING(2048), allowNull: true },
     videoDuration: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
     mimeType: { type: DataTypes.STRING(64), allowNull: true },
     fileSize: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
