@@ -86,11 +86,28 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
   }
 
   const isHelp = post.postType === "HELP_REQUEST";
+  const { mediaService } = await import("../Media.service");
+  let storedMediaKey = post.mediaUrl;
+  let storedThumbKey = post.thumbnailUrl;
+  if (storedMediaKey) {
+    storedMediaKey =
+      (await mediaService.resolveLiveMediaKey(post.userId, storedMediaKey)) ?? storedMediaKey;
+    if (post.safetyDecision === "SAFE") {
+      storedMediaKey = mediaService.publicPublishStorageKey(storedMediaKey) ?? storedMediaKey;
+    }
+  }
+  if (storedThumbKey) {
+    storedThumbKey =
+      (await mediaService.resolveLiveMediaKey(post.userId, storedThumbKey)) ?? storedThumbKey;
+    if (post.safetyDecision === "SAFE") {
+      storedThumbKey = mediaService.publicPublishStorageKey(storedThumbKey) ?? storedThumbKey;
+    }
+  }
   const galleryRaw =
     post.postType === "MARKETPLACE"
-      ? parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null)
+      ? parseMarketplaceGallery(post.marketplaceGallery, storedMediaKey ?? null)
       : isHelp
-        ? parseHelpGallery(post.helpGallery, post.mediaUrl ?? null)
+        ? parseHelpGallery(post.helpGallery, storedMediaKey ?? null)
         : [];
   const [likeCount, commentCount, likedByMe, savedByMe, mediaUrl, thumbnailUrl, authorDto, gallerySigned] =
     await Promise.all([
@@ -98,12 +115,12 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
       Comment.count({ where: { postId } }),
       PostLike.findOne({ where: { postId, userId } }).then((r) => !!r),
       SavedPost.findOne({ where: { postId, userId } }).then((r) => !!r),
-      isOwner && isPrivateR2Object(post.mediaUrl)
-        ? toPrivateSignedUrlIfR2(post.mediaUrl)
-        : Promise.resolve(toPublicUrlIfR2(post.mediaUrl ?? null)),
-      isOwner && isPrivateR2Object(post.thumbnailUrl)
-        ? toPrivateSignedUrlIfR2(post.thumbnailUrl)
-        : Promise.resolve(toPublicUrlIfR2(post.thumbnailUrl ?? null)),
+      isOwner && isPrivateR2Object(storedMediaKey)
+        ? toPrivateSignedUrlIfR2(storedMediaKey)
+        : Promise.resolve(toPublicUrlIfR2(storedMediaKey ?? null)),
+      isOwner && isPrivateR2Object(storedThumbKey)
+        ? toPrivateSignedUrlIfR2(storedThumbKey)
+        : Promise.resolve(toPublicUrlIfR2(storedThumbKey ?? null)),
       toAuthorDto(author),
       post.postType === "MARKETPLACE"
         ? publicMarketplaceGallery(galleryRaw, { signPrivate: isOwner })

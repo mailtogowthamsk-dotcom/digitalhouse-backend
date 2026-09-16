@@ -30,7 +30,12 @@ import {
 } from "../validations/media.validation";
 import { parseMarketplaceGallery } from "../utils/marketplaceGallery";
 import { UserProfile } from "../models/UserProfile.model";
-import { needsUploadQuarantine, toQuarantineKey } from "./contentSafety/quarantine";
+import {
+  needsUploadQuarantine,
+  promoteQuarantineKeys,
+  publishedKeyFromQuarantine,
+  toQuarantineKey
+} from "./contentSafety/quarantine";
 
 const R2_PREFIX = "digital-house";
 
@@ -586,6 +591,96 @@ export async function deleteRemovedMediaUrls(oldUrls: string[], newUrls: string[
  * If client still holds a deleted staging key, prefer the completed media_files.objectKey
  * (_full.webp / _opt.mp4) for the same upload.
  */
+function normalizeStoredMediaKey(urlOrKey: string | null | undefined): string | null {
+  if (!urlOrKey?.trim()) return null;
+  return extractR2KeyFromUrl(urlOrKey.trim()) ?? urlOrKey.trim();
+}
+
+/** Public CDN key for a stored row (quarantine → published path). */
+export function publicPublishStorageKey(urlOrKey: string | null | undefined): string | null {
+  const key = normalizeStoredMediaKey(urlOrKey);
+  if (!key) return null;
+  const published = publishedKeyFromQuarantine(key);
+  if (published) return published;
+  if (isPrivateR2Object(key)) return null;
+  return key;
+}
+
+export async function findMediaFileForPostReference(
+  userId: number,
+  urlOrKey: string | null | undefined
+): Promise<MediaFile | null> {
+  const key = normalizeStoredMediaKey(urlOrKey);
+  if (!key) return null;
+  const owned = await findOwnedMediaFile(userId, key);
+  if (owned) return owned;
+  const base = path.basename(key).replace(/\.[^.]+$/, "").replace(/_full$/, "").replace(/_opt$/, "");
+  if (!base) return null;
+  return MediaFile.findOne({
+    where: {
+      userId,
+      processingStatus: "completed",
+      [Op.or]: [
+        { objectKey: { [Op.like]: `%/${base}_full.webp` } },
+        { objectKey: { [Op.like]: `%/${base}_opt.mp4` } },
+        { objectKey: { [Op.like]: `%/${base}.%` } },
+        { fileUrl: { [Op.like]: `%/${base}%` } }
+      ]
+    },
+    order: [["id", "DESC"]]
+  });
+}
+
+/**
+ * Admin SAFE / auto-publish: promote quarantine copies and map stale staging keys
+ * to the completed media_files.objectKey (public path when applicable).
+ */
+export async function buildPostMediaPublishMapping(post: {
+  userId: number;
+  mediaUrl?: string | null;
+  thumbnailUrl?: string | null;
+}): Promise<Map<string, string>> {
+  const seeds = [post.mediaUrl, post.thumbnailUrl].filter(Boolean) as string[];
+  const mediaFiles: MediaFile[] = [];
+  for (const seed of seeds) {
+    const row = await findMediaFileForPostReference(post.userId, seed);
+    if (row && !mediaFiles.some((m) => m.id === row.id)) mediaFiles.push(row);
+  }
+
+  const promoteInputs: Array<string | null | undefined> = [...seeds];
+  let variantsJson: string | null = null;
+  for (const m of mediaFiles) {
+    promoteInputs.push(m.objectKey, m.fileUrl);
+    if (!variantsJson && m.variantsJson) variantsJson = m.variantsJson;
+  }
+
+  const liveMedia = post.mediaUrl
+    ? await resolveLiveMediaKey(post.userId, post.mediaUrl)
+    : null;
+  const liveThumb = post.thumbnailUrl
+    ? await resolveLiveMediaKey(post.userId, post.thumbnailUrl)
+    : null;
+  promoteInputs.push(liveMedia, liveThumb);
+
+  const mapping = await promoteQuarantineKeys(promoteInputs, variantsJson);
+
+  const addDirect = (from: string | null | undefined, to: string | null | undefined) => {
+    const fromKey = normalizeStoredMediaKey(from);
+    const toKey = publicPublishStorageKey(to);
+    if (!fromKey || !toKey || fromKey === toKey) return;
+    if (!mapping.has(fromKey)) mapping.set(fromKey, toKey);
+  };
+
+  addDirect(post.mediaUrl, liveMedia);
+  addDirect(post.thumbnailUrl, liveThumb);
+  for (const m of mediaFiles) {
+    addDirect(post.mediaUrl, m.objectKey);
+    addDirect(post.thumbnailUrl, m.objectKey);
+  }
+
+  return mapping;
+}
+
 export async function resolveLiveMediaKey(
   userId: number,
   urlOrKey: string | null | undefined
@@ -670,5 +765,8 @@ export const mediaService = {
   markMediaUrlsAttached,
   cleanupOrphanPendingMedia,
   resolveLiveMediaKey,
-  rewriteMediaKeyReferences
+  rewriteMediaKeyReferences,
+  findMediaFileForPostReference,
+  buildPostMediaPublishMapping,
+  publicPublishStorageKey
 };

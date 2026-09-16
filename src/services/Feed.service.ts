@@ -523,17 +523,37 @@ export async function buildFeedItemsFromPosts(
         })
       : [];
   const originalById = new Map(originalPosts.map((op) => [op.id, op]));
+  const { mediaService } = await import("./Media.service");
 
   return Promise.all(
     pagePosts.map(async (p) => {
       const author = (p as any).User as User;
       const rawScore = Number((p as any).get?.("engagementScore") ?? 0);
       const engagementScore = Number.isFinite(rawScore) ? rawScore : 0;
+      // posts.media_url may still point at deleted staging; media_files.objectKey is canonical.
+      let storedMediaKey = p.mediaUrl;
+      let storedThumbKey = p.thumbnailUrl;
+      if (storedMediaKey) {
+        storedMediaKey =
+          (await mediaService.resolveLiveMediaKey(p.userId, storedMediaKey)) ?? storedMediaKey;
+        if (p.safetyDecision === "SAFE") {
+          storedMediaKey =
+            mediaService.publicPublishStorageKey(storedMediaKey) ?? storedMediaKey;
+        }
+      }
+      if (storedThumbKey) {
+        storedThumbKey =
+          (await mediaService.resolveLiveMediaKey(p.userId, storedThumbKey)) ?? storedThumbKey;
+        if (p.safetyDecision === "SAFE") {
+          storedThumbKey =
+            mediaService.publicPublishStorageKey(storedThumbKey) ?? storedThumbKey;
+        }
+      }
       const galleryRaw =
         p.postType === "MARKETPLACE"
-          ? parseMarketplaceGallery(p.marketplaceGallery, p.mediaUrl ?? null)
+          ? parseMarketplaceGallery(p.marketplaceGallery, storedMediaKey ?? null)
           : p.postType === "HELP_REQUEST"
-            ? parseHelpGallery(p.helpGallery, p.mediaUrl ?? null)
+            ? parseHelpGallery(p.helpGallery, storedMediaKey ?? null)
             : [];
       const ownerView = p.userId === currentUserId;
       const resolveFeedMedia = (url: string | null | undefined) =>
@@ -541,8 +561,8 @@ export async function buildFeedItemsFromPosts(
           ? toPrivateSignedUrlIfR2(url)
           : Promise.resolve(toPublicUrlIfR2(url ?? null));
       const [mediaUrl, thumbnailUrl, profileImage, gallery] = await Promise.all([
-        resolveFeedMedia(p.mediaUrl),
-        resolveFeedMedia(p.thumbnailUrl),
+        resolveFeedMedia(storedMediaKey),
+        resolveFeedMedia(storedThumbKey),
         author ? Promise.resolve(toPublicUrlIfR2(author.profilePhoto ?? null)) : Promise.resolve(null),
         galleryRaw.length
           ? p.postType === "MARKETPLACE"
@@ -551,7 +571,7 @@ export async function buildFeedItemsFromPosts(
           : Promise.resolve([] as string[])
       ]);
       const mediaType = resolvePostMediaType({
-        mediaUrl: p.mediaUrl,
+        mediaUrl: storedMediaKey,
         mediaType: p.mediaType as any,
         mimeType: p.mimeType
       });
@@ -563,8 +583,8 @@ export async function buildFeedItemsFromPosts(
       let feedMediaUrl = mediaUrl;
       let feedThumb = thumbnailUrl;
 
-      if (mediaType === "image" && p.mediaUrl) {
-        const derived = deriveImageVariantUrls(p.mediaUrl);
+      if (mediaType === "image" && storedMediaKey) {
+        const derived = deriveImageVariantUrls(storedMediaKey);
         if (derived) {
           const [t, m, f] = await Promise.all([
             toPublicUrlIfR2(derived.thumb),
@@ -574,8 +594,8 @@ export async function buildFeedItemsFromPosts(
           mediaUrlThumb = t;
           mediaUrlMedium = m;
           mediaUrlFull = f;
-          // Prefer medium, then thumb — avoid shipping full originals on feed.
-          feedMediaUrl = m || t || mediaUrl;
+          // Prefer medium, then thumb, then full — full must win over broken staging CDN.
+          feedMediaUrl = m || t || f || mediaUrl;
         }
       } else if (mediaType === "video") {
         // Poster first — keep video URL as mediaUrl; thumbnailUrl for poster.

@@ -104,6 +104,8 @@ import {
 import { ContentSafetyScan, ContentSafetyFingerprint } from "./ContentSafety.model";
 import { ReferralCode } from "./ReferralCode.model";
 import { ReferralVerification } from "./ReferralVerification.model";
+import { BusinessBenefit } from "./BusinessBenefit.model";
+import { BusinessBenefitClaim } from "./BusinessBenefitClaim.model";
 
 // Auth / options
 User.hasMany(Otp, { foreignKey: "userId" });
@@ -127,6 +129,14 @@ ReferralCode.belongsTo(User, { foreignKey: "ownerUserId" });
 User.hasMany(ReferralVerification, { foreignKey: "applicantUserId", as: "ApplicantReferralVerifications" });
 ReferralVerification.belongsTo(User, { foreignKey: "applicantUserId", as: "Applicant" });
 ReferralVerification.belongsTo(User, { foreignKey: "referrerUserId", as: "Referrer" });
+
+User.hasMany(BusinessBenefit, { foreignKey: "businessOwnerId", as: "BusinessBenefits" });
+BusinessBenefit.belongsTo(User, { foreignKey: "businessOwnerId", as: "BusinessOwner" });
+BusinessBenefit.hasMany(BusinessBenefitClaim, { foreignKey: "benefitId", as: "Claims" });
+BusinessBenefitClaim.belongsTo(BusinessBenefit, { foreignKey: "benefitId", as: "Benefit" });
+User.hasMany(BusinessBenefitClaim, { foreignKey: "memberId", as: "BenefitClaims" });
+BusinessBenefitClaim.belongsTo(User, { foreignKey: "memberId", as: "Member" });
+BusinessBenefitClaim.belongsTo(User, { foreignKey: "businessOwnerId", as: "ClaimBusinessOwner" });
 ReferralVerification.belongsTo(ReferralCode, { foreignKey: "referralCodeId" });
 
 // Home / feed
@@ -295,6 +305,8 @@ export {
   FeedPostExposure,
   ReferralCode,
   ReferralVerification,
+  BusinessBenefit,
+  BusinessBenefitClaim,
   MatrimonyRequestMeta,
   MatrimonyAdminNote,
   MatrimonyReviewAudit,

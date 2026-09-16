@@ -83,13 +83,16 @@ export const PERCEPTUAL_HASH_MAX_DISTANCE = 5;
 
 export const QUARANTINE_PREFIX = "digital-house/private/quarantine/";
 
-/** UGC modules whose new uploads stay in private quarantine until SAFE. */
+/**
+ * UGC modules whose new uploads stay in private quarantine until SAFE.
+ * Profile photos upload to the public CDN path directly (no quarantine) —
+ * avatars must load for all viewers without signed URLs.
+ */
 export const QUARANTINE_MEDIA_MODULES = [
   "posts",
   "jobs",
   "marketplace",
   "help",
-  "profile",
   "matrimony"
 ] as const;
 

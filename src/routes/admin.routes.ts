@@ -20,6 +20,7 @@ import * as ProminentPeopleController from "../controllers/ProminentPeople.contr
 import * as SystemSchedulerController from "../controllers/SystemScheduler.controller";
 import * as AdvertisementAdminController from "../controllers/AdvertisementAdmin.controller";
 import * as AdminInvoiceController from "../controllers/AdminInvoice.controller";
+import * as AdminBusinessBenefitController from "../controllers/AdminBusinessBenefit.controller";
 
 export const adminRouter = Router();
 
@@ -185,6 +186,25 @@ adminRouter.post(
   requireAdminModule("users"),
   requireAdminAction("users.approve"),
   asyncHandler(AdminController.rejectUpdate)
+);
+
+// Member Benefits moderation
+adminRouter.get(
+  "/business-benefits/pending",
+  requireAdminModule("business"),
+  asyncHandler(AdminBusinessBenefitController.listPending)
+);
+adminRouter.post(
+  "/business-benefits/:id/approve",
+  requireAdminModule("business"),
+  requireAdminAction("business.approve"),
+  asyncHandler(AdminBusinessBenefitController.approve)
+);
+adminRouter.post(
+  "/business-benefits/:id/reject",
+  requireAdminModule("business"),
+  requireAdminAction("business.approve"),
+  asyncHandler(AdminBusinessBenefitController.reject)
 );
 
 // ── Post moderation ────────────────────────────────────────

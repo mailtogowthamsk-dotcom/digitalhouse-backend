@@ -1,0 +1,5 @@
+{
+  "id": "20260916140000_collapse_message_notification_groups",
+  "name": "collapse_message_notification_groups",
+  "description": "Soft-delete duplicate unread MESSAGE_NEW rows per peer; keep latest with group_count and group_key"
+}

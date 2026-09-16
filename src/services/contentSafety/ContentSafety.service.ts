@@ -516,6 +516,26 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
         }
       );
       if (affected > 0) {
+        // REVIEW_REQUIRED still skips public promote — but posts must not keep deleted staging keys.
+        const liveKey = media.objectKey || extractR2KeyFromUrl(media.fileUrl);
+        if (liveKey) {
+          const stagingMap = new Map<string, string>();
+          for (const raw of [post.mediaUrl, post.thumbnailUrl]) {
+            if (!raw) continue;
+            const from = extractR2KeyFromUrl(raw) ?? raw;
+            if (from !== liveKey) stagingMap.set(from, liveKey);
+          }
+          if (stagingMap.size > 0) {
+            await sequelize.transaction(async (transaction) => {
+              const locked = await Post.findByPk(post.id, {
+                transaction,
+                lock: Transaction.LOCK.UPDATE
+              });
+              if (!locked || locked.mediaVersion !== post.mediaVersion) return;
+              await rewritePostMediaKeys(locked, stagingMap, transaction);
+            });
+          }
+        }
         logSafety(
           postDecision === "BLOCKED" ? "moderation_blocked" : "moderation_review_required",
           {
@@ -670,10 +690,8 @@ export async function adminAllowPost(
       code: "SAFETY_VERSION_CONFLICT"
     });
   }
-  const mapping = await promoteQuarantineKeys(
-    [post.mediaUrl, post.thumbnailUrl],
-    null
-  );
+  const { mediaService } = await import("../Media.service");
+  const mapping = await mediaService.buildPostMediaPublishMapping(post);
   const ok = await sequelize.transaction(async (transaction) => {
     const locked = await Post.findByPk(postId, { transaction, lock: Transaction.LOCK.UPDATE });
     if (!locked) return false;

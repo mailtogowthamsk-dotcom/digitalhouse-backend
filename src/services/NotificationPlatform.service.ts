@@ -1,4 +1,4 @@
-import { Op } from "sequelize";
+import { Op, Transaction } from "sequelize";
 import {
   Notification,
   NotificationPreference,
@@ -9,6 +9,7 @@ import { getIo } from "../realtime/io";
 import {
   CATEGORY_BY_TYPE,
   GROUPABLE_TYPES,
+  MESSAGE_GROUPABLE_TYPES,
   MATRIMONY_NOTIFICATION_TYPES,
   NOTIFICATION_ACTIONS,
   NOTIFICATION_TYPES,
@@ -17,6 +18,7 @@ import {
   type NotificationCategory,
   type NotificationType
 } from "../constants/notification.constants";
+import { sequelize } from "../config/db";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { sendExpoPush } from "./ExpoPush.service";
 import { isFcmConfigured, sendFcmPush } from "./FcmPush.service";
@@ -114,6 +116,10 @@ function groupTitle(type: NotificationType, count: number, sampleName: string): 
   if (type === NOTIFICATION_TYPES.MATRIMONY_PROFILE_VIEWED) {
     return count === 1 ? `${sampleName} viewed your profile` : `${count} people viewed your profile`;
   }
+  if (MESSAGE_GROUPABLE_TYPES.has(type)) {
+    // Keep stable title; count is shown via groupCount / body summary on the client.
+    return `Message from ${sampleName}`;
+  }
   return count > 1 ? `${count} notifications` : sampleName;
 }
 
@@ -151,6 +157,66 @@ export async function getUnreadCounts(userId: number): Promise<UnreadCountsDto> 
   return { total, social, matrimony, messages, community, system };
 }
 
+/**
+ * Soft-delete other unread DM Activity rows for the same peer and keep a single
+ * card with an accurate group_count. Heals null group_key legacy rows + insert races.
+ */
+async function collapseUnreadMessageDuplicates(
+  userId: number,
+  actorUserId: number,
+  type: NotificationType,
+  keepId: number,
+  groupKey: string
+): Promise<Notification> {
+  const siblings = await Notification.findAll({
+    where: {
+      userId,
+      type,
+      actorUserId,
+      readAt: null,
+      deletedAt: null,
+      id: { [Op.ne]: keepId }
+    },
+    attributes: ["id", "groupCount"]
+  });
+
+  if (!siblings.length) {
+    const keep = await Notification.findByPk(keepId);
+    if (keep && keep.groupKey !== groupKey) {
+      await keep.update({ groupKey } as any);
+    }
+    return keep ?? ((await Notification.findByPk(keepId)) as Notification);
+  }
+
+  const extraCount = siblings.reduce((sum, s) => sum + (s.groupCount ?? 1), 0);
+  const now = new Date();
+  await Notification.update(
+    { deletedAt: now } as any,
+    {
+      where: {
+        id: { [Op.in]: siblings.map((s) => s.id) },
+        deletedAt: null
+      }
+    }
+  );
+
+  const keep = await Notification.findByPk(keepId);
+  if (!keep) {
+    throw new Error("notification keeper missing after collapse");
+  }
+  const nextCount = (keep.groupCount ?? 1) + extraCount;
+  await keep.update({
+    groupKey,
+    groupCount: nextCount,
+    metadata: {
+      ...(keep.metadata && typeof keep.metadata === "object" ? keep.metadata : {}),
+      messageCount: nextCount
+    },
+    updatedAt: now
+  } as any);
+  return keep;
+}
+
 /** Create or aggregate notification; returns null if suppressed by preferences */
 export async function dispatchNotification(input: DispatchInput): Promise<NotificationDto | null> {
   const category = input.category ?? CATEGORY_BY_TYPE[input.type] ?? "SYSTEM";
@@ -161,36 +227,115 @@ export async function dispatchNotification(input: DispatchInput): Promise<Notifi
   const priority = MATRIMONY_NOTIFICATION_TYPES.has(input.type) ? 1 : 0;
   const actor = await actorProfile(input.actorUserId);
   const imageUrl = input.imageUrl ?? actor.image;
+  const isMessageGroup = MESSAGE_GROUPABLE_TYPES.has(input.type);
+  // Always derive a stable DM group key from the peer when callers omit it
+  // (stale builds / alternate entry points must still collapse Activity cards).
+  const resolvedGroupKey =
+    input.groupKey ??
+    (isMessageGroup && input.actorUserId != null ? `dm:${input.actorUserId}` : null);
+  const canGroup = Boolean(resolvedGroupKey && GROUPABLE_TYPES.has(input.type));
 
   let row: Notification | null = null;
-  const canGroup = input.groupKey && GROUPABLE_TYPES.has(input.type);
+  let aggregated = false;
 
-  if (canGroup && input.groupKey) {
-    const since = new Date(Date.now() - GROUP_WINDOW_MS);
-    row = await Notification.findOne({
-      where: {
+  if (canGroup && resolvedGroupKey) {
+    const groupKey = resolvedGroupKey;
+    const since = isMessageGroup ? null : new Date(Date.now() - GROUP_WINDOW_MS);
+
+    await sequelize.transaction(async (transaction) => {
+      const where: Record<string, unknown> = {
         userId: input.userId,
-        groupKey: input.groupKey,
+        groupKey,
         type: input.type,
         readAt: null,
-        deletedAt: null,
-        createdAt: { [Op.gte]: since }
-      },
-      order: [["createdAt", "DESC"]]
-    });
+        deletedAt: null
+      };
+      if (since) {
+        where.createdAt = { [Op.gte]: since };
+      }
 
-    if (row) {
-      const count = (row.groupCount ?? 1) + 1;
-      const name = actor.name ?? "Someone";
-      await row.update({
-        groupCount: count,
-        title: groupTitle(input.type, count, name),
-        body: input.body ?? row.body,
-        actorUserId: input.actorUserId ?? row.actorUserId,
-        imageUrl: imageUrl ?? row.imageUrl,
-        updatedAt: new Date()
-      } as any);
-    }
+      // For DMs also match legacy unread rows that never got a group_key.
+      const existing = await Notification.findOne({
+        where: isMessageGroup
+          ? {
+              userId: input.userId,
+              type: input.type,
+              readAt: null,
+              deletedAt: null,
+              [Op.or]: [
+                { groupKey },
+                {
+                  groupKey: null,
+                  actorUserId: input.actorUserId ?? null
+                }
+              ]
+            }
+          : where,
+        order: [["updatedAt", "DESC"]],
+        lock: Transaction.LOCK.UPDATE,
+        transaction
+      });
+
+      if (existing) {
+        const count = (existing.groupCount ?? 1) + 1;
+        const name = actor.name ?? "Someone";
+        const now = new Date();
+        const meta = {
+          ...(existing.metadata && typeof existing.metadata === "object"
+            ? existing.metadata
+            : {}),
+          ...(input.metadata && typeof input.metadata === "object" ? input.metadata : {}),
+          messageCount: count
+        };
+        await existing.update(
+          {
+            groupKey,
+            groupCount: count,
+            title: groupTitle(input.type, count, name),
+            body: input.body ?? existing.body,
+            actorUserId: input.actorUserId ?? existing.actorUserId,
+            imageUrl: imageUrl ?? existing.imageUrl,
+            actionType: input.actionType ?? existing.actionType,
+            actionTargetId:
+              input.actionTargetId != null
+                ? String(input.actionTargetId)
+                : existing.actionTargetId,
+            metadata: meta,
+            updatedAt: now,
+            ...(isMessageGroup ? { createdAt: now } : {})
+          } as any,
+          { transaction }
+        );
+        row = existing;
+        aggregated = true;
+        return;
+      }
+
+      row = await Notification.create(
+        {
+          userId: input.userId,
+          type: input.type,
+          category,
+          title: input.title,
+          body: input.body?.trim() || null,
+          imageUrl,
+          actionType: input.actionType ?? NOTIFICATION_ACTIONS.NONE,
+          actionTargetId:
+            input.actionTargetId != null ? String(input.actionTargetId) : null,
+          actorUserId: input.actorUserId ?? null,
+          groupKey,
+          groupCount: 1,
+          priority,
+          metadata: {
+            ...(input.metadata ?? {}),
+            ...(isMessageGroup ? { messageCount: 1 } : {})
+          },
+          readAt: null,
+          deletedAt: null
+        } as any,
+        { transaction }
+      );
+    });
   }
 
   if (!row) {
@@ -205,7 +350,7 @@ export async function dispatchNotification(input: DispatchInput): Promise<Notifi
       actionTargetId:
         input.actionTargetId != null ? String(input.actionTargetId) : null,
       actorUserId: input.actorUserId ?? null,
-      groupKey: input.groupKey ?? null,
+      groupKey: resolvedGroupKey,
       groupCount: 1,
       priority,
       metadata: input.metadata ?? null,
@@ -214,15 +359,35 @@ export async function dispatchNotification(input: DispatchInput): Promise<Notifi
     } as any);
   }
 
+  // Self-heal races / legacy null group_key rows: one unread Activity card per peer.
+  if (isMessageGroup && row && input.actorUserId != null && resolvedGroupKey) {
+    row = await collapseUnreadMessageDuplicates(
+      input.userId,
+      input.actorUserId,
+      input.type,
+      row.id,
+      resolvedGroupKey
+    );
+  }
+
+  // Reload in case the transaction instance is stale
+  if (row.id) {
+    const fresh = await Notification.findByPk(row.id);
+    if (fresh) row = fresh;
+  }
+
   const dto = await toNotificationDto(row);
   const counts = await getUnreadCounts(input.userId);
   emitRealtime(input.userId, { notification: dto, counts });
 
-  void queuePushNotification(input.userId, dto).catch((err) => {
-    if (process.env.NODE_ENV === "development") {
-      console.warn("[Push]", err);
-    }
-  });
+  // First message in a group → push; later aggregates → realtime only (avoid push spam).
+  if (!aggregated) {
+    void queuePushNotification(input.userId, dto).catch((err) => {
+      if (process.env.NODE_ENV === "development") {
+        console.warn("[Push]", err);
+      }
+    });
+  }
 
   return dto;
 }
@@ -393,6 +558,7 @@ export async function listNotifications(
     where,
     order: [
       ["priority", "DESC"],
+      ["updatedAt", "DESC"],
       ["createdAt", "DESC"]
     ],
     limit: safeLimit,

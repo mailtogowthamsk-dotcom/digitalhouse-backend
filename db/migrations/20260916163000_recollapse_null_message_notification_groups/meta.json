@@ -1,0 +1,5 @@
+{
+  "id": "20260916163000_recollapse_null_message_notification_groups",
+  "name": "recollapse_null_message_notification_groups",
+  "description": "Re-collapse unread MESSAGE_* Activity rows that still have null group_key"
+}

@@ -1,3 +1,12 @@
+/**
+ * Messaging permission — independent chat lanes:
+ * - community: accepted Connection
+ * - matrimony: mutual match with chatEnabled (or legacy read-only)
+ * - business: either party has an approved + active Business Profile
+ *
+ * Business enquiries reuse the existing messages table without creating Connections.
+ */
+
 import { Op, QueryTypes } from "sequelize";
 import { Message, MatrimonyMatch, UserProfile, MemberConnection } from "../models";
 import { sequelize } from "../config/db";
@@ -8,17 +17,18 @@ import {
   isDiscoverableMatrimony
 } from "./MatrimonyDiscover.service";
 import { hasAcceptedConnection } from "./Connection.service";
-import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
+import { normalizeJsonColumn, SECTION_ALLOWED_KEYS, toPublicBusinessProfile } from "./Profile.service";
 import type { MatrimonySection } from "../models/UserProfile.model";
 
 export type MessageAccessReason =
   | "matrimony_match"
   | "connection"
+  | "business"
   | "legacy_thread"
   | "blocked"
   | "no_permission";
 
-export type ChatLane = "community" | "matrimony";
+export type ChatLane = "community" | "matrimony" | "business";
 
 export type LaneAccess = {
   applicable: boolean;
@@ -31,6 +41,7 @@ export type LaneAccess = {
 export type MessageAccessDto = {
   communityChat: LaneAccess;
   matrimonyChat: LaneAccess;
+  businessChat: LaneAccess;
   allowed: boolean;
   canViewHistory: boolean;
   readOnly: boolean;
@@ -40,6 +51,8 @@ export type MessageAccessDto = {
   message?: string;
   reason?: MessageAccessReason;
 };
+
+const DENIED_LANE: LaneAccess = { applicable: false, allowed: false, readOnly: false };
 
 async function hasMessageHistory(userA: number, userB: number): Promise<boolean> {
   const row = await Message.findOne({
@@ -98,6 +111,45 @@ function matrimonyLaneFromState(opts: {
   };
 }
 
+/**
+ * Business lane (no Connection required):
+ * - Member → owner: allowed when the other user has an approved+active Business Profile
+ * - Owner → member: allowed only after a thread already exists (enquiry / prior chat)
+ *   so owners cannot cold-message arbitrary members just because they have a business.
+ */
+function businessLaneFromActive(opts: {
+  otherHasBusiness: boolean;
+  selfHasBusiness: boolean;
+  hasHistory: boolean;
+}): LaneAccess {
+  if (opts.otherHasBusiness) {
+    return { applicable: true, allowed: true, readOnly: false };
+  }
+  if (opts.selfHasBusiness && opts.hasHistory) {
+    return { applicable: true, allowed: true, readOnly: false };
+  }
+  if (opts.selfHasBusiness) {
+    return {
+      applicable: true,
+      allowed: false,
+      readOnly: false,
+      code: "BUSINESS_CHAT_LOCKED",
+      message: "Business chat unlocks after a member contacts your Business Profile."
+    };
+  }
+  return {
+    applicable: false,
+    allowed: false,
+    readOnly: false,
+    code: "BUSINESS_CHAT_LOCKED",
+    message: "Business chat is available when a party has an approved active Business Profile."
+  };
+}
+
+function profileHasActiveBusiness(businessRaw: unknown): boolean {
+  return toPublicBusinessProfile(businessRaw) != null;
+}
+
 async function getCommunityLane(viewerId: number, otherUserId: number): Promise<LaneAccess> {
   const connected = await hasAcceptedConnection(viewerId, otherUserId);
   return communityLaneFromConnected(connected);
@@ -122,18 +174,43 @@ async function getMatrimonyLane(viewerId: number, otherUserId: number): Promise<
   });
 }
 
+async function getBusinessLane(
+  viewerId: number,
+  otherUserId: number,
+  hasHistory: boolean
+): Promise<LaneAccess> {
+  const profiles = await UserProfile.findAll({
+    where: { userId: { [Op.in]: [viewerId, otherUserId] } },
+    attributes: ["userId", "business"]
+  });
+  let selfHas = false;
+  let otherHas = false;
+  for (const p of profiles) {
+    const active = profileHasActiveBusiness(p.business);
+    if (p.userId === viewerId) selfHas = active;
+    if (p.userId === otherUserId) otherHas = active;
+  }
+  return businessLaneFromActive({
+    otherHasBusiness: otherHas,
+    selfHasBusiness: selfHas,
+    hasHistory
+  });
+}
+
 function buildAccessDto(
   community: LaneAccess,
   matrimony: LaneAccess,
+  business: LaneAccess,
   legacy: boolean
 ): MessageAccessDto {
-  const allowed = community.allowed || matrimony.allowed;
+  const allowed = community.allowed || matrimony.allowed || business.allowed;
   const chatLanes: ChatLane[] = [];
   if (community.allowed) chatLanes.push("community");
   if (matrimony.allowed) chatLanes.push("matrimony");
   if (!matrimony.allowed && matrimony.applicable && matrimony.readOnly) {
     chatLanes.push("matrimony");
   }
+  if (business.allowed) chatLanes.push("business");
 
   let canViewHistory = allowed;
   let readOnly = false;
@@ -142,7 +219,9 @@ function buildAccessDto(
   let reason: MessageAccessReason | undefined;
 
   if (allowed) {
-    reason = community.allowed ? "connection" : "matrimony_match";
+    if (community.allowed) reason = "connection";
+    else if (matrimony.allowed) reason = "matrimony_match";
+    else reason = "business";
     canViewHistory = true;
   } else if (legacy) {
     canViewHistory = true;
@@ -150,13 +229,14 @@ function buildAccessDto(
     reason = "legacy_thread";
     code = "READ_ONLY_LEGACY";
     message =
-      community.allowed === false && matrimony.applicable
-        ? "You can view past messages, but new messages need an accepted connection or an active matrimony match."
-        : "You can view past messages, but messaging unlocks after connection is accepted or you become a mutual matrimony match.";
+      "You can view past messages, but messaging unlocks after connection is accepted, a mutual matrimony match, or an active Business Profile.";
   } else {
     canViewHistory = false;
     reason = "no_permission";
-    code = matrimony.applicable ? matrimony.code : community.code ?? "MESSAGING_LOCKED";
+    code =
+      matrimony.applicable && !matrimony.allowed
+        ? matrimony.code
+        : community.code ?? "MESSAGING_LOCKED";
     message =
       matrimony.message ??
       community.message ??
@@ -167,12 +247,14 @@ function buildAccessDto(
   if (community.allowed && matrimony.allowed) primaryLane = "community";
   else if (community.allowed) primaryLane = "community";
   else if (matrimony.allowed) primaryLane = "matrimony";
+  else if (business.allowed) primaryLane = "business";
   else if (matrimony.applicable && matrimony.readOnly) primaryLane = "matrimony";
   else if (community.applicable) primaryLane = "community";
 
   return {
     communityChat: community,
     matrimonyChat: matrimony,
+    businessChat: business,
     allowed,
     canViewHistory,
     readOnly,
@@ -184,24 +266,29 @@ function buildAccessDto(
   };
 }
 
-/** Central permission check — community and matrimony lanes are independent (Phase 4). */
+function deniedAccess(
+  patch: Partial<MessageAccessDto> & { code?: string; message?: string; reason?: MessageAccessReason }
+): MessageAccessDto {
+  return {
+    communityChat: DENIED_LANE,
+    matrimonyChat: DENIED_LANE,
+    businessChat: DENIED_LANE,
+    allowed: false,
+    canViewHistory: false,
+    readOnly: false,
+    primaryLane: null,
+    chatLanes: [],
+    ...patch
+  };
+}
+
+/** Central permission check — community, matrimony, and business lanes are independent. */
 export async function getMessageAccess(
   viewerId: number,
   otherUserId: number
 ): Promise<MessageAccessDto> {
   if (!viewerId || !otherUserId || viewerId === otherUserId) {
-    const denied: LaneAccess = { applicable: false, allowed: false, readOnly: false };
-    return {
-      communityChat: denied,
-      matrimonyChat: denied,
-      allowed: false,
-      canViewHistory: false,
-      readOnly: false,
-      primaryLane: null,
-      chatLanes: [],
-      code: "INVALID",
-      message: "Invalid user."
-    };
+    return deniedAccess({ code: "INVALID", message: "Invalid user." });
   }
 
   const blocked = await getBlockedUserIds(viewerId);
@@ -216,6 +303,7 @@ export async function getMessageAccess(
     return {
       communityChat: denied,
       matrimonyChat: denied,
+      businessChat: denied,
       allowed: false,
       canViewHistory: false,
       readOnly: false,
@@ -232,8 +320,9 @@ export async function getMessageAccess(
     getMatrimonyLane(viewerId, otherUserId),
     hasMessageHistory(viewerId, otherUserId)
   ]);
+  const business = await getBusinessLane(viewerId, otherUserId, legacy);
 
-  return buildAccessDto(community, matrimony, legacy);
+  return buildAccessDto(community, matrimony, business, legacy);
 }
 
 /**
@@ -261,6 +350,7 @@ export async function getMessageAccessMap(
       map.set(id, {
         communityChat: denied,
         matrimonyChat: denied,
+        businessChat: denied,
         allowed: false,
         canViewHistory: false,
         readOnly: false,
@@ -302,8 +392,7 @@ export async function getMessageAccessMap(
     }).catch(() => [] as MatrimonyMatch[]),
     UserProfile.findAll({
       where: { userId: { [Op.in]: profileIds } },
-      // Only matrimony JSON is needed for discoverable flags — avoid selecting other fat columns.
-      attributes: ["userId", "matrimony"]
+      attributes: ["userId", "matrimony", "business"]
     }),
     sequelize.query<{ otherUserId: number }>(
       `
@@ -332,11 +421,14 @@ export async function getMessageAccessMap(
   }
 
   const matrimonyActive = new Map<number, boolean>();
+  const businessActive = new Map<number, boolean>();
   for (const p of profiles) {
     const m = normalizeJsonColumn(p.matrimony, SECTION_ALLOWED_KEYS.matrimony) as MatrimonySection;
     matrimonyActive.set(p.userId, isDiscoverableMatrimony(m));
+    businessActive.set(p.userId, profileHasActiveBusiness(p.business));
   }
   const viewerHasMatrimony = matrimonyActive.get(viewerId) === true;
+  const viewerHasBusiness = businessActive.get(viewerId) === true;
 
   for (const otherId of remaining) {
     const community = communityLaneFromConnected(connectedPeers.has(otherId));
@@ -348,7 +440,12 @@ export async function getMessageAccessMap(
       matchChatEnabled: !!match?.chatEnabled,
       legacy
     });
-    map.set(otherId, buildAccessDto(community, matrimony, legacy));
+    const business = businessLaneFromActive({
+      otherHasBusiness: businessActive.get(otherId) === true,
+      selfHasBusiness: viewerHasBusiness,
+      hasHistory: legacy
+    });
+    map.set(otherId, buildAccessDto(community, matrimony, business, legacy));
   }
 
   return map;

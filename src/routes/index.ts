@@ -20,6 +20,7 @@ import { prominentPeopleRouter } from "./prominentPeople.routes";
 import { advertisementRouter } from "./advertisement.routes";
 import { legalRouter } from "./legal.routes";
 import { websiteRouter } from "./website.routes";
+import { businessRouter } from "./business.routes";
 
 export const apiRouter = Router();
 
@@ -44,3 +45,4 @@ apiRouter.use("/advertisements", advertisementRouter);
 apiRouter.use("/legal", legalRouter);
 apiRouter.use("/landing", landingRouter);
 apiRouter.use("/website", websiteRouter);
+apiRouter.use("/business", businessRouter);

@@ -8,7 +8,8 @@ import {
   MemberConnection,
   MemberProfessionalIdentity,
   MemberExpertiseSelection,
-  MasterDataItem
+  MasterDataItem,
+  UserProfile
 } from "../models";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
@@ -22,6 +23,10 @@ import type { ProfileVisibility } from "../models/user.model";
 import { resolvePostMediaType, type PostMediaType } from "../constants/postMedia.constants";
 import { audienceVisibilityWhere, andWhere } from "./PostVisibility.service";
 import { masterDataService } from "./MasterData.service";
+import {
+  toPublicBusinessProfile,
+  type PublicBusinessProfileDto
+} from "./Profile.service";
 
 export type MemberProfileStats = {
   postsCount: number;
@@ -60,6 +65,11 @@ export type MemberProfileDto = {
   connectedSince?: string | null;
   /** Whether viewer may list this member's posts. */
   canViewPosts: boolean;
+  /**
+   * Approved + active business card only (from user_profiles.business).
+   * Never pending/rejected moderation data.
+   */
+  business: PublicBusinessProfileDto | null;
 };
 
 export type MemberProfileLimitedDto = {
@@ -288,10 +298,16 @@ export async function getMemberProfile(
     };
   }
 
-  const [stats, connectedSince] = await Promise.all([
+  const [stats, connectedSince, profileRow] = await Promise.all([
     getMemberStats(target.id),
-    isConnected ? getConnectedSince(viewerId, target.id) : Promise.resolve(null)
+    isConnected ? getConnectedSince(viewerId, target.id) : Promise.resolve(null),
+    UserProfile.findOne({
+      where: { userId: target.id },
+      attributes: ["business"]
+    })
   ]);
+
+  const publicBusiness = toPublicBusinessProfile(profileRow?.business ?? null);
 
   const identityRow = await MemberProfessionalIdentity.findOne({
     where: { userId: target.id },
@@ -387,7 +403,8 @@ export async function getMemberProfile(
       isPrivate,
       isConnected,
       needsUsernameSetup
-    })
+    }),
+    business: publicBusiness
   };
 }
 

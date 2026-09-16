@@ -318,7 +318,7 @@ function buildSectionsAndCompletion(
     (normalizeJsonColumn(profile?.family, SECTION_ALLOWED_KEYS.family) as FamilySection) ?? null;
 
   const show_matrimony = matrimony?.matrimonyProfileActive === true;
-  const show_business = business?.businessProfileActive === true;
+  const show_business = toPublicBusinessProfile(business) != null;
 
   const { completion_percentage } = computeMandatoryCompletion({
     fullName: user.fullName,
@@ -345,6 +345,54 @@ function buildSectionsAndCompletion(
 
 /** Sections that require admin approval before going live. Others apply immediately. */
 export const RESTRICTED_PROFILE_SECTIONS = ["matrimony", "business"] as const;
+
+export type PublicBusinessProfileDto = {
+  businessName: string | null;
+  businessType: string | null;
+  businessDescription: string | null;
+  businessAddress: string | null;
+  businessPhone: string | null;
+  businessWebsite: string | null;
+};
+
+/**
+ * Approved + active business only — never pending_profile_updates.
+ * Returns null when inactive or empty (no public Business card).
+ */
+export function toPublicBusinessProfile(businessRaw: unknown): PublicBusinessProfileDto | null {
+  const business = normalizeJsonColumn(businessRaw, SECTION_ALLOWED_KEYS.business) as
+    | Record<string, unknown>
+    | null;
+  if (!business || business.businessProfileActive !== true) return null;
+
+  const str = (v: unknown): string | null => {
+    if (typeof v !== "string") return null;
+    const t = v.trim();
+    return t.length ? t : null;
+  };
+
+  const dto: PublicBusinessProfileDto = {
+    businessName: str(business.businessName),
+    businessType: str(business.businessType),
+    businessDescription: str(business.businessDescription),
+    businessAddress: str(business.businessAddress),
+    businessPhone: str(business.businessPhone),
+    businessWebsite: str(business.businessWebsite)
+  };
+
+  // Need at least a name (or any field) to show a useful card
+  if (
+    !dto.businessName &&
+    !dto.businessType &&
+    !dto.businessDescription &&
+    !dto.businessAddress &&
+    !dto.businessPhone &&
+    !dto.businessWebsite
+  ) {
+    return null;
+  }
+  return dto;
+}
 
 const PENDING_SUBMITTED_FLAG = "_submittedForReview";
 

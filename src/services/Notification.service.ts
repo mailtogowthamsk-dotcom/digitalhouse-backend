@@ -457,6 +457,7 @@ export async function notifyNewMessage(
   if (await isThreadMuted(recipientId, senderId)) return;
   const name = await senderName(senderId);
   const snippet = preview.trim().slice(0, 120);
+  // Chat is 1:1 by peer userId — group Activity cards per conversation peer.
   await Platform.dispatchNotification({
     userId: recipientId,
     type: NOTIFICATION_TYPES.MESSAGE_NEW,
@@ -464,7 +465,9 @@ export async function notifyNewMessage(
     body: snippet || "You have a new message.",
     actorUserId: senderId,
     actionType: NOTIFICATION_ACTIONS.OPEN_CHAT,
-    actionTargetId: senderId
+    actionTargetId: senderId,
+    groupKey: `dm:${senderId}`,
+    metadata: { latestPreview: snippet || null }
   });
 }
 
@@ -613,6 +616,56 @@ export async function notifyMarketplaceListingRejected(
     actionType: NOTIFICATION_ACTIONS.OPEN_POST,
     actionTargetId: postId,
     groupKey: `marketplace_rejected:${postId}`
+  });
+}
+
+export async function notifyBusinessBenefitApproved(
+  userId: number,
+  benefitId: number,
+  title: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.BUSINESS_BENEFIT_APPROVED,
+    title: "Member Benefit Approved",
+    body: `"${title.slice(0, 80)}" is now available to members.`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_BUSINESS_BENEFIT,
+    actionTargetId: benefitId,
+    groupKey: `business_benefit_approved:${benefitId}`
+  });
+}
+
+export async function notifyBusinessBenefitRejected(
+  userId: number,
+  benefitId: number,
+  title: string,
+  reason: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId,
+    type: NOTIFICATION_TYPES.BUSINESS_BENEFIT_REJECTED,
+    title: "Member Benefit Rejected",
+    body: `"${title.slice(0, 50)}" — ${reason.slice(0, 90)}`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_BUSINESS_BENEFITS_MINE,
+    actionTargetId: benefitId,
+    groupKey: `business_benefit_rejected:${benefitId}`
+  });
+}
+
+export async function notifyBusinessBenefitClaimed(
+  ownerUserId: number,
+  benefitId: number,
+  title: string,
+  memberName: string
+): Promise<void> {
+  await Platform.dispatchNotification({
+    userId: ownerUserId,
+    type: NOTIFICATION_TYPES.BUSINESS_BENEFIT_CLAIMED,
+    title: "Member Benefit Claimed",
+    body: `${memberName.slice(0, 40)} claimed "${title.slice(0, 60)}".`,
+    actionType: NOTIFICATION_ACTIONS.OPEN_BUSINESS_BENEFITS_MINE,
+    actionTargetId: benefitId,
+    groupKey: `business_benefit_claimed:${benefitId}:${ownerUserId}`
   });
 }
 
