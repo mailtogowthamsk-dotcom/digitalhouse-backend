@@ -707,17 +707,25 @@ export async function adminAllowPost(
       code: "SAFETY_ALLOW_RACE"
     });
   }
-  const { ModerationAction } = await import("../../models");
-  await ModerationAction.create({
-    action: "SAFETY_ALLOW",
-    targetUserId: post.userId,
-    postId,
-    reportKind: null,
-    reportId: null,
-    adminEmail,
-    note: remarks?.trim() || "Admin allow after review",
-    createdAt: new Date()
-  } as any);
+  try {
+    const { ModerationAction } = await import("../../models");
+    await ModerationAction.create({
+      action: "SAFETY_ALLOW",
+      targetUserId: post.userId,
+      postId,
+      reportKind: null,
+      reportId: null,
+      adminEmail,
+      note: remarks?.trim() || "Admin allow after review",
+      createdAt: new Date()
+    } as any);
+  } catch (auditErr) {
+    // Post is already SAFE + public keys rewritten; do not roll that back on audit ENUM/schema gaps.
+    console.warn(
+      `[content-safety] SAFETY_ALLOW audit log failed post=${postId}:`,
+      auditErr instanceof Error ? auditErr.message : auditErr
+    );
+  }
   await deletePromotedQuarantineKeys(mapping);
   const author = await User.findByPk(post.userId, { attributes: ["community"] });
   if (post.postType !== "MARKETPLACE" || post.marketplaceStatus === "LIVE") {
@@ -767,17 +775,24 @@ export async function adminRejectPost(
     });
   }
   const post = await Post.findByPk(postId);
-  const { ModerationAction } = await import("../../models");
-  await ModerationAction.create({
-    action: "SAFETY_REJECT",
-    targetUserId: post?.userId ?? null,
-    postId,
-    reportKind: null,
-    reportId: null,
-    adminEmail,
-    note: reason?.trim() || "Admin reject",
-    createdAt: new Date()
-  } as any);
+  try {
+    const { ModerationAction } = await import("../../models");
+    await ModerationAction.create({
+      action: "SAFETY_REJECT",
+      targetUserId: post?.userId ?? null,
+      postId,
+      reportKind: null,
+      reportId: null,
+      adminEmail,
+      note: reason?.trim() || "Admin reject",
+      createdAt: new Date()
+    } as any);
+  } catch (auditErr) {
+    console.warn(
+      `[content-safety] SAFETY_REJECT audit log failed post=${postId}:`,
+      auditErr instanceof Error ? auditErr.message : auditErr
+    );
+  }
   logSafety("moderation_admin_override", {
     post_id: postId,
     media_version: expectedMediaVersion,

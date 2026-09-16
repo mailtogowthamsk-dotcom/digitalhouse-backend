@@ -1,0 +1,6 @@
+{
+  "description": "Ensure moderation_actions.action ENUM includes SAFETY_ALLOW and SAFETY_REJECT (fixes admin safety-allow 500)",
+  "idempotent": true,
+  "rollback": false,
+  "destructive": false
+}
