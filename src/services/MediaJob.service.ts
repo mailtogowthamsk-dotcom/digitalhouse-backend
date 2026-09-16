@@ -513,6 +513,29 @@ export async function processClaimedMediaJob(job: MediaJob): Promise<void> {
       console.warn(`[media-worker] lost claim before completion job=${job.id}`);
       return;
     }
+
+    // Clients often persist the staging upload key; rewrite to live objectKey before staging delete.
+    const liveKey =
+      typeof processed.mediaUpdates?.objectKey === "string"
+        ? processed.mediaUpdates.objectKey
+        : null;
+    const stagingKeys = processed.keysToDeleteAfterCommit ?? [];
+    if (liveKey && stagingKeys.length > 0) {
+      const owner = await MediaFile.findByPk(job.mediaId, { attributes: ["userId"] });
+      const ownerId = owner?.userId;
+      if (ownerId) {
+        const { rewriteMediaKeyReferences } = await import("./Media.service");
+        for (const staging of stagingKeys) {
+          await rewriteMediaKeyReferences(ownerId, staging, liveKey).catch((error) =>
+            console.warn(
+              `[media-worker] staging ref rewrite failed job=${job.id}:`,
+              error instanceof Error ? error.message : error
+            )
+          );
+        }
+      }
+    }
+
     // Staging cleanup only after durable commit + this worker still owns the completed row.
     const keys = processed.keysToDeleteAfterCommit ?? [];
     if (keys.length > 0) {

@@ -1,0 +1,6 @@
+{
+  "description": "Rewrite profile/post media URLs from deleted staging keys to completed _full.webp object keys",
+  "idempotent": true,
+  "rollback": false,
+  "destructive": false
+}

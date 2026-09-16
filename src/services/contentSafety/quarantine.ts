@@ -29,16 +29,34 @@ export async function promoteQuarantineKeys(
       if (artifact.startsWith(QUARANTINE_PREFIX)) candidates.add(artifact);
     }
   }
+  const copied = new Set<string>();
   for (const src of candidates) {
     const dest = publishedKeyFromQuarantine(src);
     if (!dest) continue;
     try {
       await copyR2Object(src, dest);
       mapping.set(src, dest);
+      copied.add(src);
     } catch (err) {
       const status = Number((err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode ?? 0);
       if (status === 404) continue;
       throw err;
+    }
+  }
+
+  // Staging originals are deleted after Sharp/FFmpeg. Clients often still store the staging
+  // key — map missing staging → published _full / sibling that did copy successfully.
+  for (const src of candidates) {
+    if (mapping.has(src)) continue;
+    const dest = publishedKeyFromQuarantine(src);
+    if (!dest) continue;
+    for (const artifact of collectMediaArtifactKeys(src, variantsJson)) {
+      if (!copied.has(artifact)) continue;
+      const publishedArtifact = publishedKeyFromQuarantine(artifact);
+      if (publishedArtifact) {
+        mapping.set(src, publishedArtifact);
+        break;
+      }
     }
   }
   return mapping;

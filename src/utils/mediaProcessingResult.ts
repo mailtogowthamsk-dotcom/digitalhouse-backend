@@ -69,9 +69,11 @@ export function getCompletedMediaResult(row: MediaFile): FinalizeMediaResult | n
     stored,
     isPrivate
   );
+  // Prefer objectKey (post-process _full / _opt) — fileUrl can lag or still point at deleted staging.
+  const liveRef = row.objectKey || row.fileUrl;
   const publicUrl = isPrivate
-    ? toStorageKeyIfR2(row.fileUrl) ?? row.fileUrl
-    : toPublicUrlIfR2(row.fileUrl) ?? row.fileUrl;
+    ? toStorageKeyIfR2(liveRef) ?? liveRef
+    : toPublicUrlIfR2(liveRef) ?? liveRef;
   return {
     mediaFileId: row.id,
     publicUrl,

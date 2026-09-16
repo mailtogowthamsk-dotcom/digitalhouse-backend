@@ -457,7 +457,9 @@ export async function updateProfile(userId: number, payload: ProfileUpdatePayloa
 
   const updates: Record<string, unknown> = {};
   if (payload.profile_image !== undefined) {
-    updates.profilePhoto = toStorageKeyIfR2(payload.profile_image ?? null);
+    const raw = toStorageKeyIfR2(payload.profile_image ?? null);
+    const { mediaService } = await import("./Media.service");
+    updates.profilePhoto = raw ? await mediaService.resolveLiveMediaKey(userId, raw) : null;
   }
   if (payload.city !== undefined) updates.city = payload.city?.trim() || null;
   if (payload.district !== undefined) updates.district = payload.district?.trim() || null;

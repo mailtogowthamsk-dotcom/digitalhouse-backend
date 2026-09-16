@@ -582,6 +582,84 @@ export async function deleteRemovedMediaUrls(oldUrls: string[], newUrls: string[
   }
 }
 
+/**
+ * If client still holds a deleted staging key, prefer the completed media_files.objectKey
+ * (_full.webp / _opt.mp4) for the same upload.
+ */
+export async function resolveLiveMediaKey(
+  userId: number,
+  urlOrKey: string | null | undefined
+): Promise<string | null> {
+  if (!urlOrKey?.trim()) return null;
+  const key = extractR2KeyFromUrl(urlOrKey.trim()) ?? urlOrKey.trim();
+  if (!key.startsWith(`${R2_PREFIX}/`)) return key;
+
+  const owned = await findOwnedMediaFile(userId, key);
+  if (owned?.objectKey && owned.processingStatus === "completed") {
+    return owned.objectKey;
+  }
+
+  // Staging key → look up completed row by basename family
+  const base = path.basename(key).replace(/\.[^.]+$/, "").replace(/_full$/, "").replace(/_opt$/, "");
+  if (!base) return key;
+  const row = await MediaFile.findOne({
+    where: {
+      userId,
+      processingStatus: "completed",
+      [Op.or]: [
+        { objectKey: { [Op.like]: `%/${base}_full.webp` } },
+        { objectKey: { [Op.like]: `%/${base}_opt.mp4` } },
+        { objectKey: { [Op.like]: `%/${base}.%` } },
+        { fileUrl: { [Op.like]: `%/${base}%` } }
+      ]
+    },
+    order: [["id", "DESC"]]
+  });
+  return row?.objectKey || key;
+}
+
+/**
+ * After Sharp/FFmpeg deletes staging, rewrite profile/post refs that still point at it.
+ */
+export async function rewriteMediaKeyReferences(
+  userId: number,
+  fromKey: string,
+  toKey: string
+): Promise<void> {
+  if (!fromKey || !toKey || fromKey === toKey) return;
+  const user = await User.findByPk(userId, {
+    attributes: ["id", "profilePhoto", "pendingProfilePhoto"]
+  });
+  if (user) {
+    const patch: Record<string, string> = {};
+    if (user.profilePhoto && (extractR2KeyFromUrl(user.profilePhoto) === fromKey || user.profilePhoto === fromKey)) {
+      patch.profilePhoto = toKey;
+    }
+    if (
+      user.pendingProfilePhoto &&
+      (extractR2KeyFromUrl(user.pendingProfilePhoto) === fromKey || user.pendingProfilePhoto === fromKey)
+    ) {
+      patch.pendingProfilePhoto = toKey;
+    }
+    if (Object.keys(patch).length) await user.update(patch as any);
+  }
+
+  const posts = await Post.findAll({
+    where: {
+      userId,
+      [Op.or]: [{ mediaUrl: fromKey }, { thumbnailUrl: fromKey }]
+    },
+    attributes: ["id", "mediaUrl", "thumbnailUrl"],
+    limit: 100
+  });
+  for (const post of posts) {
+    await post.update({
+      mediaUrl: post.mediaUrl === fromKey ? toKey : post.mediaUrl,
+      thumbnailUrl: post.thumbnailUrl === fromKey ? toKey : post.thumbnailUrl
+    } as any);
+  }
+}
+
 export const mediaService = {
   generateUploadUrl,
   listPendingMedia,
@@ -590,5 +668,7 @@ export const mediaService = {
   deleteUserMediaUrls,
   deleteRemovedMediaUrls,
   markMediaUrlsAttached,
-  cleanupOrphanPendingMedia
+  cleanupOrphanPendingMedia,
+  resolveLiveMediaKey,
+  rewriteMediaKeyReferences
 };
