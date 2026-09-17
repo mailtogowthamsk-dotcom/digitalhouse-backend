@@ -254,6 +254,29 @@ export async function updatePost(userId: number, postId: number, payload: Update
     ) {
       await assertJobActiveLimit(userId, post.id);
     }
+
+    const reopening =
+      payload.job_status !== undefined &&
+      (payload.job_status ?? "OPEN") === "OPEN" &&
+      (post.jobStatus === "CLOSED" ||
+        (post.jobApplicationDeadline != null &&
+          post.jobApplicationDeadline.getTime() <= Date.now()));
+
+    if (reopening) {
+      const nextDeadlineRaw =
+        payload.job_application_deadline !== undefined
+          ? payload.job_application_deadline
+          : post.jobApplicationDeadline?.toISOString() ?? null;
+      const nextDeadline = nextDeadlineRaw ? new Date(nextDeadlineRaw) : null;
+      if (!nextDeadline || Number.isNaN(nextDeadline.getTime()) || nextDeadline.getTime() <= Date.now()) {
+        const err = new Error(
+          "A future application deadline is required to reopen this job."
+        );
+        (err as any).status = 400;
+        (err as any).code = "JOB_REOPEN_DEADLINE_REQUIRED";
+        throw err;
+      }
+    }
   }
 
   const marketplaceFieldTouched =

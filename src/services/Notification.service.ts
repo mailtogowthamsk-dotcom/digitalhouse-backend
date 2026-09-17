@@ -586,6 +586,51 @@ export async function notifyJobClosedByAdmin(
   });
 }
 
+const APPLICATION_STATUS_NOTIFY: Record<
+  string,
+  { title: string; body: (jobTitle: string) => string }
+> = {
+  REVIEWED: {
+    title: "Application under review",
+    body: (t) => `Your application for "${t.slice(0, 60)}" is being reviewed.`
+  },
+  SHORTLISTED: {
+    title: "You've been shortlisted",
+    body: (t) => `You were shortlisted for "${t.slice(0, 60)}".`
+  },
+  INTERVIEW_SCHEDULED: {
+    title: "Interview scheduled",
+    body: (t) => `An interview was scheduled for "${t.slice(0, 60)}".`
+  },
+  SELECTED: {
+    title: "You've been selected",
+    body: (t) => `Congratulations — you were selected for "${t.slice(0, 60)}".`
+  },
+  REJECTED: {
+    title: "Application update",
+    body: (t) => `Your application for "${t.slice(0, 60)}" was not selected.`
+  }
+};
+
+export async function notifyJobApplicationStatusChanged(
+  applicantId: number,
+  postId: number,
+  postTitle: string,
+  status: string
+): Promise<void> {
+  const copy = APPLICATION_STATUS_NOTIFY[status];
+  if (!copy) return;
+  await Platform.dispatchNotification({
+    userId: applicantId,
+    type: NOTIFICATION_TYPES.JOB_APPLICATION_STATUS_CHANGED,
+    title: copy.title,
+    body: copy.body(postTitle),
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `job_app_status:${postId}:${applicantId}:${status}`
+  });
+}
+
 export async function notifyMarketplaceListingApproved(
   userId: number,
   postId: number,

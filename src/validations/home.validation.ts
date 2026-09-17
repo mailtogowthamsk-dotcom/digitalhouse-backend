@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { POST_TYPES, JOB_EMPLOYMENT_TYPES } from "../models/Post.model";
+import { POST_TYPES, JOB_EMPLOYMENT_TYPES, JOB_WORK_MODES } from "../models/Post.model";
 import {
   MARKETPLACE_CATEGORIES,
   MARKETPLACE_INTENTS
@@ -10,6 +10,7 @@ const postTypeSchema = z.enum(POST_TYPES as unknown as [string, ...string[]]);
 const jobEmploymentTypeSchema = z.enum(
   JOB_EMPLOYMENT_TYPES as unknown as [string, ...string[]]
 );
+const jobWorkModeSchema = z.enum(JOB_WORK_MODES as unknown as [string, ...string[]]);
 const marketplaceCategorySchema = z.enum(
   MARKETPLACE_CATEGORIES as unknown as [string, ...string[]]
 );
@@ -24,12 +25,17 @@ const feedQuerySchema = z.object({
   cursor: z.string().trim().min(1).max(512).optional(),
   sort: z.enum(["recent", "popular", "personalized"]).default("recent"),
   postType: postTypeSchema.optional(),
-  /** For JOB posts: open (OPEN + legacy null), closed, or all */
-  jobStatus: z.enum(["open", "closed", "all"]).optional(),
+  /** For JOB posts: open (OPEN + not past deadline), closed, expired, or all */
+  jobStatus: z.enum(["open", "closed", "expired", "all"]).optional(),
   /** Keyword search across title, description, company, location */
   q: z.string().trim().max(120).optional(),
   jobLocation: z.string().trim().max(255).optional(),
   jobEmploymentType: jobEmploymentTypeSchema.optional(),
+  jobWorkMode: jobWorkModeSchema.optional(),
+  jobCategory: z.string().trim().max(120).optional(),
+  jobExperience: z.string().trim().max(120).optional(),
+  jobSalaryMin: z.coerce.number().int().min(0).max(100_000_000).optional(),
+  jobSalaryMax: z.coerce.number().int().min(0).max(100_000_000).optional(),
   marketplaceStatus: z
     .enum(["live", "pending", "changes", "rejected", "sold", "hidden", "expired", "archived", "all"])
     .optional(),

@@ -19,10 +19,15 @@ export type FeedQueryParams = {
   cursor?: number | string | null;
   sort?: FeedSortMode;
   postType?: string;
-  jobStatus?: "open" | "closed" | "all";
+  jobStatus?: "open" | "closed" | "expired" | "all";
   q?: string;
   jobLocation?: string;
   jobEmploymentType?: string;
+  jobWorkMode?: string;
+  jobCategory?: string;
+  jobExperience?: string;
+  jobSalaryMin?: number;
+  jobSalaryMax?: number;
   /** Marketplace public browse defaults to live; mine=true allows other statuses for owner. */
   marketplaceStatus?: "live" | "pending" | "changes" | "rejected" | "sold" | "hidden" | "expired" | "archived" | "all";
   marketplaceCategory?: string;
@@ -73,6 +78,8 @@ export const FEED_POST_ATTRIBUTES = [
   "jobSkills",
   "jobSalaryMin",
   "jobSalaryMax",
+  "jobApplicationDeadline",
+  "jobVacancies",
   "marketplaceStatus",
   "marketplaceIntent",
   "marketplaceCategory",
@@ -122,6 +129,11 @@ export function applyPostFilters(
     | "q"
     | "jobLocation"
     | "jobEmploymentType"
+    | "jobWorkMode"
+    | "jobCategory"
+    | "jobExperience"
+    | "jobSalaryMin"
+    | "jobSalaryMax"
     | "marketplaceStatus"
     | "marketplaceCategory"
     | "marketplaceDistrict"
@@ -225,10 +237,28 @@ export function applyPostFilters(
   }
 
   if (params.postType === "JOB" && params.jobStatus && params.jobStatus !== "all") {
+    const now = new Date();
     if (params.jobStatus === "open") {
-      andParts.push({ [Op.or]: [{ jobStatus: "OPEN" }, { jobStatus: null }] });
+      andParts.push({
+        [Op.and]: [
+          { [Op.or]: [{ jobStatus: "OPEN" }, { jobStatus: null }] },
+          {
+            [Op.or]: [
+              { jobApplicationDeadline: null },
+              { jobApplicationDeadline: { [Op.gt]: now } }
+            ]
+          }
+        ]
+      });
     } else if (params.jobStatus === "closed") {
       andParts.push({ jobStatus: "CLOSED" });
+    } else if (params.jobStatus === "expired") {
+      andParts.push({
+        [Op.and]: [
+          { [Op.or]: [{ jobStatus: "OPEN" }, { jobStatus: null }] },
+          { jobApplicationDeadline: { [Op.lte]: now } }
+        ]
+      });
     }
   }
 
@@ -236,8 +266,42 @@ export function applyPostFilters(
     andParts.push({ jobEmploymentType: params.jobEmploymentType });
   }
 
+  if (params.postType === "JOB" && params.jobWorkMode) {
+    andParts.push({ jobWorkMode: params.jobWorkMode });
+  }
+
+  if (params.postType === "JOB" && params.jobCategory?.trim()) {
+    andParts.push({ jobCategory: { [Op.like]: `%${params.jobCategory.trim()}%` } });
+  }
+
+  if (params.postType === "JOB" && params.jobExperience?.trim()) {
+    andParts.push({ jobExperience: { [Op.like]: `%${params.jobExperience.trim()}%` } });
+  }
+
   if (params.postType === "JOB" && params.jobLocation?.trim()) {
     andParts.push({ jobLocation: { [Op.like]: `%${params.jobLocation.trim()}%` } });
+  }
+
+  if (params.postType === "JOB" && params.jobSalaryMin != null) {
+    andParts.push({
+      [Op.or]: [
+        { jobSalaryMax: { [Op.gte]: params.jobSalaryMin } },
+        {
+          [Op.and]: [{ jobSalaryMax: null }, { jobSalaryMin: { [Op.gte]: params.jobSalaryMin } }]
+        }
+      ]
+    });
+  }
+
+  if (params.postType === "JOB" && params.jobSalaryMax != null) {
+    andParts.push({
+      [Op.or]: [
+        { jobSalaryMin: { [Op.lte]: params.jobSalaryMax } },
+        {
+          [Op.and]: [{ jobSalaryMin: null }, { jobSalaryMax: { [Op.lte]: params.jobSalaryMax } }]
+        }
+      ]
+    });
   }
 
   if (params.postType === "MARKETPLACE" && params.marketplaceCategory) {
@@ -458,7 +522,7 @@ export async function buildFeedItemsFromPosts(
 
   // Use denormalized likeCount/commentCount on posts — skip scanning post_likes/comments.
   const jobPostIds = pagePosts.filter((p) => p.postType === "JOB").map((p) => p.id);
-  const [myLikes, mySaves, helpOffers, myJobInterests] = await Promise.all([
+  const [myLikes, mySaves, helpOffers, myJobInterests, jobInterestCounts] = await Promise.all([
     PostLike.findAll({
       where: { postId: { [Op.in]: postIds }, userId: currentUserId },
       attributes: ["postId"],
@@ -479,11 +543,26 @@ export async function buildFeedItemsFromPosts(
           const { JobInterest } = await import("../models");
           return JobInterest.findAll({
             where: { postId: { [Op.in]: jobPostIds }, fromUserId: currentUserId },
-            attributes: ["postId"],
+            attributes: ["postId", "status"],
             raw: true
           });
         })()
-      : Promise.resolve([] as Array<{ postId: number }>)
+      : Promise.resolve([] as Array<{ postId: number; status: string }>),
+    jobPostIds.length
+      ? (async () => {
+          const { JobInterest } = await import("../models");
+          const rows = await JobInterest.findAll({
+            where: { postId: { [Op.in]: jobPostIds } },
+            attributes: ["postId"],
+            raw: true
+          });
+          const map: Record<number, number> = {};
+          for (const r of rows as { postId: number }[]) {
+            map[r.postId] = (map[r.postId] || 0) + 1;
+          }
+          return map;
+        })()
+      : Promise.resolve({} as Record<number, number>)
   ]);
 
   const likeMap: Record<number, number> = {};
@@ -500,7 +579,13 @@ export async function buildFeedItemsFromPosts(
 
   const likedSet = new Set(myLikes.map((r: { postId: number }) => r.postId));
   const savedSet = new Set(mySaves.map((r: { postId: number }) => r.postId));
-  const jobInterestedSet = new Set(myJobInterests.map((r: { postId: number }) => r.postId));
+  const jobInterestStatusByPost = new Map(
+    (myJobInterests as Array<{ postId: number; status: string }>).map((r) => [
+      r.postId,
+      r.status
+    ])
+  );
+  const jobApplicationCountByPost = jobInterestCounts as Record<number, number>;
 
   const originalIds = [
     ...new Set(
@@ -649,7 +734,16 @@ export async function buildFeedItemsFromPosts(
         jobSkills: Array.isArray(p.jobSkills) ? (p.jobSkills as string[]) : null,
         jobSalaryMin: p.jobSalaryMin ?? null,
         jobSalaryMax: p.jobSalaryMax ?? null,
-        jobInterestedByMe: p.postType === "JOB" ? jobInterestedSet.has(p.id) : undefined,
+        jobApplicationDeadline: p.jobApplicationDeadline
+          ? p.jobApplicationDeadline.toISOString()
+          : null,
+        jobVacancies: p.jobVacancies ?? null,
+        jobApplicationCount:
+          p.postType === "JOB" ? jobApplicationCountByPost[p.id] ?? 0 : undefined,
+        jobInterestedByMe:
+          p.postType === "JOB" ? jobInterestStatusByPost.has(p.id) : undefined,
+        jobApplicationStatus:
+          p.postType === "JOB" ? jobInterestStatusByPost.get(p.id) ?? null : undefined,
         marketplaceStatus: p.marketplaceStatus ?? null,
         marketplaceIntent: p.marketplaceIntent ?? null,
         marketplaceCategory: p.marketplaceCategory ?? null,

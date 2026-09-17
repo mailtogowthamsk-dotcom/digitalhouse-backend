@@ -80,6 +80,10 @@ export type PostDetailDto = {
   job_interested_by_me?: boolean;
   job_interest_count?: number;
   job_can_message_poster?: boolean;
+  job_application_status?: string | null;
+  job_interest_id?: number | null;
+  job_listing_status?: string;
+  job_accepting_applications?: boolean;
   /** Present when this row is a community repost. */
   is_repost?: boolean;
   original_post_id?: number | null;

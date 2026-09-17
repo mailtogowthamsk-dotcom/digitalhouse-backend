@@ -691,6 +691,10 @@ export async function resolveLiveMediaKey(
 
   const owned = await findOwnedMediaFile(userId, key);
   if (owned?.objectKey && owned.processingStatus === "completed") {
+    // SAFE rows must never surface deleted quarantine keys to the feed player.
+    if (owned.safetyDecision === "SAFE") {
+      return publicPublishStorageKey(owned.objectKey) ?? owned.objectKey;
+    }
     return owned.objectKey;
   }
 
@@ -710,7 +714,83 @@ export async function resolveLiveMediaKey(
     },
     order: [["id", "DESC"]]
   });
-  return row?.objectKey || key;
+  if (!row?.objectKey) return key;
+  if (row.safetyDecision === "SAFE") {
+    return publicPublishStorageKey(row.objectKey) ?? row.objectKey;
+  }
+  return row.objectKey;
+}
+
+/**
+ * After quarantine → public promote, rewrite media_files rows so feed resolution
+ * never returns deleted private keys (which break video playback for everyone).
+ */
+export async function applyPublishMappingToMediaFiles(
+  mediaFiles: MediaFile[],
+  mapping: Map<string, string>
+): Promise<void> {
+  if (!mediaFiles.length) return;
+  for (const media of mediaFiles) {
+    const nextKey =
+      rewriteStoredKeyViaMap(media.objectKey || media.fileUrl, mapping) ??
+      publicPublishStorageKey(media.objectKey || media.fileUrl) ??
+      media.objectKey;
+    const nextFileUrl =
+      rewriteStoredKeyViaMap(media.fileUrl, mapping) ??
+      publicPublishStorageKey(media.fileUrl) ??
+      media.fileUrl;
+    let nextVariants = media.variantsJson;
+    if (nextVariants) {
+      try {
+        const parsed = JSON.parse(nextVariants) as Record<string, unknown>;
+        for (const [k, v] of Object.entries(parsed)) {
+          if (typeof v !== "string") continue;
+          parsed[k] =
+            rewriteStoredKeyViaMap(v, mapping) ?? publicPublishStorageKey(v) ?? v;
+        }
+        nextVariants = JSON.stringify(parsed);
+      } catch {
+        /* keep */
+      }
+    }
+    await media.update({
+      objectKey: nextKey,
+      fileUrl: nextFileUrl,
+      variantsJson: nextVariants,
+      safetyDecision: "SAFE",
+      safetyCategory: media.safetyCategory === "UNCERTAIN" ? "SAFE" : media.safetyCategory
+    } as any);
+  }
+}
+
+function rewriteStoredKeyViaMap(
+  urlOrKey: string | null | undefined,
+  mapping: Map<string, string>
+): string | null {
+  if (!urlOrKey) return null;
+  const key = extractR2KeyFromUrl(urlOrKey) ?? urlOrKey;
+  return mapping.get(key) ?? null;
+}
+
+/** Prefer poster medium/full for video thumbnails after publish. */
+export function preferredVideoThumbnailKey(
+  media: MediaFile | null | undefined,
+  fallback: string | null | undefined
+): string | null {
+  if (media?.variantsJson) {
+    try {
+      const parsed = JSON.parse(media.variantsJson) as Record<string, unknown>;
+      for (const field of ["medium", "full", "thumb"] as const) {
+        const v = parsed[field];
+        if (typeof v === "string" && v.includes("_poster_")) {
+          return publicPublishStorageKey(v) ?? v;
+        }
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  return publicPublishStorageKey(fallback) ?? fallback ?? null;
 }
 
 /**
@@ -768,5 +848,7 @@ export const mediaService = {
   rewriteMediaKeyReferences,
   findMediaFileForPostReference,
   buildPostMediaPublishMapping,
+  applyPublishMappingToMediaFiles,
+  preferredVideoThumbnailKey,
   publicPublishStorageKey
 };

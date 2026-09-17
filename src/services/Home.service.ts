@@ -72,8 +72,12 @@ export type FeedItemDto = {
   jobSkills?: string[] | null;
   jobSalaryMin?: number | null;
   jobSalaryMax?: number | null;
+  jobApplicationDeadline?: string | null;
+  jobVacancies?: number | null;
+  jobApplicationCount?: number;
   /** Viewer already expressed interest (JOB only). */
   jobInterestedByMe?: boolean;
+  jobApplicationStatus?: string | null;
   marketplaceStatus?: string | null;
   marketplaceIntent?: string | null;
   marketplaceCategory?: string | null;
@@ -205,7 +209,15 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
         postType: "JOB",
         moderationStatus: "ACTIVE",
         safetyDecision: "SAFE",
-        [Op.or]: [{ jobStatus: "OPEN" }, { jobStatus: null }]
+        [Op.and]: [
+          { [Op.or]: [{ jobStatus: "OPEN" }, { jobStatus: null }] },
+          {
+            [Op.or]: [
+              { jobApplicationDeadline: null },
+              { jobApplicationDeadline: { [Op.gt]: new Date() } }
+            ]
+          }
+        ]
       },
       include: [approvedInclude],
       distinct: true
@@ -257,10 +269,15 @@ export async function getFeed(
     cursor?: number | string | null;
     sort?: "recent" | "popular" | "personalized";
     postType?: string;
-    jobStatus?: "open" | "closed" | "all";
+    jobStatus?: "open" | "closed" | "expired" | "all";
     q?: string;
     jobLocation?: string;
     jobEmploymentType?: string;
+    jobWorkMode?: string;
+    jobCategory?: string;
+    jobExperience?: string;
+    jobSalaryMin?: number;
+    jobSalaryMax?: number;
     marketplaceStatus?: "live" | "pending" | "changes" | "rejected" | "sold" | "hidden" | "expired" | "archived" | "all";
     marketplaceCategory?: string;
     marketplaceDistrict?: string;
@@ -286,6 +303,11 @@ export async function getFeed(
       q: options?.q,
       jobLocation: options?.jobLocation,
       jobEmploymentType: options?.jobEmploymentType,
+      jobWorkMode: options?.jobWorkMode,
+      jobCategory: options?.jobCategory,
+      jobExperience: options?.jobExperience,
+      jobSalaryMin: options?.jobSalaryMin,
+      jobSalaryMax: options?.jobSalaryMax,
       marketplaceStatus: options?.marketplaceStatus,
       marketplaceCategory: options?.marketplaceCategory,
       marketplaceDistrict: options?.marketplaceDistrict,

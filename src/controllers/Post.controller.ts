@@ -18,8 +18,8 @@ import { z } from "zod";
 
 type AuthRequest = {
   user?: User;
-  params?: { postId?: string; commentId?: string };
-  query?: unknown;
+  params?: { postId?: string; commentId?: string; interestId?: string };
+  query?: Record<string, unknown>;
   body?: unknown;
 };
 
@@ -362,9 +362,92 @@ export async function listJobInterests(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const postId = parsePostId(req.params?.postId);
   if (postId == null) return error(res, "Invalid post id", 400);
+  const statusRaw = req.query?.status;
+  const status = typeof statusRaw === "string" ? statusRaw.trim() : undefined;
   try {
     const { listJobInterestsForOwner } = await import("../services/JobInterest.service");
-    const data = await listJobInterestsForOwner(req.user.id, postId);
+    const data = await listJobInterestsForOwner(req.user.id, postId, status);
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+const updateJobInterestSchema = z
+  .object({
+    status: z
+      .enum([
+        "REVIEWED",
+        "SHORTLISTED",
+        "INTERVIEW_SCHEDULED",
+        "SELECTED",
+        "REJECTED"
+      ])
+      .optional(),
+    employer_notes: z.string().trim().max(2000).nullable().optional()
+  })
+  .strict()
+  .refine((v) => v.status !== undefined || v.employer_notes !== undefined, {
+    message: "Provide status and/or employer_notes"
+  });
+
+export async function updateJobInterest(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  const interestId = parsePostId(req.params?.interestId);
+  if (postId == null || interestId == null) return error(res, "Invalid id", 400);
+  const body = updateJobInterestSchema.parse(req.body ?? {});
+  try {
+    const { updateJobInterestByOwner } = await import("../services/JobInterest.service");
+    const data = await updateJobInterestByOwner(req.user.id, postId, interestId, body);
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function withdrawJobInterest(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  const interestId = parsePostId(req.params?.interestId);
+  if (postId == null || interestId == null) return error(res, "Invalid id", 400);
+  try {
+    const { withdrawMyJobApplication } = await import("../services/JobInterest.service");
+    const data = await withdrawMyJobApplication(req.user.id, postId, interestId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function listMyJobApplications(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const q = req.query ?? {};
+  const page = Math.max(1, Number(q.page) || 1);
+  const limit = Math.min(50, Math.max(1, Number(q.limit) || 20));
+  const status = typeof q.status === "string" ? q.status.trim() : undefined;
+  try {
+    const { listMyJobApplications: listMine } = await import("../services/JobInterest.service");
+    const data = await listMine(req.user.id, { status, page, limit });
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}
+
+export async function getMyJobApplicationDetail(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const interestId = parsePostId(req.params?.interestId);
+  if (interestId == null) return error(res, "Invalid id", 400);
+  try {
+    const { getMyJobApplicationDetail: getDetail } = await import(
+      "../services/JobInterest.service"
+    );
+    const data = await getDetail(req.user.id, interestId);
     return success(res, data);
   } catch (e: any) {
     if (e?.status) return error(res, e.message, e.status);

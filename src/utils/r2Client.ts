@@ -24,6 +24,45 @@ const accessKeyId = process.env.R2_ACCESS_KEY_ID;
 const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
 const bucketName = process.env.R2_BUCKET_NAME;
 const region = "auto"; // R2 uses "auto" for region
+
+/** Transient undici/R2 blips — "fetch failed", aborted, 5xx, timeouts. */
+function isTransientR2Error(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : "";
+  const lower = msg.toLowerCase();
+  if (name === "AbortError" || name === "TimeoutError") return true;
+  if (lower.includes("fetch failed")) return true;
+  if (lower.includes("econnreset") || lower.includes("etimedout") || lower.includes("econnrefused")) {
+    return true;
+  }
+  if (lower.includes("socket hang up") || lower.includes("network")) return true;
+  const status = Number(
+    (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode ?? 0
+  );
+  return status === 408 || status === 429 || status >= 500;
+}
+
+async function withR2DownloadRetries<T>(label: string, fn: () => Promise<T>): Promise<T> {
+  const maxAttempts = Math.max(1, Math.min(5, Number(process.env.R2_DOWNLOAD_RETRIES || 3)));
+  let last: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      last = err;
+      if (attempt >= maxAttempts || !isTransientR2Error(err)) throw err;
+      const delayMs = Math.min(8_000, 400 * 2 ** (attempt - 1));
+      console.warn(
+        `[R2] ${label} attempt ${attempt}/${maxAttempts} failed (${
+          err instanceof Error ? err.message : err
+        }); retry in ${delayMs}ms`
+      );
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  throw last;
+}
+
 /** S3-compatible client for R2. Only used server-side; never expose to client. */
 function getR2Client(): S3Client {
   if (!accountId || !accessKeyId || !secretAccessKey) {
@@ -236,39 +275,41 @@ export async function getR2ObjectBuffer(
   maxBytes: number
 ): Promise<Buffer> {
   if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
-  const client = getR2Client();
-  const configuredTimeout = Number(process.env.R2_DOWNLOAD_TIMEOUT_MS || 120_000);
-  const timeoutMs = Number.isFinite(configuredTimeout)
-    ? Math.max(10_000, configuredTimeout)
-    : 120_000;
-  const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
-  timeout.unref();
-  try {
-    const response = await client.send(
-      new GetObjectCommand({ Bucket: bucketName, Key: key }),
-      { abortSignal: abortController.signal }
-    );
-    const contentLength = response.ContentLength ?? 0;
-    if (contentLength > maxBytes) {
-      throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
+  return withR2DownloadRetries(`GetObjectBuffer ${key}`, async () => {
+    const client = getR2Client();
+    const configuredTimeout = Number(process.env.R2_DOWNLOAD_TIMEOUT_MS || 120_000);
+    const timeoutMs = Number.isFinite(configuredTimeout)
+      ? Math.max(10_000, configuredTimeout)
+      : 120_000;
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+    timeout.unref();
+    try {
+      const response = await client.send(
+        new GetObjectCommand({ Bucket: bucketName, Key: key }),
+        { abortSignal: abortController.signal }
+      );
+      const contentLength = response.ContentLength ?? 0;
+      if (contentLength > maxBytes) {
+        throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
+      }
+      const body = response.Body;
+      const byteArrayBody = body as
+        | { transformToByteArray?: () => Promise<Uint8Array> }
+        | undefined;
+      if (typeof byteArrayBody?.transformToByteArray !== "function") {
+        throw new Error("Empty R2 response body");
+      }
+      const bytes = await byteArrayBody.transformToByteArray();
+      const buf = Buffer.from(bytes);
+      if (buf.length > maxBytes) {
+        throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
+      }
+      return buf;
+    } finally {
+      clearTimeout(timeout);
     }
-    const body = response.Body;
-    const byteArrayBody = body as
-      | { transformToByteArray?: () => Promise<Uint8Array> }
-      | undefined;
-    if (typeof byteArrayBody?.transformToByteArray !== "function") {
-      throw new Error("Empty R2 response body");
-    }
-    const bytes = await byteArrayBody.transformToByteArray();
-    const buf = Buffer.from(bytes);
-    if (buf.length > maxBytes) {
-      throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
-    }
-    return buf;
-  } finally {
-    clearTimeout(timeout);
-  }
+  });
 }
 
 /**
@@ -281,51 +322,53 @@ export async function downloadR2ObjectToFile(
   maxBytes: number
 ): Promise<number> {
   if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
-  const client = getR2Client();
-  const configuredTimeout = Number(process.env.R2_DOWNLOAD_TIMEOUT_MS || 120_000);
-  const timeoutMs = Number.isFinite(configuredTimeout)
-    ? Math.max(10_000, configuredTimeout)
-    : 120_000;
-  const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), timeoutMs);
-  timeout.unref();
-  const out = fs.createWriteStream(destPath);
-  try {
-    const response = await client.send(
-      new GetObjectCommand({ Bucket: bucketName, Key: normalizeR2ObjectKey(key) }),
-      { abortSignal: abortController.signal }
-    );
-    const contentLength = response.ContentLength ?? 0;
-    if (contentLength > maxBytes) {
-      throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
-    }
-    const body = response.Body;
-    if (!body) throw new Error("Empty R2 response body");
-    let written = 0;
-    for await (const chunk of body as AsyncIterable<Uint8Array>) {
-      const buf = Buffer.from(chunk);
-      written += buf.length;
-      if (written > maxBytes) {
+  return withR2DownloadRetries(`DownloadToFile ${key}`, async () => {
+    const client = getR2Client();
+    const configuredTimeout = Number(process.env.R2_DOWNLOAD_TIMEOUT_MS || 120_000);
+    const timeoutMs = Number.isFinite(configuredTimeout)
+      ? Math.max(10_000, configuredTimeout)
+      : 120_000;
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), timeoutMs);
+    timeout.unref();
+    const out = fs.createWriteStream(destPath);
+    try {
+      const response = await client.send(
+        new GetObjectCommand({ Bucket: bucketName, Key: normalizeR2ObjectKey(key) }),
+        { abortSignal: abortController.signal }
+      );
+      const contentLength = response.ContentLength ?? 0;
+      if (contentLength > maxBytes) {
         throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
       }
-      if (!out.write(buf)) {
-        await new Promise<void>((resolve, reject) => {
-          out.once("drain", resolve);
-          out.once("error", reject);
-        });
+      const body = response.Body;
+      if (!body) throw new Error("Empty R2 response body");
+      let written = 0;
+      for await (const chunk of body as AsyncIterable<Uint8Array>) {
+        const buf = Buffer.from(chunk);
+        written += buf.length;
+        if (written > maxBytes) {
+          throw new Error(`Object exceeds max download size (${maxBytes} bytes)`);
+        }
+        if (!out.write(buf)) {
+          await new Promise<void>((resolve, reject) => {
+            out.once("drain", resolve);
+            out.once("error", reject);
+          });
+        }
       }
+      await new Promise<void>((resolve, reject) => {
+        out.end((err?: Error | null) => (err ? reject(err) : resolve()));
+      });
+      return written;
+    } catch (err) {
+      out.destroy();
+      await fs.promises.unlink(destPath).catch(() => undefined);
+      throw err;
+    } finally {
+      clearTimeout(timeout);
     }
-    await new Promise<void>((resolve, reject) => {
-      out.end((err?: Error | null) => (err ? reject(err) : resolve()));
-    });
-    return written;
-  } catch (err) {
-    out.destroy();
-    await fs.promises.unlink(destPath).catch(() => undefined);
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-  }
+  });
 }
 
 /** Validate that an uploaded R2 object exists without downloading its bytes. */

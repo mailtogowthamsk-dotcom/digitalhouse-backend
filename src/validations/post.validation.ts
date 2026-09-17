@@ -171,6 +171,12 @@ function refineSalaryRange<
         message: "job_application_deadline must be a valid datetime",
         path: ["job_application_deadline"]
       });
+    } else if (deadline.getTime() <= Date.now()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Application deadline must be in the future",
+        path: ["job_application_deadline"]
+      });
     }
   }
 }

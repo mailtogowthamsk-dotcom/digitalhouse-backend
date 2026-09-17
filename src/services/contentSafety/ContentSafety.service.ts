@@ -39,6 +39,7 @@ import {
 import {
   deletePromotedQuarantineKeys,
   promoteQuarantineKeys,
+  publishedKeyFromQuarantine,
   rewriteStoredKey
 } from "./quarantine";
 import type { NormalizedModerationResult, PolicyEvaluation } from "./types";
@@ -105,8 +106,11 @@ async function writeScan(input: {
   processingTimeMs: number | null;
 }): Promise<void> {
   const now = new Date();
+  const failureReason =
+    input.failureReason != null ? input.failureReason.replace(/\s+/g, " ").slice(0, 240) : null;
   await ContentSafetyScan.create({
     ...input,
+    failureReason,
     createdAt: now,
     completedAt: now
   } as any);
@@ -259,16 +263,113 @@ async function classifyVideoFrames(
   };
 }
 
+function candidateVideoKeys(key: string, variantsJson?: string | null): string[] {
+  const keys: string[] = [];
+  const add = (k: string | null | undefined) => {
+    if (!k || keys.includes(k)) return;
+    keys.push(k);
+  };
+  add(key);
+  add(publishedKeyFromQuarantine(key));
+  if (variantsJson) {
+    try {
+      const parsed = JSON.parse(variantsJson) as Record<string, unknown>;
+      if (typeof parsed.video === "string") {
+        add(parsed.video);
+        add(publishedKeyFromQuarantine(parsed.video));
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  return keys;
+}
+
+function posterKeysFromVariants(variantsJson?: string | null): string[] {
+  if (!variantsJson) return [];
+  try {
+    const parsed = JSON.parse(variantsJson) as Record<string, unknown>;
+    const keys: string[] = [];
+    const add = (v: unknown) => {
+      if (typeof v !== "string") return;
+      if (!v.includes("_poster_") || !/\.(webp|jpe?g|png)$/i.test(v)) return;
+      if (!keys.includes(v)) keys.push(v);
+      const published = publishedKeyFromQuarantine(v);
+      if (published && !keys.includes(published)) keys.push(published);
+    };
+    for (const field of ["full", "medium", "thumb"] as const) {
+      add(parsed[field]);
+    }
+    return keys;
+  } catch {
+    return [];
+  }
+}
+
+function isMissingR2KeyError(err: unknown): boolean {
+  const status = Number(
+    (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode ?? 0
+  );
+  if (status === 404) return true;
+  const name = err instanceof Error ? err.name : "";
+  const msg = err instanceof Error ? err.message : String(err);
+  return name === "NoSuchKey" || /specified key does not exist/i.test(msg) || /nosuchkey/i.test(msg);
+}
+
 async function classifyVideoFromR2(
   key: string,
-  maxBytes: number
+  maxBytes: number,
+  variantsJson?: string | null
 ): Promise<{ evaluation: PolicyEvaluation; result: NormalizedModerationResult }> {
   const tmp = await createMediaTempDirectory("dh-mod-");
-  const inPath = path.join(tmp, "in.bin");
+  const videoKeys = candidateVideoKeys(key, variantsJson);
+  let lastDownloadErr: unknown;
   try {
-    await downloadR2ObjectToFile(key, inPath, maxBytes);
-    const { frames, plan } = await extractModerationFramesFromPath(inPath);
-    return classifyVideoFrames(frames, plan);
+    for (let i = 0; i < videoKeys.length; i++) {
+      const videoKey = videoKeys[i]!;
+      const inPath = path.join(tmp, `in-${i}.bin`);
+      try {
+        await downloadR2ObjectToFile(videoKey, inPath, maxBytes);
+        const { frames, plan } = await extractModerationFramesFromPath(inPath);
+        return classifyVideoFrames(frames, plan);
+      } catch (downloadErr) {
+        lastDownloadErr = downloadErr;
+        console.warn(
+          `[moderation] video key miss/fail ${videoKey}: ${
+            downloadErr instanceof Error ? downloadErr.message : downloadErr
+          }`
+        );
+        if (!isMissingR2KeyError(downloadErr) && i === videoKeys.length - 1) {
+          break;
+        }
+      }
+    }
+
+    // Community speech / event videos: if the mp4 GET fails after optimize (or quarantine
+    // already promoted), fall back to poster WebPs so content can still reach SAFE.
+    const posterKeys = posterKeysFromVariants(variantsJson);
+    if (!posterKeys.length) {
+      throw lastDownloadErr ?? new Error("VIDEO_DOWNLOAD_FAILED");
+    }
+    console.warn(
+      `[moderation] video download failed for ${key}; falling back to ${posterKeys.length} poster frame(s)`
+    );
+    const frames: Buffer[] = [];
+    const imageMax = Number(process.env.MODERATION_MAX_IMAGE_SIZE || 2_000_000);
+    for (const posterKey of posterKeys) {
+      try {
+        frames.push(await getR2ObjectBuffer(posterKey, imageMax));
+      } catch (posterErr) {
+        console.warn(
+          `[moderation] poster fetch failed ${posterKey}:`,
+          posterErr instanceof Error ? posterErr.message : posterErr
+        );
+      }
+    }
+    if (!frames.length) {
+      throw lastDownloadErr ?? new Error("VIDEO_DOWNLOAD_FAILED");
+    }
+    return classifyVideoFrames(frames, { insufficientCoverage: false });
   } finally {
     await removeMediaTempDirectory(tmp);
   }
@@ -277,13 +378,23 @@ async function classifyVideoFromR2(
 async function postsReferencingMedia(media: MediaFile): Promise<Post[]> {
   const keys = new Set<string>();
   const objectKey = media.objectKey || extractR2KeyFromUrl(media.fileUrl);
-  if (objectKey) keys.add(objectKey);
+  if (objectKey) {
+    keys.add(objectKey);
+    const published = publishedKeyFromQuarantine(objectKey);
+    if (published) keys.add(published);
+  }
   if (media.fileUrl) {
     const k = extractR2KeyFromUrl(media.fileUrl);
-    if (k) keys.add(k);
+    if (k) {
+      keys.add(k);
+      const published = publishedKeyFromQuarantine(k);
+      if (published) keys.add(published);
+    }
   }
   for (const artifact of collectMediaArtifactKeys(objectKey ?? media.fileUrl, media.variantsJson)) {
     keys.add(artifact);
+    const published = publishedKeyFromQuarantine(artifact);
+    if (published) keys.add(published);
   }
   if (keys.size === 0) return [];
   const or = [...keys].flatMap((key) => [{ mediaUrl: key }, { thumbnailUrl: key }]);
@@ -406,7 +517,7 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
   let hash: string | undefined;
   try {
     if (media.fileType === "video") {
-      const classified = await classifyVideoFromR2(key, maxBytes);
+      const classified = await classifyVideoFromR2(key, maxBytes, media.variantsJson);
       evaluation = classified.evaluation;
       result = classified.result;
     } else {
@@ -417,18 +528,22 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
       hash = classified.hash;
     }
   } catch (err) {
+    const failureReason =
+      err instanceof Error ? err.message.slice(0, 200) : "DOWNLOAD_FAILED";
+    // Download / network failures are NOT corrupt media — keep fail-closed REVIEW
+    // but do not stamp CORRUPTED_MEDIA (misleading for ops and admins).
     evaluation = evaluateModeration({
       available: false,
       category: "UNCERTAIN",
       confidence: null,
       failed: true,
       timeout: false,
-      corrupt: true,
+      corrupt: false,
       unsupported: false,
       insufficientCoverage: false,
       modelName: LOCAL_MODEL_NAME,
       modelVersion: LOCAL_MODEL_VERSION,
-      failureReason: err instanceof Error ? err.message.slice(0, 200) : "DOWNLOAD_FAILED"
+      failureReason
     });
     result = {
       available: false,
@@ -436,12 +551,12 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
       confidence: null,
       failed: true,
       timeout: false,
-      corrupt: true,
+      corrupt: false,
       unsupported: false,
       insufficientCoverage: false,
       modelName: LOCAL_MODEL_NAME,
       modelVersion: LOCAL_MODEL_VERSION,
-      failureReason: evaluation.reason
+      failureReason
     };
   }
 
@@ -575,7 +690,14 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
           }
         }
         await media.update(
-          { objectKey: nextKey, fileUrl: nextFileUrl ?? media.fileUrl, variantsJson: nextVariants },
+          {
+            objectKey: nextKey,
+            fileUrl: nextFileUrl ?? media.fileUrl,
+            variantsJson: nextVariants,
+            safetyDecision: "SAFE",
+            safetyCategory:
+              evaluation.category === "UNCERTAIN" ? "SAFE" : evaluation.category
+          },
           { transaction }
         );
       }
@@ -692,12 +814,29 @@ export async function adminAllowPost(
   }
   const { mediaService } = await import("../Media.service");
   const mapping = await mediaService.buildPostMediaPublishMapping(post);
+  const mediaFiles: MediaFile[] = [];
+  for (const seed of [post.mediaUrl, post.thumbnailUrl]) {
+    if (!seed) continue;
+    const row = await mediaService.findMediaFileForPostReference(post.userId, seed);
+    if (row && !mediaFiles.some((m) => m.id === row.id)) mediaFiles.push(row);
+  }
   const ok = await sequelize.transaction(async (transaction) => {
     const locked = await Post.findByPk(postId, { transaction, lock: Transaction.LOCK.UPDATE });
     if (!locked) return false;
     if (locked.mediaVersion !== expectedMediaVersion) return false;
     if (locked.deletedAt || locked.moderationStatus === "SOFT_DELETED") return false;
     await rewritePostMediaKeys(locked, mapping, transaction);
+    // Video posts often had thumbnailUrl = video key; prefer poster after publish.
+    const primaryMedia = mediaFiles[0] ?? null;
+    if (locked.mediaType === "video" && primaryMedia) {
+      const poster = mediaService.preferredVideoThumbnailKey(
+        primaryMedia,
+        locked.thumbnailUrl
+      );
+      if (poster && poster !== locked.thumbnailUrl) {
+        await locked.update({ thumbnailUrl: poster } as any, { transaction });
+      }
+    }
     const [affected] = await Post.update(
       {
         safetyDecision: "SAFE",
@@ -725,6 +864,9 @@ export async function adminAllowPost(
       code: "SAFETY_ALLOW_RACE"
     });
   }
+  // Critical: media_files must move off deleted quarantine keys or feed resolveLiveMediaKey
+  // returns private paths and toPublicUrlIfR2 → null (video card with no playable URL).
+  await mediaService.applyPublishMappingToMediaFiles(mediaFiles, mapping);
   try {
     const { ModerationAction } = await import("../../models");
     await ModerationAction.create({

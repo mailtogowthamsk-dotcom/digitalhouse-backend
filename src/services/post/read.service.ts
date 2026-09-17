@@ -133,9 +133,16 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     job_interested_by_me?: boolean;
     job_interest_count?: number;
     job_can_message_poster?: boolean;
+    job_application_status?: string | null;
+    job_interest_id?: number | null;
+    job_listing_status?: string;
+    job_accepting_applications?: boolean;
   } = {};
   if (post.postType === "JOB") {
     const JobInterestService = await import("../JobInterest.service");
+    const { deriveJobListingStatus, isJobAcceptingApplications } = await import(
+      "../../utils/jobListingStatus"
+    );
     const [interestCount, myInterest] = await Promise.all([
       JobInterestService.countJobInterests(postId),
       JobInterestService.getMyJobInterest(userId, postId)
@@ -143,7 +150,11 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     jobExtra = {
       job_interest_count: interestCount,
       job_interested_by_me: myInterest.interested,
-      job_can_message_poster: myInterest.canMessage
+      job_can_message_poster: myInterest.canMessage,
+      job_application_status: myInterest.status,
+      job_interest_id: myInterest.interestId,
+      job_listing_status: deriveJobListingStatus(post),
+      job_accepting_applications: isJobAcceptingApplications(post)
     };
   }
 

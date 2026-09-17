@@ -620,11 +620,15 @@ export async function listAdminApplications(query: {
   limit?: number;
   status?: string;
   q?: string;
+  jobId?: number;
 }) {
   const page = Math.max(1, query.page ?? 1);
   const limit = Math.min(100, Math.max(1, query.limit ?? 25));
   const where: WhereOptions = {};
   if (query.status && query.status !== "all") Object.assign(where, { status: query.status });
+  if (query.jobId != null && Number.isFinite(query.jobId) && query.jobId > 0) {
+    Object.assign(where, { postId: query.jobId });
+  }
   const rows = await JobInterest.findAll({
     where,
     include: [
@@ -733,6 +737,17 @@ export async function updateAdminApplication(
     statusTo: next,
     note: payload.note?.trim() || payload.adminNotes?.trim() || null
   });
+  if (next !== previous) {
+    const post = await Post.findByPk(application.postId, { attributes: ["id", "title"] });
+    if (post) {
+      void Notifications.notifyJobApplicationStatusChanged(
+        application.fromUserId,
+        post.id,
+        post.title,
+        next
+      ).catch(() => {});
+    }
+  }
   const timeline = await JobAuditLog.findAll({
     where: { jobInterestId: application.id },
     order: [["createdAt", "DESC"]],

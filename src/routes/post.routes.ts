@@ -18,6 +18,16 @@ postRouter.use(postLimiter);
 
 postRouter.post("/events", authMiddleware, asyncHandler(PostController.trackEvent));
 postRouter.post("/", authMiddleware, asyncHandler(PostController.createPost));
+postRouter.get(
+  "/my-job-applications",
+  authMiddleware,
+  asyncHandler(PostController.listMyJobApplications)
+);
+postRouter.get(
+  "/my-job-applications/:interestId",
+  authMiddleware,
+  asyncHandler(PostController.getMyJobApplicationDetail)
+);
 postRouter.get("/:postId", authMiddleware, asyncHandler(PostController.getPost));
 postRouter.put("/:postId", authMiddleware, asyncHandler(PostController.updatePost));
 postRouter.delete("/:postId", authMiddleware, asyncHandler(PostController.deletePost));
@@ -49,4 +59,14 @@ postRouter.get(
   "/:postId/job-interests",
   authMiddleware,
   asyncHandler(PostController.listJobInterests)
+);
+postRouter.patch(
+  "/:postId/job-interests/:interestId",
+  authMiddleware,
+  asyncHandler(PostController.updateJobInterest)
+);
+postRouter.post(
+  "/:postId/job-interests/:interestId/withdraw",
+  authMiddleware,
+  asyncHandler(PostController.withdrawJobInterest)
 );
