@@ -21,7 +21,14 @@ export const preferencesPatchSchema = z
   .refine((o) => Object.keys(o).length > 0, { message: "No fields to update" });
 
 export const pushTokenSchema = z.object({
-  token: z.string().min(8).max(512),
+  token: z
+    .string()
+    .min(8)
+    .max(512)
+    .refine(
+      (t) => t.startsWith("ExponentPushToken[") || t.startsWith("ExpoPushToken["),
+      { message: "Token must be an Expo push token (ExponentPushToken[…] / ExpoPushToken[…])" }
+    ),
   platform: z.enum(["ios", "android", "web"]),
   deviceId: z.string().max(128).nullable().optional(),
   appVersion: z.string().max(32).nullable().optional()

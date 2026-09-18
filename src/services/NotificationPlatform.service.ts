@@ -405,7 +405,10 @@ async function deliverPushToTokenRows(
   rows: PushDeviceToken[],
   payload: PushPayloadInput
 ): Promise<void> {
-  if (!rows.length) return;
+  if (!rows.length) {
+    console.info(`[Push] userId=${userId} skip: no device tokens`);
+    return;
+  }
 
   const isHighPriority = payload.priority > 0 || payload.category === "MATRIMONY";
   const channelId = isHighPriority ? "matrimony" : "default";
@@ -414,48 +417,71 @@ async function deliverPushToTokenRows(
   const expoRows = rows.filter((r) => isExpoPushToken(r.token));
   const fcmRows = rows.filter((r) => isFcmPushToken(r.token));
 
+  console.info(
+    `[Push] userId=${userId} type=${payload.data.type ?? "?"} expo=${expoRows.length} fcm=${fcmRows.length} channel=${channelId}`
+  );
+
   const invalidTokens: string[] = [];
+  let expoSent = 0;
+  let fcmSent = 0;
 
   if (expoRows.length) {
-    const { invalidTokens: bad } = await sendExpoPush(
+    const { invalidTokens: bad, sent } = await sendExpoPush(
       expoRows.map((t) => ({
         to: t.token,
         title: payload.title,
         body: bodyText,
-        sound: "default",
-        priority: isHighPriority ? "high" : "default",
+        sound: "default" as const,
+        priority: (isHighPriority ? "high" : "default") as "high" | "default",
         channelId: t.platform === "android" ? channelId : undefined,
         data: payload.data
       }))
     );
+    expoSent = sent;
     invalidTokens.push(...bad);
   }
 
   if (fcmRows.length) {
-    const { invalidTokens: bad } = await sendFcmPush(
-      fcmRows.map((r) => r.token),
-      {
-        title: payload.title,
-        body: bodyText,
-        data: payload.data,
-        priority: isHighPriority ? "high" : "normal"
-      }
-    );
-    invalidTokens.push(...bad);
+    if (!isFcmConfigured()) {
+      console.warn(
+        `[Push] userId=${userId} ${fcmRows.length} native token(s) ignored — FIREBASE_SERVICE_ACCOUNT_* not configured`
+      );
+    } else {
+      const { invalidTokens: bad, sent } = await sendFcmPush(
+        fcmRows.map((r) => r.token),
+        {
+          title: payload.title,
+          body: bodyText,
+          data: payload.data,
+          priority: isHighPriority ? "high" : "normal"
+        }
+      );
+      fcmSent = sent;
+      invalidTokens.push(...bad);
+    }
   }
 
   if (invalidTokens.length) {
     await PushDeviceToken.destroy({
       where: { userId, token: { [Op.in]: invalidTokens } }
     });
+    console.info(`[Push] userId=${userId} removed ${invalidTokens.length} invalid token(s)`);
   }
+
+  console.info(`[Push] userId=${userId} done expoSent=${expoSent} fcmSent=${fcmSent}`);
 }
 
 /** Expo + FCM push. Respects push + category preferences. */
 async function queuePushNotification(userId: number, dto: NotificationDto): Promise<void> {
   const prefs = await ensurePreferences(userId);
-  if (!prefs.pushEnabled) return;
-  if (!(await isCategoryEnabled(userId, dto.category))) return;
+  if (!prefs.pushEnabled) {
+    console.info(`[Push] userId=${userId} skip: pushEnabled=false`);
+    return;
+  }
+  if (!(await isCategoryEnabled(userId, dto.category))) {
+    console.info(`[Push] userId=${userId} skip: category ${dto.category} disabled`);
+    return;
+  }
 
   const tokens = await PushDeviceToken.findAll({
     where: { userId },
@@ -670,6 +696,15 @@ export async function registerPushToken(
   const token = input.token.trim();
   if (!token) throw Object.assign(new Error("Token required"), { status: 400 });
 
+  // Only accept Expo push tokens. Native FCM/APNs tokens require a separate FCM path
+  // and were previously registered by addPushTokenListener by mistake.
+  if (!isExpoPushToken(token)) {
+    throw Object.assign(
+      new Error("Only Expo push tokens (ExponentPushToken[…] / ExpoPushToken[…]) are accepted"),
+      { status: 400 }
+    );
+  }
+
   const [row] = await PushDeviceToken.findOrCreate({
     where: { userId, token },
     defaults: {
@@ -687,6 +722,9 @@ export async function registerPushToken(
     appVersion: input.appVersion ?? row.appVersion,
     lastUsedAt: new Date()
   } as any);
+  console.info(
+    `[Push] registered Expo token userId=${userId} platform=${input.platform} device=${input.deviceId ? "yes" : "no"}`
+  );
   return { ok: true };
 }
 
