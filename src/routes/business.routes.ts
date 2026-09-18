@@ -1,21 +1,13 @@
 import { Router } from "express";
-import rateLimit from "express-rate-limit";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { asyncHandler } from "../middlewares/asyncHandler";
+import { routeApiLimiter } from "../middlewares/rateLimit.middleware";
 import * as BusinessEnquiryController from "../controllers/BusinessEnquiry.controller";
 import * as BusinessBenefitController from "../controllers/BusinessBenefit.controller";
 
 export const businessRouter = Router();
 
-const businessLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 120,
-  message: { ok: false, message: "Too many requests" },
-  standardHeaders: true,
-  legacyHeaders: false
-});
-
-businessRouter.use(businessLimiter);
+businessRouter.use(routeApiLimiter(150));
 businessRouter.use(authMiddleware);
 
 businessRouter.post("/enquiries", asyncHandler(BusinessEnquiryController.createEnquiry));

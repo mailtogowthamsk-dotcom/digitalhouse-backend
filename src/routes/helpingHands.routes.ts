@@ -1,20 +1,12 @@
 import { Router } from "express";
-import rateLimit from "express-rate-limit";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { asyncHandler } from "../middlewares/asyncHandler";
+import { routeApiLimiter } from "../middlewares/rateLimit.middleware";
 import * as HelpingHandsController from "../controllers/HelpingHands.controller";
 
 export const helpingHandsRouter = Router();
 
-const limiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 80,
-  message: { ok: false, message: "Too many requests" },
-  standardHeaders: true,
-  legacyHeaders: false
-});
-
-helpingHandsRouter.use(limiter);
+helpingHandsRouter.use(routeApiLimiter(120));
 helpingHandsRouter.use(authMiddleware);
 
 helpingHandsRouter.get("/stats", asyncHandler(HelpingHandsController.getStats));

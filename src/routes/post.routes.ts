@@ -1,20 +1,12 @@
 import { Router } from "express";
-import rateLimit from "express-rate-limit";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { asyncHandler } from "../middlewares/asyncHandler";
+import { routeApiLimiter } from "../middlewares/rateLimit.middleware";
 import * as PostController from "../controllers/Post.controller";
 
 export const postRouter = Router();
 
-const postLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 100,
-  message: { ok: false, message: "Too many requests" },
-  standardHeaders: true,
-  legacyHeaders: false
-});
-
-postRouter.use(postLimiter);
+postRouter.use(routeApiLimiter(150));
 
 postRouter.post("/events", authMiddleware, asyncHandler(PostController.trackEvent));
 postRouter.post("/", authMiddleware, asyncHandler(PostController.createPost));

@@ -1,20 +1,12 @@
 import { Router } from "express";
-import rateLimit from "express-rate-limit";
 import { authMiddleware } from "../middlewares/auth.middleware";
 import { asyncHandler } from "../middlewares/asyncHandler";
+import { routeApiLimiter } from "../middlewares/rateLimit.middleware";
 import * as ConnectionsController from "../controllers/Connections.controller";
 
 export const connectionsRouter = Router();
 
-const limiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 120,
-  message: { ok: false, message: "Too many requests" },
-  standardHeaders: true,
-  legacyHeaders: false
-});
-
-connectionsRouter.use(limiter);
+connectionsRouter.use(routeApiLimiter(180));
 connectionsRouter.use(authMiddleware);
 
 connectionsRouter.get("/requests/count", asyncHandler(ConnectionsController.requestCount));
