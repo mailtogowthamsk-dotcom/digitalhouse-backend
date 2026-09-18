@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evaluateModeration, combinePolicyEvaluations, policyVerdictToSafetyDecision } from "../../src/services/contentSafety/policyEngine";
+import { allowNonSexualUncertainty } from "../../src/services/contentSafety/uncertaintyPolicy";
 import { moderateText, isSevereSafetyReportReason } from "../../src/services/contentSafety/textModerator";
 import { hammingHex, isKnownBadHashMatch } from "../../src/services/contentSafety/fingerprint";
 import { planVideoFrameTimestamps } from "../../src/services/contentSafety/videoFrames";
@@ -75,6 +76,77 @@ describe("content safety policy engine", () => {
     expect(policyVerdictToSafetyDecision("SAFE")).toBe("SAFE");
     expect(policyVerdictToSafetyDecision("BLOCK")).toBe("BLOCKED");
     expect(policyVerdictToSafetyDecision("REVIEW")).toBe("REVIEW_REQUIRED");
+  });
+});
+
+describe("allowNonSexualUncertainty (publish layer)", () => {
+  it("keeps sexual REVIEW for admin", () => {
+    const out = allowNonSexualUncertainty(
+      {
+        verdict: "REVIEW",
+        category: "SEXUALIZED_CONTENT",
+        confidence: 0.4,
+        reason: "mid",
+        policyVersion: CONTENT_SAFETY_POLICY_VERSION
+      },
+      { failureReason: null }
+    );
+    expect(out.verdict).toBe("REVIEW");
+    expect(out.category).toBe("SEXUALIZED_CONTENT");
+  });
+
+  it("auto-allows MODEL_UNAVAILABLE / fetch failed as SAFE", () => {
+    const unavailable = allowNonSexualUncertainty(
+      {
+        verdict: "REVIEW",
+        category: "UNCERTAIN",
+        confidence: null,
+        reason: "MODEL_UNAVAILABLE",
+        policyVersion: CONTENT_SAFETY_POLICY_VERSION
+      },
+      { failureReason: "MODEL_UNAVAILABLE" }
+    );
+    expect(unavailable.verdict).toBe("SAFE");
+    expect(unavailable.reason).toBe("AUTO_ALLOW_NON_SEXUAL_UNCERTAIN");
+
+    const fetchFail = allowNonSexualUncertainty(
+      {
+        verdict: "REVIEW",
+        category: "UNCERTAIN",
+        confidence: null,
+        reason: "DOWNLOAD_FAILED",
+        policyVersion: CONTENT_SAFETY_POLICY_VERSION
+      },
+      { failureReason: "fetch failed" }
+    );
+    expect(fetchFail.verdict).toBe("SAFE");
+  });
+
+  it("does not change SAFE or BLOCK verdicts", () => {
+    expect(
+      allowNonSexualUncertainty(
+        {
+          verdict: "SAFE",
+          category: "SAFE",
+          confidence: 1,
+          reason: "ok",
+          policyVersion: CONTENT_SAFETY_POLICY_VERSION
+        },
+        { failureReason: null }
+      ).verdict
+    ).toBe("SAFE");
+    expect(
+      allowNonSexualUncertainty(
+        {
+          verdict: "BLOCK",
+          category: "SEXUAL_EXPLICIT",
+          confidence: 0.9,
+          reason: "porn",
+          policyVersion: CONTENT_SAFETY_POLICY_VERSION
+        },
+        { failureReason: null }
+      ).verdict
+    ).toBe("BLOCK");
   });
 });
 

@@ -61,7 +61,8 @@ export const PROHIBITED_VIOLENCE_CATEGORIES: readonly SafetyCategory[] = [
  * - Low prohibited scores → SAFE
  *
  * Re-tune only after running `scripts/benchmark-moderation.ts` on a controlled set.
- * Uncertain / missing / timeout never maps to SAFE (see policyEngine).
+ * Sexual/violence signals → BLOCK/REVIEW. Technical uncertainty auto-allows
+ * (see allowNonSexualUncertainty) so innocent posts are not stuck in admin queue.
  */
 export const DEFAULT_SAFETY_THRESHOLDS = {
   /** Sum of porn + hentai at or above this → BLOCK */

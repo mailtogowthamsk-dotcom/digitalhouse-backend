@@ -44,8 +44,13 @@ import {
 } from "./quarantine";
 import type { NormalizedModerationResult, PolicyEvaluation } from "./types";
 import { initialSafetyForCreate, nextSafetyAfterEdit } from "./initialSafety";
+import {
+  allowNonSexualUncertainty,
+  isProhibitedSafetyCategory
+} from "./uncertaintyPolicy";
 
 export { initialSafetyForCreate };
+export { allowNonSexualUncertainty, isProhibitedSafetyCategory } from "./uncertaintyPolicy";
 
 type ClassifyFn = (buffer: Buffer) => Promise<NormalizedModerationResult>;
 
@@ -145,16 +150,255 @@ async function storeFingerprint(input: {
   } as any);
 }
 
+function mediaKeysForPost(post: Post): string[] {
+  const keys = new Set<string>();
+  for (const raw of [post.mediaUrl, post.thumbnailUrl]) {
+    if (!raw) continue;
+    const k = extractR2KeyFromUrl(raw) ?? raw;
+    keys.add(k);
+    const published = publishedKeyFromQuarantine(k);
+    if (published) keys.add(published);
+  }
+  if (post.postType === "MARKETPLACE") {
+    for (const u of parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl)) {
+      const k = extractR2KeyFromUrl(u) ?? u;
+      keys.add(k);
+    }
+  }
+  if (post.postType === "HELP_REQUEST") {
+    for (const u of parseHelpGallery(post.helpGallery, post.mediaUrl)) {
+      const k = extractR2KeyFromUrl(u) ?? u;
+      keys.add(k);
+    }
+  }
+  return [...keys];
+}
+
+async function findMediaFilesForPost(post: Post): Promise<MediaFile[]> {
+  const keys = mediaKeysForPost(post);
+  if (!keys.length) return [];
+  return MediaFile.findAll({
+    where: {
+      userId: post.userId,
+      [Op.or]: [{ objectKey: { [Op.in]: keys } }, { fileUrl: { [Op.in]: keys } }]
+    },
+    limit: 20
+  });
+}
+
+/**
+ * Fast path: reuse media_files safety already computed by the worker.
+ * Avoids a second R2 download + NSFW inference on post create (race case).
+ * Returns true when the post decision was applied (SAFE / REVIEW / BLOCKED).
+ */
+async function applyCachedMediaSafetyToPost(post: Post, media: MediaFile): Promise<boolean> {
+  const decision = media.safetyDecision;
+  if (!decision || decision === "PENDING" || decision === "PROCESSING") {
+    return false;
+  }
+
+  const text = moderateText(`${post.title}\n${post.description ?? ""}`);
+  if (text.verdict === "BLOCK") {
+    await Post.update(
+      {
+        safetyDecision: "BLOCKED",
+        safetyCategory: text.category,
+        safetyFailureReason: text.reason,
+        moderatedMediaVersion: null
+      } as any,
+      { where: { id: post.id, mediaVersion: post.mediaVersion } }
+    );
+    return true;
+  }
+  if (text.verdict === "REVIEW") {
+    await Post.update(
+      {
+        safetyDecision: "REVIEW_REQUIRED",
+        safetyCategory: text.category,
+        safetyFailureReason: text.reason,
+        moderatedMediaVersion: null
+      } as any,
+      { where: { id: post.id, mediaVersion: post.mediaVersion } }
+    );
+    return true;
+  }
+
+  const prohibited = isProhibitedSafetyCategory(media.safetyCategory);
+  const softSafe =
+    decision === "SAFE" ||
+    decision === "FAILED" ||
+    (decision === "REVIEW_REQUIRED" && !prohibited && media.safetyCategory === "UNCERTAIN");
+
+  if (softSafe) {
+    const mapping = await promoteQuarantineKeys(
+      [post.mediaUrl, post.thumbnailUrl, media.objectKey, media.fileUrl],
+      media.variantsJson
+    );
+    if (mapping.size > 0) {
+      await sequelize.transaction(async (transaction) => {
+        const locked = await Post.findByPk(post.id, {
+          transaction,
+          lock: Transaction.LOCK.UPDATE
+        });
+        if (!locked || locked.mediaVersion !== post.mediaVersion) return;
+        await rewritePostMediaKeys(locked, mapping, transaction);
+        const nextKey = rewriteStoredKey(media.objectKey || media.fileUrl, mapping);
+        const nextFileUrl = rewriteStoredKey(media.fileUrl, mapping);
+        await media.update(
+          {
+            objectKey: nextKey ?? media.objectKey,
+            fileUrl: nextFileUrl ?? media.fileUrl,
+            safetyDecision: "SAFE",
+            safetyCategory: "SAFE"
+          } as any,
+          { transaction }
+        );
+      });
+    } else if (media.safetyDecision !== "SAFE") {
+      await media.update({ safetyDecision: "SAFE", safetyCategory: "SAFE" } as any);
+    }
+
+    const published = await tryPublishIfEligible(post.id, post.mediaVersion || 1, {
+      category: "SAFE",
+      confidence: null,
+      model: LOCAL_MODEL_NAME,
+      modelVersion: LOCAL_MODEL_VERSION,
+      policyVersion: CONTENT_SAFETY_POLICY_VERSION,
+      reason:
+        decision === "SAFE"
+          ? "CACHED_MEDIA_SAFE"
+          : "AUTO_ALLOW_NON_SEXUAL_UNCERTAIN"
+    });
+    if (published && mapping.size > 0) {
+      await deletePromotedQuarantineKeys(mapping);
+    }
+    logSafety("moderation_applied_cached", {
+      post_id: post.id,
+      media_id: media.id,
+      from_decision: decision,
+      published
+    });
+    return true;
+  }
+
+  if (decision === "BLOCKED" || (decision === "REVIEW_REQUIRED" && prohibited)) {
+    await Post.update(
+      {
+        safetyDecision: decision === "BLOCKED" ? "BLOCKED" : "REVIEW_REQUIRED",
+        safetyCategory: media.safetyCategory,
+        safetyFailureReason: "CACHED_MEDIA_REVIEW",
+        moderatedMediaVersion: null
+      } as any,
+      { where: { id: post.id, mediaVersion: post.mediaVersion } }
+    );
+    logSafety("moderation_applied_cached_review", {
+      post_id: post.id,
+      media_id: media.id,
+      decision,
+      category: media.safetyCategory
+    });
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * After create: SAFE text posts go live immediately.
+ * Media posts: apply worker result if already done (fast); otherwise leave PENDING
+ * for the media worker (no double NSFW on the create request path).
+ */
 export async function afterCreatePostSafety(post: Post): Promise<void> {
-  if (post.safetyDecision !== "SAFE") return;
-  const author = await User.findByPk(post.userId, { attributes: ["community"] });
-  if (post.postType !== "MARKETPLACE") {
-    emitFeedNewPost(author?.community ?? null, post.id);
+  if (post.safetyDecision === "SAFE") {
+    if (post.postType !== "MARKETPLACE" || post.marketplaceStatus === "LIVE") {
+      const author = await User.findByPk(post.userId, { attributes: ["community"] });
+      emitFeedNewPost(author?.community ?? null, post.id);
+    }
+    return;
+  }
+
+  if (post.safetyDecision !== "PENDING" && post.safetyDecision !== "PROCESSING") {
+    return;
+  }
+
+  if (!postHasMedia(post)) {
+    const text = moderateText(`${post.title}\n${post.description ?? ""}`);
+    if (text.verdict === "SAFE") {
+      await tryPublishIfEligible(post.id, post.mediaVersion || 1, {
+        category: "SAFE",
+        confidence: 1,
+        model: "text",
+        modelVersion: "v1",
+        policyVersion: CONTENT_SAFETY_POLICY_VERSION,
+        reason: "TEXT_ONLY_CREATE"
+      });
+    }
+    return;
+  }
+
+  try {
+    const mediaRows = await findMediaFilesForPost(post);
+    const quarantineMedia = mediaRows.filter((m) =>
+      (QUARANTINE_MEDIA_MODULES as readonly string[]).includes(m.module)
+    );
+    if (!quarantineMedia.length) {
+      logSafety("moderation_waiting_media", { post_id: post.id });
+      return;
+    }
+
+    const primaryKey = post.mediaUrl ? extractR2KeyFromUrl(post.mediaUrl) ?? post.mediaUrl : null;
+    const primary =
+      quarantineMedia.find(
+        (m) =>
+          m.objectKey === primaryKey ||
+          m.fileUrl === primaryKey ||
+          m.objectKey === post.mediaUrl ||
+          m.fileUrl === post.mediaUrl
+      ) ?? quarantineMedia[0]!;
+
+    // Worker still optimizing — it will call moderateProcessedMedia when done.
+    if (primary.processingStatus !== "completed" && !primary.safetyDecision) {
+      logSafety("moderation_waiting_worker", {
+        post_id: post.id,
+        media_id: primary.id,
+        processing: primary.processingStatus
+      });
+      return;
+    }
+
+    const applied = await applyCachedMediaSafetyToPost(post, primary);
+    if (applied) return;
+
+    // Rare: completed job but no usable decision — rescan in background (do not block create).
+    logSafety("moderation_background_rescan", {
+      post_id: post.id,
+      media_id: primary.id
+    });
+    void moderateProcessedMedia(primary.id, null).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      logSafety("moderation_background_rescan_failed", {
+        post_id: post.id,
+        media_id: primary.id,
+        error: message.slice(0, 200)
+      });
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logSafety("moderation_reconcile_failed", {
+      post_id: post.id,
+      error: message.slice(0, 200)
+    });
+    // Leave PENDING — worker/admin can finish. Do not auto-allow on unknown errors.
   }
 }
 
 function postHasMedia(post: Post): boolean {
-  return Boolean(post.mediaUrl || post.thumbnailUrl);
+  return Boolean(
+    post.mediaUrl ||
+      post.thumbnailUrl ||
+      (Array.isArray(post.marketplaceGallery) && post.marketplaceGallery.length > 0) ||
+      (Array.isArray(post.helpGallery) && post.helpGallery.length > 0)
+  );
 }
 
 export async function applyEditSafety(post: Post, changed: {
@@ -560,13 +804,22 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
     };
   }
 
+  evaluation = allowNonSexualUncertainty(evaluation, result);
+  if (evaluation.reason === "AUTO_ALLOW_NON_SEXUAL_UNCERTAIN") {
+    logSafety("moderation_auto_allow_uncertain", {
+      media_id: mediaId,
+      job_id: jobId,
+      original_failure: result.failureReason ?? null
+    });
+  }
+
   const decision = policyVerdictToSafetyDecision(evaluation.verdict);
   const processingTimeMs = Date.now() - started;
   const posts = await postsReferencingMedia(media);
 
   await media.update({
     safetyDecision: decision,
-    safetyCategory: evaluation.category,
+    safetyCategory: evaluation.category === "UNCERTAIN" && decision === "SAFE" ? "SAFE" : evaluation.category,
     perceptualHash: hash ?? media.perceptualHash
   });
 
@@ -757,18 +1010,41 @@ async function maybePromoteProfilePhoto(
 export async function markMediaModerationFailed(mediaId: number, jobId: number | null, reason: string): Promise<void> {
   const media = await MediaFile.findByPk(mediaId);
   if (!media) return;
-  await media.update({ safetyDecision: "FAILED", safetyCategory: "UNCERTAIN" });
+  // Pipeline errors are not sexual content — auto-allow linked posts when caption is clean.
+  await media.update({ safetyDecision: "SAFE", safetyCategory: "SAFE" });
   const posts = await postsReferencingMedia(media);
   for (const post of posts) {
-    await Post.update(
-      {
-        safetyDecision: "FAILED",
-        safetyCategory: "UNCERTAIN",
-        safetyFailureReason: reason.slice(0, 255),
-        moderatedMediaVersion: null
-      } as any,
-      { where: { id: post.id, mediaVersion: post.mediaVersion } }
+    const text = moderateText(`${post.title}\n${post.description ?? ""}`);
+    if (text.verdict !== "SAFE") {
+      await Post.update(
+        {
+          safetyDecision: "REVIEW_REQUIRED",
+          safetyCategory: text.category,
+          safetyFailureReason: text.reason.slice(0, 255),
+          moderatedMediaVersion: null
+        } as any,
+        { where: { id: post.id, mediaVersion: post.mediaVersion } }
+      );
+      continue;
+    }
+    const mapping = await promoteQuarantineKeys(
+      [post.mediaUrl, post.thumbnailUrl, media.objectKey, media.fileUrl],
+      media.variantsJson
     );
+    await sequelize.transaction(async (transaction) => {
+      const locked = await Post.findByPk(post.id, { transaction, lock: Transaction.LOCK.UPDATE });
+      if (!locked || locked.mediaVersion !== post.mediaVersion) return;
+      await rewritePostMediaKeys(locked, mapping, transaction);
+    });
+    const published = await tryPublishIfEligible(post.id, post.mediaVersion, {
+      category: "SAFE",
+      confidence: null,
+      model: LOCAL_MODEL_NAME,
+      modelVersion: LOCAL_MODEL_VERSION,
+      policyVersion: CONTENT_SAFETY_POLICY_VERSION,
+      reason: "AUTO_ALLOW_PIPELINE_ERROR"
+    });
+    if (published) await deletePromotedQuarantineKeys(mapping);
     await writeScan({
       postId: post.id,
       mediaId,
@@ -778,19 +1054,19 @@ export async function markMediaModerationFailed(mediaId: number, jobId: number |
       model: LOCAL_MODEL_NAME,
       modelVersion: LOCAL_MODEL_VERSION,
       policyVersion: CONTENT_SAFETY_POLICY_VERSION,
-      status: "FAILED",
-      category: "UNCERTAIN",
+      status: "SAFE",
+      category: "SAFE",
       confidence: null,
-      decision: "FAILED",
-      failureReason: reason.slice(0, 255),
+      decision: "SAFE",
+      failureReason: `AUTO_ALLOW_PIPELINE_ERROR:${reason}`.slice(0, 240),
       processingTimeMs: null
     });
-    logSafety("moderation_failed", {
+    logSafety("moderation_auto_allow_pipeline_error", {
       post_id: post.id,
       media_id: mediaId,
       job_id: jobId,
-      media_version: post.mediaVersion,
-      reason: reason.slice(0, 120)
+      reason: reason.slice(0, 120),
+      published
     });
   }
 }
