@@ -705,32 +705,63 @@ export async function registerPushToken(
     );
   }
 
-  const [row, created] = await PushDeviceToken.findOrCreate({
-    where: { userId, token },
-    defaults: {
-      userId,
-      token,
-      platform: input.platform,
-      deviceId: input.deviceId ?? null,
-      appVersion: input.appVersion ?? null,
-      lastUsedAt: new Date()
-    } as any
-  });
-
+  // Hard gate: mobile token-listener storms can hit 10+/sec. Drop before any DB work.
+  const minIntervalMs = Math.max(
+    15_000,
+    Number(process.env.PUSH_TOKEN_REGISTER_MIN_INTERVAL_MS || 60_000)
+  );
+  const prevHit = pushRegisterHits.get(userId) ?? 0;
   const now = Date.now();
+  if (now - prevHit < minIntervalMs) {
+    return { ok: true, skipped: true as const };
+  }
+  pushRegisterHits.set(userId, now);
+  if (pushRegisterHits.size > 20_000) {
+    // Bound memory on long-lived API process
+    const cutoff = now - minIntervalMs * 2;
+    for (const [uid, ts] of pushRegisterHits) {
+      if (ts < cutoff) pushRegisterHits.delete(uid);
+    }
+  }
+
+  // Prefer find → create to avoid stampede duplicates when table has no unique index.
+  let row = await PushDeviceToken.findOne({ where: { userId, token } });
+  let created = false;
+  if (!row) {
+    try {
+      row = await PushDeviceToken.create({
+        userId,
+        token,
+        platform: input.platform,
+        deviceId: input.deviceId ?? null,
+        appVersion: input.appVersion ?? null,
+        lastUsedAt: new Date()
+      } as any);
+      created = true;
+    } catch {
+      row = await PushDeviceToken.findOne({ where: { userId, token } });
+      if (!row) throw Object.assign(new Error("Could not save push token"), { status: 500 });
+    }
+  }
+
   const lastUsedMs = row.lastUsedAt ? new Date(row.lastUsedAt).getTime() : 0;
   const staleMs = Math.max(60_000, Number(process.env.PUSH_TOKEN_TOUCH_INTERVAL_MS || 900_000));
+  // Ignore volatile session deviceIds — they flip every cold start and force needless writes.
+  const stableDeviceId =
+    input.deviceId && !String(input.deviceId).startsWith("ExponentPushToken")
+      ? input.deviceId
+      : null;
   const needsTouch =
     created ||
     row.platform !== input.platform ||
-    (input.deviceId != null && row.deviceId !== input.deviceId) ||
+    (stableDeviceId != null && row.deviceId !== stableDeviceId) ||
     (input.appVersion != null && row.appVersion !== input.appVersion) ||
     now - lastUsedMs >= staleMs;
 
-  if (needsTouch) {
+  if (needsTouch && !created) {
     await row.update({
       platform: input.platform,
-      deviceId: input.deviceId ?? row.deviceId,
+      deviceId: stableDeviceId ?? row.deviceId,
       appVersion: input.appVersion ?? row.appVersion,
       lastUsedAt: new Date()
     } as any);
@@ -738,11 +769,14 @@ export async function registerPushToken(
 
   if (created) {
     console.info(
-      `[Push] registered Expo token userId=${userId} platform=${input.platform} device=${input.deviceId ? "yes" : "no"}`
+      `[Push] registered Expo token userId=${userId} platform=${input.platform} device=${stableDeviceId ? "yes" : "no"}`
     );
   }
   return { ok: true };
 }
+
+/** Per-user last successful register attempt (in-process). */
+const pushRegisterHits = new Map<number, number>();
 
 export async function getNotificationAudienceStats(): Promise<{
   approvedUsers: number;
