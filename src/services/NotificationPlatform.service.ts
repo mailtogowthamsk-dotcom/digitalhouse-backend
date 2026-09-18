@@ -705,7 +705,7 @@ export async function registerPushToken(
     );
   }
 
-  const [row] = await PushDeviceToken.findOrCreate({
+  const [row, created] = await PushDeviceToken.findOrCreate({
     where: { userId, token },
     defaults: {
       userId,
@@ -716,15 +716,31 @@ export async function registerPushToken(
       lastUsedAt: new Date()
     } as any
   });
-  await row.update({
-    platform: input.platform,
-    deviceId: input.deviceId ?? row.deviceId,
-    appVersion: input.appVersion ?? row.appVersion,
-    lastUsedAt: new Date()
-  } as any);
-  console.info(
-    `[Push] registered Expo token userId=${userId} platform=${input.platform} device=${input.deviceId ? "yes" : "no"}`
-  );
+
+  const now = Date.now();
+  const lastUsedMs = row.lastUsedAt ? new Date(row.lastUsedAt).getTime() : 0;
+  const staleMs = Math.max(60_000, Number(process.env.PUSH_TOKEN_TOUCH_INTERVAL_MS || 900_000));
+  const needsTouch =
+    created ||
+    row.platform !== input.platform ||
+    (input.deviceId != null && row.deviceId !== input.deviceId) ||
+    (input.appVersion != null && row.appVersion !== input.appVersion) ||
+    now - lastUsedMs >= staleMs;
+
+  if (needsTouch) {
+    await row.update({
+      platform: input.platform,
+      deviceId: input.deviceId ?? row.deviceId,
+      appVersion: input.appVersion ?? row.appVersion,
+      lastUsedAt: new Date()
+    } as any);
+  }
+
+  if (created) {
+    console.info(
+      `[Push] registered Expo token userId=${userId} platform=${input.platform} device=${input.deviceId ? "yes" : "no"}`
+    );
+  }
   return { ok: true };
 }
 

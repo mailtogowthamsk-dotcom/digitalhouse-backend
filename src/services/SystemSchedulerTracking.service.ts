@@ -170,19 +170,36 @@ export async function trackExecution(
   executedBy: string | null,
   work: () => Promise<TrackWorkResult>
 ): Promise<TrackExecutionResult> {
-  const locked = await withSchedulerLock(jobKey, () =>
-    trackExecutionLocked(jobKey, triggerType, executedBy, work)
+  // Serialize in-process: each job holds a MySQL GET_LOCK connection for the
+  // whole run while work() borrows more pool connections. Concurrent ticks
+  // (hourly jobs aligning after reload) exhaust DB_POOL_MAX=6 → Operation timeout.
+  return enqueueSchedulerExecution(async () => {
+    const locked = await withSchedulerLock(jobKey, () =>
+      trackExecutionLocked(jobKey, triggerType, executedBy, work)
+    );
+    if (!locked.acquired) {
+      await touchHeartbeat(jobKey);
+      return {
+        ok: true,
+        skipped: true,
+        runId: null,
+        recordsProcessed: 0
+      };
+    }
+    return locked.result;
+  });
+}
+
+/** Process-local FIFO so scheduler jobs never stampede the shared Sequelize pool. */
+let schedulerExecChain: Promise<unknown> = Promise.resolve();
+
+function enqueueSchedulerExecution<T>(fn: () => Promise<T>): Promise<T> {
+  const run = schedulerExecChain.then(fn, fn) as Promise<T>;
+  schedulerExecChain = run.then(
+    () => undefined,
+    () => undefined
   );
-  if (!locked.acquired) {
-    await touchHeartbeat(jobKey);
-    return {
-      ok: true,
-      skipped: true,
-      runId: null,
-      recordsProcessed: 0
-    };
-  }
-  return locked.result;
+  return run;
 }
 
 async function trackExecutionLocked(

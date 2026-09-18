@@ -132,7 +132,7 @@ export function startHelpingHandsExpiryJobs(): void {
     return;
   }
   if (jobTimer) return;
-  void runHelpingHandsExpiryJobs();
+  setTimeout(() => void runHelpingHandsExpiryJobs(), 70_000);
   jobTimer = setInterval(() => void runHelpingHandsExpiryJobs(), JOB_INTERVAL_MS);
   console.log(
     `[helping-hands-expiry-job] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min`

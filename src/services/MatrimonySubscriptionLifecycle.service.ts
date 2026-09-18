@@ -209,7 +209,7 @@ export async function runSubscriptionLifecycleJobs(opts?: {
 
 export function startMatrimonySubscriptionJobs(): void {
   if (!EXPIRY_JOB_ENABLED || jobTimer) return;
-  setTimeout(() => void runSubscriptionLifecycleJobs(), 30_000);
+  setTimeout(() => void runSubscriptionLifecycleJobs(), 40_000);
   jobTimer = setInterval(() => void runSubscriptionLifecycleJobs(), JOB_INTERVAL_MS);
   console.log(
     `[matrimony-subscription-job] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min`

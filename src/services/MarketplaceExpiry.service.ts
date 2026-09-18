@@ -171,7 +171,8 @@ export function startMarketplaceExpiryJobs(): void {
     return;
   }
   if (jobTimer) return;
-  void runMarketplaceExpiryJobs();
+  // Stagger vs other hourly jobs so they do not stampede after worker reload.
+  setTimeout(() => void runMarketplaceExpiryJobs(), 55_000);
   jobTimer = setInterval(() => void runMarketplaceExpiryJobs(), JOB_INTERVAL_MS);
   console.log(
     `[marketplace-expiry-job] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min`

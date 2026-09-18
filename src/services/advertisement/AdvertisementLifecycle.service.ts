@@ -149,7 +149,7 @@ export function startAdvertisementLifecycleJobs(): void {
     return;
   }
   if (jobTimer) return;
-  void runAdvertisementLifecycleJobs();
+  setTimeout(() => void runAdvertisementLifecycleJobs(), 85_000);
   jobTimer = setInterval(() => void runAdvertisementLifecycleJobs(), JOB_INTERVAL_MS);
   console.log(
     `[advertisement-lifecycle] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min`

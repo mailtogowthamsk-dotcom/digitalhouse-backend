@@ -153,8 +153,9 @@ export function assertProductionSecurityEnv(): void {
     if (process.env.REDIS_REQUIRED === "true") {
       errors.push("REDIS_URL is required (REDIS_REQUIRED=true). Needed for multi-instance OTP locks + token revocation.");
     } else {
-      console.warn(
-        "[security] REDIS_URL unset — OTP attempt counters and token revocation are single-instance only. Set REDIS_REQUIRED=true to enforce."
+      // Single API instance (ecosystem.4core without Redis) is the supported prod default.
+      console.info(
+        "[security] REDIS_URL unset — OK for single API instance. Set REDIS_URL before scaling API workers > 1."
       );
     }
   }
