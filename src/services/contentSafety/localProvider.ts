@@ -28,6 +28,56 @@ function timeoutMs(): number {
   return Number.isFinite(n) ? Math.max(3_000, n) : 30_000;
 }
 
+/**
+ * Node undici cannot load `file://` model URLs (throws "fetch failed").
+ * Load weights via fs and hand TensorFlow an IOHandler instead.
+ */
+async function diskGraphModelHandler(dir: string) {
+  const modelJsonPath = path.join(dir, "model.json");
+  const modelJSON = JSON.parse(await fs.promises.readFile(modelJsonPath, "utf8")) as {
+    modelTopology?: unknown;
+    format?: string;
+    generatedBy?: string;
+    convertedBy?: string;
+    weightsManifest?: Array<{
+      paths: string[];
+      weights: Array<{ name: string; shape: number[]; dtype: string }>;
+    }>;
+  };
+
+  return {
+    load: async () => {
+      const weightSpecs: Array<{ name: string; shape: number[]; dtype: string }> = [];
+      const chunks: Buffer[] = [];
+      for (const group of modelJSON.weightsManifest || []) {
+        for (const w of group.weights || []) weightSpecs.push(w);
+        for (const rel of group.paths || []) {
+          chunks.push(await fs.promises.readFile(path.join(dir, rel)));
+        }
+      }
+      if (!weightSpecs.length || !chunks.length) {
+        throw new Error(`NSFWJS weights missing under ${dir}`);
+      }
+      const total = chunks.reduce((n, b) => n + b.length, 0);
+      const weightData = new ArrayBuffer(total);
+      const view = new Uint8Array(weightData);
+      let offset = 0;
+      for (const b of chunks) {
+        view.set(b, offset);
+        offset += b.length;
+      }
+      return {
+        modelTopology: modelJSON.modelTopology ?? modelJSON,
+        format: modelJSON.format,
+        generatedBy: modelJSON.generatedBy,
+        convertedBy: modelJSON.convertedBy,
+        weightSpecs,
+        weightData
+      };
+    }
+  };
+}
+
 async function loadModel() {
   if (modelPromise) return modelPromise;
   modelPromise = (async () => {
@@ -36,7 +86,6 @@ async function loadModel() {
     if (!fs.existsSync(modelJson)) {
       throw new Error(`NSFWJS model.json missing at ${dir}`);
     }
-    // Optional: nsfwjs + @tensorflow/tfjs (pure JS). Fail closed if not installed.
     const tf = await import("@tensorflow/tfjs");
     await import("@tensorflow/tfjs-backend-cpu").catch(() => undefined);
     if (typeof (tf as any).setBackend === "function") {
@@ -45,8 +94,8 @@ async function loadModel() {
     await (tf as any).ready?.();
     tfModule = tf as any;
     const nsfwjs = await import("nsfwjs");
-    const fileUrl = `file://${dir.replace(/\\/g, "/")}/`;
-    const model = await (nsfwjs as any).load(fileUrl, { size: 224, type: "graph" });
+    const handler = await diskGraphModelHandler(dir);
+    const model = await (nsfwjs as any).load(handler, { size: 224, type: "graph" });
     return model;
   })();
   try {

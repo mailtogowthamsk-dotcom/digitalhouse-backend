@@ -5,19 +5,6 @@ import {
 } from "../../constants/contentSafety.constants";
 import type { NormalizedModerationResult, PolicyEvaluation } from "./types";
 
-const TECHNICAL_FAILURE_REASONS = [
-  "MODEL_UNAVAILABLE",
-  "MODEL_TIMEOUT",
-  "DOWNLOAD_FAILED",
-  "fetch failed",
-  "MISSING_RESULT",
-  "INSUFFICIENT_ANALYSIS",
-  "UNSUPPORTED_MEDIA",
-  "CORRUPTED_MEDIA",
-  "UNCERTAIN_CLASSIFICATION",
-  "UNKNOWN_CATEGORY"
-] as const;
-
 export function isProhibitedSafetyCategory(category: string | null | undefined): boolean {
   if (!category) return false;
   return (
@@ -29,19 +16,51 @@ export function isProhibitedSafetyCategory(category: string | null | undefined):
 
 /**
  * Sexual/violence → keep REVIEW/BLOCK.
- * Technical uncertainty → SAFE so innocent posts are not stuck for admin.
+ *
+ * Soft UNCERTAIN from a completed model run (available=true) may auto-SAFE.
+ * Download / fetch / model failures stay REVIEW — never public (marketplace auto-LIVE
+ * depends on SAFE; fail-closed is required).
  */
 export function allowNonSexualUncertainty(
   evaluation: PolicyEvaluation,
-  result: Pick<NormalizedModerationResult, "failureReason">
+  result: Pick<
+    NormalizedModerationResult,
+    | "failureReason"
+    | "failed"
+    | "timeout"
+    | "corrupt"
+    | "unsupported"
+    | "insufficientCoverage"
+    | "available"
+  >
 ): PolicyEvaluation {
   if (evaluation.verdict !== "REVIEW") return evaluation;
   if (isProhibitedSafetyCategory(evaluation.category)) return evaluation;
-  const reason = `${evaluation.reason ?? ""} ${result.failureReason ?? ""}`;
-  const technical =
-    evaluation.category === "UNCERTAIN" ||
-    TECHNICAL_FAILURE_REASONS.some((r) => reason.includes(r));
-  if (!technical) return evaluation;
+
+  if (
+    result.failed ||
+    result.timeout ||
+    result.corrupt ||
+    result.unsupported ||
+    result.insufficientCoverage ||
+    result.available === false
+  ) {
+    return evaluation;
+  }
+
+  const reason = `${evaluation.reason ?? ""} ${result.failureReason ?? ""}`.toLowerCase();
+  if (
+    reason.includes("fetch failed") ||
+    reason.includes("download_failed") ||
+    reason.includes("model_unavailable") ||
+    reason.includes("model_timeout") ||
+    reason.includes("model_failure")
+  ) {
+    return evaluation;
+  }
+
+  if (evaluation.category !== "UNCERTAIN") return evaluation;
+
   return {
     verdict: "SAFE",
     category: "SAFE",

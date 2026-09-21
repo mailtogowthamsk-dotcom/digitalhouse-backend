@@ -95,7 +95,7 @@ describe("allowNonSexualUncertainty (publish layer)", () => {
     expect(out.category).toBe("SEXUALIZED_CONTENT");
   });
 
-  it("auto-allows MODEL_UNAVAILABLE / fetch failed as SAFE", () => {
+  it("keeps MODEL_UNAVAILABLE / fetch failed as REVIEW (fail-closed)", () => {
     const unavailable = allowNonSexualUncertainty(
       {
         verdict: "REVIEW",
@@ -104,10 +104,10 @@ describe("allowNonSexualUncertainty (publish layer)", () => {
         reason: "MODEL_UNAVAILABLE",
         policyVersion: CONTENT_SAFETY_POLICY_VERSION
       },
-      { failureReason: "MODEL_UNAVAILABLE" }
+      { failureReason: "MODEL_UNAVAILABLE", failed: true, available: false }
     );
-    expect(unavailable.verdict).toBe("SAFE");
-    expect(unavailable.reason).toBe("AUTO_ALLOW_NON_SEXUAL_UNCERTAIN");
+    expect(unavailable.verdict).toBe("REVIEW");
+    expect(unavailable.category).toBe("UNCERTAIN");
 
     const fetchFail = allowNonSexualUncertainty(
       {
@@ -117,9 +117,24 @@ describe("allowNonSexualUncertainty (publish layer)", () => {
         reason: "DOWNLOAD_FAILED",
         policyVersion: CONTENT_SAFETY_POLICY_VERSION
       },
-      { failureReason: "fetch failed" }
+      { failureReason: "fetch failed", failed: true, available: false }
     );
-    expect(fetchFail.verdict).toBe("SAFE");
+    expect(fetchFail.verdict).toBe("REVIEW");
+  });
+
+  it("auto-allows soft UNCERTAIN only when model actually ran", () => {
+    const soft = allowNonSexualUncertainty(
+      {
+        verdict: "REVIEW",
+        category: "UNCERTAIN",
+        confidence: 0.2,
+        reason: "UNCERTAIN_CLASSIFICATION",
+        policyVersion: CONTENT_SAFETY_POLICY_VERSION
+      },
+      { failureReason: null, available: true, failed: false }
+    );
+    expect(soft.verdict).toBe("SAFE");
+    expect(soft.reason).toBe("AUTO_ALLOW_NON_SEXUAL_UNCERTAIN");
   });
 
   it("does not change SAFE or BLOCK verdicts", () => {
