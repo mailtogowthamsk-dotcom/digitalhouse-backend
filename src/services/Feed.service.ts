@@ -606,18 +606,10 @@ export async function buildFeedItemsFromPosts(
       if (storedMediaKey) {
         storedMediaKey =
           (await mediaService.resolveLiveMediaKey(p.userId, storedMediaKey)) ?? storedMediaKey;
-        if (p.safetyDecision === "SAFE") {
-          storedMediaKey =
-            mediaService.publicPublishStorageKey(storedMediaKey) ?? storedMediaKey;
-        }
       }
       if (storedThumbKey) {
         storedThumbKey =
           (await mediaService.resolveLiveMediaKey(p.userId, storedThumbKey)) ?? storedThumbKey;
-        if (p.safetyDecision === "SAFE") {
-          storedThumbKey =
-            mediaService.publicPublishStorageKey(storedThumbKey) ?? storedThumbKey;
-        }
       }
       const galleryParsed =
         p.postType === "MARKETPLACE"
@@ -626,13 +618,13 @@ export async function buildFeedItemsFromPosts(
             ? parseHelpGallery(p.helpGallery, p.mediaUrl ?? null)
             : [];
       const galleryRaw = galleryParsed.length
-        ? await mediaService.resolvePublicGalleryKeys(p.userId, galleryParsed, {
-            publishSafe: p.safetyDecision === "SAFE"
-          })
+        ? await mediaService.resolvePublicGalleryKeys(p.userId, galleryParsed)
         : [];
       const ownerView = p.userId === currentUserId;
+      // SAFE listings may still have un-promoted quarantine gallery keys — sign for everyone.
+      const canSignPrivate = ownerView || p.safetyDecision === "SAFE";
       const resolveFeedMedia = (url: string | null | undefined) =>
-        ownerView && isPrivateR2Object(url)
+        canSignPrivate && isPrivateR2Object(url)
           ? toPrivateSignedUrlIfR2(url)
           : Promise.resolve(toPublicUrlIfR2(url ?? null));
       const [mediaUrl, thumbnailUrl, profileImage, gallery] = await Promise.all([
@@ -641,8 +633,8 @@ export async function buildFeedItemsFromPosts(
         author ? Promise.resolve(toPublicUrlIfR2(author.profilePhoto ?? null)) : Promise.resolve(null),
         galleryRaw.length
           ? p.postType === "MARKETPLACE"
-            ? publicMarketplaceGallery(galleryRaw, { signPrivate: ownerView })
-            : publicHelpGallery(galleryRaw, { signPrivate: ownerView })
+            ? publicMarketplaceGallery(galleryRaw, { signPrivate: canSignPrivate })
+            : publicHelpGallery(galleryRaw, { signPrivate: canSignPrivate })
           : Promise.resolve([] as string[])
       ]);
       const mediaType = resolvePostMediaType({

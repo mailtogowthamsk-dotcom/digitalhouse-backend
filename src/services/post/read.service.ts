@@ -92,16 +92,10 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
   if (storedMediaKey) {
     storedMediaKey =
       (await mediaService.resolveLiveMediaKey(post.userId, storedMediaKey)) ?? storedMediaKey;
-    if (post.safetyDecision === "SAFE") {
-      storedMediaKey = mediaService.publicPublishStorageKey(storedMediaKey) ?? storedMediaKey;
-    }
   }
   if (storedThumbKey) {
     storedThumbKey =
       (await mediaService.resolveLiveMediaKey(post.userId, storedThumbKey)) ?? storedThumbKey;
-    if (post.safetyDecision === "SAFE") {
-      storedThumbKey = mediaService.publicPublishStorageKey(storedThumbKey) ?? storedThumbKey;
-    }
   }
   const galleryParsed =
     post.postType === "MARKETPLACE"
@@ -110,27 +104,26 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
         ? parseHelpGallery(post.helpGallery, post.mediaUrl ?? null)
         : [];
   const galleryRaw = galleryParsed.length
-    ? await mediaService.resolvePublicGalleryKeys(post.userId, galleryParsed, {
-        publishSafe: post.safetyDecision === "SAFE"
-      })
+    ? await mediaService.resolvePublicGalleryKeys(post.userId, galleryParsed)
     : [];
+  const canSignPrivate = isOwner || post.safetyDecision === "SAFE";
   const [likeCount, commentCount, likedByMe, savedByMe, mediaUrl, thumbnailUrl, authorDto, gallerySigned] =
     await Promise.all([
       PostLike.count({ where: { postId } }),
       Comment.count({ where: { postId } }),
       PostLike.findOne({ where: { postId, userId } }).then((r) => !!r),
       SavedPost.findOne({ where: { postId, userId } }).then((r) => !!r),
-      isOwner && isPrivateR2Object(storedMediaKey)
+      canSignPrivate && isPrivateR2Object(storedMediaKey)
         ? toPrivateSignedUrlIfR2(storedMediaKey)
         : Promise.resolve(toPublicUrlIfR2(storedMediaKey ?? null)),
-      isOwner && isPrivateR2Object(storedThumbKey)
+      canSignPrivate && isPrivateR2Object(storedThumbKey)
         ? toPrivateSignedUrlIfR2(storedThumbKey)
         : Promise.resolve(toPublicUrlIfR2(storedThumbKey ?? null)),
       toAuthorDto(author),
       post.postType === "MARKETPLACE"
-        ? publicMarketplaceGallery(galleryRaw, { signPrivate: isOwner })
+        ? publicMarketplaceGallery(galleryRaw, { signPrivate: canSignPrivate })
         : isHelp
-          ? publicHelpGallery(galleryRaw, { signPrivate: isOwner })
+          ? publicHelpGallery(galleryRaw, { signPrivate: canSignPrivate })
           : Promise.resolve([] as string[])
     ]);
 

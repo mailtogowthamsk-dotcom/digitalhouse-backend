@@ -13,7 +13,7 @@ import {
   LOCAL_MODEL_VERSION,
   QUARANTINE_MEDIA_MODULES
 } from "../../constants/contentSafety.constants";
-import { getR2ObjectBuffer, extractR2KeyFromUrl, downloadR2ObjectToFile } from "../../utils/r2Client";
+import { getR2ObjectBuffer, extractR2KeyFromUrl, downloadR2ObjectToFile, isPrivateR2Object } from "../../utils/r2Client";
 import { collectMediaArtifactKeys } from "../../utils/mediaArtifactKeys";
 import { parseMarketplaceGallery } from "../../utils/marketplaceGallery";
 import { parseHelpGallery } from "../../utils/helpGallery";
@@ -1533,6 +1533,80 @@ export async function adminRejectPost(
     decision: "REJECT",
     admin: adminEmail
   });
+}
+
+/**
+ * Promote leftover quarantine gallery keys for already-SAFE marketplace/help posts
+ * (cover was promoted; other photos stayed private → viewers only saw 1 image).
+ */
+export async function repairSafePostGalleryPublish(
+  postId: number
+): Promise<{ repaired: boolean; mapped: number }> {
+  const post = await Post.findByPk(postId);
+  if (!post || post.safetyDecision !== "SAFE") return { repaired: false, mapped: 0 };
+  if (post.postType !== "MARKETPLACE" && post.postType !== "HELP_REQUEST") {
+    return { repaired: false, mapped: 0 };
+  }
+  const gallery =
+    post.postType === "MARKETPLACE"
+      ? parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl)
+      : parseHelpGallery(post.helpGallery, post.mediaUrl);
+  const hasPrivate =
+    isPrivateR2Object(post.mediaUrl) ||
+    isPrivateR2Object(post.thumbnailUrl) ||
+    gallery.some((u) => isPrivateR2Object(u));
+  if (!hasPrivate) return { repaired: false, mapped: 0 };
+
+  const mapping = await promotePostQuarantineMedia(post, null);
+  if (mapping.size === 0) return { repaired: false, mapped: 0 };
+
+  const { mediaService } = await import("../Media.service");
+  const mediaFiles: MediaFile[] = [];
+  for (const seed of [post.mediaUrl, post.thumbnailUrl, ...gallery]) {
+    if (!seed) continue;
+    const row = await mediaService.findMediaFileForPostReference(post.userId, seed);
+    if (row && !mediaFiles.some((m) => m.id === row.id)) mediaFiles.push(row);
+  }
+
+  await sequelize.transaction(async (transaction) => {
+    const locked = await Post.findByPk(postId, { transaction, lock: Transaction.LOCK.UPDATE });
+    if (!locked) return;
+    await rewritePostMediaKeys(locked, mapping, transaction);
+  });
+  await mediaService.applyPublishMappingToMediaFiles(mediaFiles, mapping);
+  await deletePromotedQuarantineKeys(mapping);
+  logSafety("moderation_gallery_promote_repair", {
+    post_id: postId,
+    mapped: mapping.size
+  });
+  return { repaired: true, mapped: mapping.size };
+}
+
+export async function repairSafeGalleriesWithPrivateKeys(
+  limit = 50
+): Promise<{ scanned: number; fixed: number }> {
+  const posts = await Post.findAll({
+    where: {
+      safetyDecision: "SAFE",
+      postType: { [Op.in]: ["MARKETPLACE", "HELP_REQUEST"] }
+    },
+    order: [["id", "DESC"]],
+    limit: Math.min(200, Math.max(1, limit))
+  });
+  let fixed = 0;
+  for (const p of posts) {
+    try {
+      const result = await repairSafePostGalleryPublish(p.id);
+      if (result.repaired) fixed += 1;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logSafety("moderation_gallery_promote_repair_error", {
+        post_id: p.id,
+        error: message.slice(0, 200)
+      });
+    }
+  }
+  return { scanned: posts.length, fixed };
 }
 
 export async function listSafetyScans(postId: number) {

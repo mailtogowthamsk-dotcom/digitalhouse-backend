@@ -700,8 +700,9 @@ export async function resolveLiveMediaKey(
 
   const owned = await findOwnedMediaFile(userId, key);
   if (owned?.objectKey && owned.processingStatus === "completed") {
-    // SAFE rows must never surface deleted quarantine keys to the feed player.
-    if (owned.safetyDecision === "SAFE") {
+    // Prefer the live objectKey. Do not invent a public path for un-promoted
+    // quarantine objects (CDN would 404); callers sign private keys when SAFE.
+    if (owned.safetyDecision === "SAFE" && !isPrivateR2Object(owned.objectKey)) {
       return publicPublishStorageKey(owned.objectKey) ?? owned.objectKey;
     }
     return owned.objectKey;
@@ -724,26 +725,23 @@ export async function resolveLiveMediaKey(
     order: [["id", "DESC"]]
   });
   if (!row?.objectKey) return key;
-  if (row.safetyDecision === "SAFE") {
+  if (row.safetyDecision === "SAFE" && !isPrivateR2Object(row.objectKey)) {
     return publicPublishStorageKey(row.objectKey) ?? row.objectKey;
   }
   return row.objectKey;
 }
 
-/** Resolve each gallery key like cover media so SAFE listings show all photos publicly. */
+/** Resolve each gallery key like cover media so SAFE listings show all photos. */
 export async function resolvePublicGalleryKeys(
   userId: number,
   keys: string[],
-  options?: { publishSafe?: boolean }
+  _options?: { publishSafe?: boolean }
 ): Promise<string[]> {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const raw of keys) {
     if (!raw?.trim()) continue;
-    let k = (await resolveLiveMediaKey(userId, raw)) ?? raw;
-    if (options?.publishSafe) {
-      k = publicPublishStorageKey(k) ?? k;
-    }
+    const k = (await resolveLiveMediaKey(userId, raw)) ?? raw;
     const norm = normalizeStoredMediaKey(k) ?? k;
     if (seen.has(norm)) continue;
     seen.add(norm);
