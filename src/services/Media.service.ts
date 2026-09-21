@@ -29,6 +29,7 @@ import {
   VIDEO_MAX_BYTES
 } from "../validations/media.validation";
 import { parseMarketplaceGallery } from "../utils/marketplaceGallery";
+import { parseHelpGallery } from "../utils/helpGallery";
 import { UserProfile } from "../models/UserProfile.model";
 import {
   needsUploadQuarantine,
@@ -820,17 +821,66 @@ export async function rewriteMediaKeyReferences(
   }
 
   const posts = await Post.findAll({
-    where: {
-      userId,
-      [Op.or]: [{ mediaUrl: fromKey }, { thumbnailUrl: fromKey }]
-    },
-    attributes: ["id", "mediaUrl", "thumbnailUrl"],
-    limit: 100
+    where: { userId },
+    attributes: [
+      "id",
+      "mediaUrl",
+      "thumbnailUrl",
+      "postType",
+      "marketplaceGallery",
+      "helpGallery"
+    ],
+    order: [["updatedAt", "DESC"]],
+    limit: 80
   });
   for (const post of posts) {
+    const mediaUrlKey = post.mediaUrl ? extractR2KeyFromUrl(post.mediaUrl) ?? post.mediaUrl : null;
+    const thumbKey = post.thumbnailUrl
+      ? extractR2KeyFromUrl(post.thumbnailUrl) ?? post.thumbnailUrl
+      : null;
+    const nextMediaUrl =
+      post.mediaUrl === fromKey || mediaUrlKey === fromKey ? toKey : post.mediaUrl;
+    const nextThumb =
+      post.thumbnailUrl === fromKey || thumbKey === fromKey ? toKey : post.thumbnailUrl;
+
+    let nextMarketplaceGallery = post.marketplaceGallery;
+    let marketplaceTouched = false;
+    if (post.postType === "MARKETPLACE") {
+      const gallery = parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl);
+      const rewritten = gallery.map((u) => {
+        const k = extractR2KeyFromUrl(u) ?? u;
+        if (u === fromKey || k === fromKey) {
+          marketplaceTouched = true;
+          return toKey;
+        }
+        return u;
+      });
+      if (marketplaceTouched) nextMarketplaceGallery = rewritten;
+    }
+
+    let nextHelpGallery = post.helpGallery;
+    let helpTouched = false;
+    if (post.postType === "HELP_REQUEST") {
+      const gallery = parseHelpGallery(post.helpGallery, post.mediaUrl);
+      const rewritten = gallery.map((u) => {
+        const k = extractR2KeyFromUrl(u) ?? u;
+        if (u === fromKey || k === fromKey) {
+          helpTouched = true;
+          return toKey;
+        }
+        return u;
+      });
+      if (helpTouched) nextHelpGallery = rewritten;
+    }
+
+    const urlTouched = nextMediaUrl !== post.mediaUrl || nextThumb !== post.thumbnailUrl;
+    if (!urlTouched && !marketplaceTouched && !helpTouched) continue;
+
     await post.update({
-      mediaUrl: post.mediaUrl === fromKey ? toKey : post.mediaUrl,
-      thumbnailUrl: post.thumbnailUrl === fromKey ? toKey : post.thumbnailUrl
+      mediaUrl: nextMediaUrl,
+      thumbnailUrl: nextThumb,
+      ...(marketplaceTouched ? { marketplaceGallery: nextMarketplaceGallery } : {}),
+      ...(helpTouched ? { helpGallery: nextHelpGallery } : {})
     } as any);
   }
 }

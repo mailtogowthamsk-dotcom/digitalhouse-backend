@@ -179,12 +179,19 @@ function mediaKeysForPost(post: Post): string[] {
 }
 
 async function findMediaFilesForPost(post: Post): Promise<MediaFile[]> {
-  const keys = mediaKeysForPost(post);
-  if (!keys.length) return [];
+  const keys = new Set<string>();
+  for (const raw of mediaKeysForPost(post)) {
+    keys.add(raw);
+    for (const artifact of collectMediaArtifactKeys(raw, null)) {
+      keys.add(artifact);
+    }
+  }
+  if (!keys.size) return [];
+  const keyList = [...keys];
   return MediaFile.findAll({
     where: {
       userId: post.userId,
-      [Op.or]: [{ objectKey: { [Op.in]: keys } }, { fileUrl: { [Op.in]: keys } }]
+      [Op.or]: [{ objectKey: { [Op.in]: keyList } }, { fileUrl: { [Op.in]: keyList } }]
     },
     limit: 20
   });
@@ -359,45 +366,43 @@ export async function afterCreatePostSafety(post: Post): Promise<void> {
     );
     if (!quarantineMedia.length) {
       logSafety("moderation_waiting_media", { post_id: post.id });
-      return;
+    } else {
+      const primaryKey = post.mediaUrl ? extractR2KeyFromUrl(post.mediaUrl) ?? post.mediaUrl : null;
+      const primary =
+        quarantineMedia.find(
+          (m) =>
+            m.objectKey === primaryKey ||
+            m.fileUrl === primaryKey ||
+            m.objectKey === post.mediaUrl ||
+            m.fileUrl === post.mediaUrl
+        ) ?? quarantineMedia[0]!;
+
+      // Worker still optimizing — it will call moderateProcessedMedia when done.
+      if (primary.processingStatus !== "completed" && !primary.safetyDecision) {
+        logSafety("moderation_waiting_worker", {
+          post_id: post.id,
+          media_id: primary.id,
+          processing: primary.processingStatus
+        });
+      } else {
+        const applied = await applyCachedMediaSafetyToPost(post, primary);
+        if (!applied) {
+          // Rare: completed job but no usable decision — rescan in background (do not block create).
+          logSafety("moderation_background_rescan", {
+            post_id: post.id,
+            media_id: primary.id
+          });
+          void moderateProcessedMedia(primary.id, null).catch((err) => {
+            const message = err instanceof Error ? err.message : String(err);
+            logSafety("moderation_background_rescan_failed", {
+              post_id: post.id,
+              media_id: primary.id,
+              error: message.slice(0, 200)
+            });
+          });
+        }
+      }
     }
-
-    const primaryKey = post.mediaUrl ? extractR2KeyFromUrl(post.mediaUrl) ?? post.mediaUrl : null;
-    const primary =
-      quarantineMedia.find(
-        (m) =>
-          m.objectKey === primaryKey ||
-          m.fileUrl === primaryKey ||
-          m.objectKey === post.mediaUrl ||
-          m.fileUrl === post.mediaUrl
-      ) ?? quarantineMedia[0]!;
-
-    // Worker still optimizing — it will call moderateProcessedMedia when done.
-    if (primary.processingStatus !== "completed" && !primary.safetyDecision) {
-      logSafety("moderation_waiting_worker", {
-        post_id: post.id,
-        media_id: primary.id,
-        processing: primary.processingStatus
-      });
-      return;
-    }
-
-    const applied = await applyCachedMediaSafetyToPost(post, primary);
-    if (applied) return;
-
-    // Rare: completed job but no usable decision — rescan in background (do not block create).
-    logSafety("moderation_background_rescan", {
-      post_id: post.id,
-      media_id: primary.id
-    });
-    void moderateProcessedMedia(primary.id, null).catch((err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      logSafety("moderation_background_rescan_failed", {
-        post_id: post.id,
-        media_id: primary.id,
-        error: message.slice(0, 200)
-      });
-    });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logSafety("moderation_reconcile_failed", {
@@ -405,6 +410,22 @@ export async function afterCreatePostSafety(post: Post): Promise<void> {
       error: message.slice(0, 200)
     });
     // Leave PENDING — worker/admin can finish. Do not auto-allow on unknown errors.
+  }
+
+  // Create race: media already finished before the post existed, or staging↔full key
+  // mismatch left the post PENDING. Re-apply from media_files / re-run moderation.
+  await post.reload();
+  if (
+    (post.safetyDecision === "PENDING" || post.safetyDecision === "PROCESSING") &&
+    postHasMedia(post)
+  ) {
+    void reconcilePendingPostSafety(post.id).catch((err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      logSafety("moderation_post_reconcile_failed", {
+        post_id: post.id,
+        error: message.slice(0, 200)
+      });
+    });
   }
 }
 
@@ -703,6 +724,176 @@ async function postsReferencingMedia(media: MediaFile): Promise<Post[]> {
   return [...byUrl, ...galleryHits];
 }
 
+function mediaBasenameToken(keyOrUrl: string | null | undefined): string | null {
+  if (!keyOrUrl) return null;
+  const k = extractR2KeyFromUrl(keyOrUrl) ?? keyOrUrl;
+  const base = path.posix
+    .basename(k)
+    .replace(/_full\.webp$/i, "")
+    .replace(/_md\.webp$/i, "")
+    .replace(/_thumb\.webp$/i, "")
+    .replace(/\.[^.]+$/, "");
+  return base.length >= 6 ? base : null;
+}
+
+/** When exact key match fails (staging deleted / gallery not rewritten), link by filename stem. */
+async function findPendingPostsMatchingMediaBasename(media: MediaFile): Promise<Post[]> {
+  const token = mediaBasenameToken(media.objectKey || media.fileUrl);
+  if (!token) return [];
+  const postType =
+    media.module === "marketplace"
+      ? "MARKETPLACE"
+      : media.module === "help"
+        ? "HELP_REQUEST"
+        : media.module === "jobs"
+          ? "JOB"
+          : null;
+  if (!postType) return [];
+  const recent = await Post.findAll({
+    where: {
+      userId: media.userId,
+      postType,
+      safetyDecision: { [Op.in]: ["PENDING", "PROCESSING"] },
+      createdAt: { [Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+    },
+    order: [["createdAt", "DESC"]],
+    limit: 20
+  });
+  return recent.filter((p) => {
+    const urls =
+      p.postType === "MARKETPLACE"
+        ? parseMarketplaceGallery(p.marketplaceGallery, p.mediaUrl)
+        : p.postType === "HELP_REQUEST"
+          ? parseHelpGallery(p.helpGallery, p.mediaUrl)
+          : [p.mediaUrl, p.thumbnailUrl];
+    const blob = [p.mediaUrl, p.thumbnailUrl, ...urls].filter(Boolean).join("\n");
+    return blob.includes(token);
+  });
+}
+
+async function findMediaFilesByBasenameFallback(post: Post): Promise<MediaFile[]> {
+  const tokens = new Set<string>();
+  for (const raw of mediaKeysForPost(post)) {
+    const t = mediaBasenameToken(raw);
+    if (t) tokens.add(t);
+  }
+  if (!tokens.size) return [];
+  const recent = await MediaFile.findAll({
+    where: {
+      userId: post.userId,
+      module: { [Op.in]: [...QUARANTINE_MEDIA_MODULES] },
+      createdAt: { [Op.gte]: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+    },
+    order: [["id", "DESC"]],
+    limit: 40
+  });
+  return recent.filter((m) => {
+    const key = `${m.objectKey || ""}\n${m.fileUrl || ""}`;
+    return [...tokens].some((t) => key.includes(t));
+  });
+}
+
+/**
+ * Repair posts stuck on PENDING/PROCESSING after media already finished
+ * (create-after-moderate race or staging↔full key mismatch). Not sexual — link bug.
+ */
+export async function reconcilePendingPostSafety(postId: number): Promise<boolean> {
+  const post = await Post.findByPk(postId);
+  if (!post) return false;
+  if (post.safetyDecision !== "PENDING" && post.safetyDecision !== "PROCESSING") {
+    return false;
+  }
+
+  if (!postHasMedia(post)) {
+    const text = moderateText(`${post.title}\n${post.description ?? ""}`);
+    if (text.verdict !== "SAFE") return false;
+    return tryPublishIfEligible(post.id, post.mediaVersion || 1, {
+      category: "SAFE",
+      confidence: 1,
+      model: "text",
+      modelVersion: "v1",
+      policyVersion: CONTENT_SAFETY_POLICY_VERSION,
+      reason: "RECONCILE_TEXT_ONLY"
+    });
+  }
+
+  let mediaRows = await findMediaFilesForPost(post);
+  if (!mediaRows.length) {
+    mediaRows = await findMediaFilesByBasenameFallback(post);
+  }
+
+  const decided = mediaRows.find(
+    (m) =>
+      (QUARANTINE_MEDIA_MODULES as readonly string[]).includes(m.module) &&
+      m.safetyDecision &&
+      m.safetyDecision !== "PENDING" &&
+      m.safetyDecision !== "PROCESSING"
+  );
+  if (decided) {
+    const applied = await applyCachedMediaSafetyToPost(post, decided);
+    if (applied) {
+      logSafety("moderation_post_reconciled_from_media", {
+        post_id: post.id,
+        media_id: decided.id,
+        decision: decided.safetyDecision
+      });
+      return true;
+    }
+  }
+
+  const completed = mediaRows.find(
+    (m) =>
+      (QUARANTINE_MEDIA_MODULES as readonly string[]).includes(m.module) &&
+      m.processingStatus === "completed"
+  );
+  if (completed) {
+    await moderateProcessedMedia(completed.id, null);
+    const refreshed = await Post.findByPk(postId);
+    const done =
+      refreshed?.safetyDecision === "SAFE" ||
+      refreshed?.safetyDecision === "REVIEW_REQUIRED" ||
+      refreshed?.safetyDecision === "BLOCKED";
+    if (done) {
+      logSafety("moderation_post_reconciled_rescan", {
+        post_id: postId,
+        media_id: completed.id,
+        decision: refreshed?.safetyDecision
+      });
+    }
+    return Boolean(done);
+  }
+
+  return false;
+}
+
+/** Batch repair for stuck PENDING help/marketplace/job posts (ops / scheduler). */
+export async function reconcileStuckPendingPosts(
+  limit = 40
+): Promise<{ scanned: number; fixed: number }> {
+  const stuck = await Post.findAll({
+    where: {
+      safetyDecision: { [Op.in]: ["PENDING", "PROCESSING"] },
+      postType: { [Op.in]: ["HELP_REQUEST", "MARKETPLACE", "JOB"] },
+      createdAt: { [Op.lt]: new Date(Date.now() - 45_000) }
+    },
+    order: [["id", "ASC"]],
+    limit: Math.min(100, Math.max(1, limit))
+  });
+  let fixed = 0;
+  for (const p of stuck) {
+    try {
+      if (await reconcilePendingPostSafety(p.id)) fixed += 1;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logSafety("moderation_stuck_reconcile_error", {
+        post_id: p.id,
+        error: message.slice(0, 200)
+      });
+    }
+  }
+  return { scanned: stuck.length, fixed };
+}
+
 async function rewritePostMediaKeys(post: Post, mapping: Map<string, string>, transaction: Transaction): Promise<void> {
   if (mapping.size === 0) return;
   const mediaUrl = rewriteStoredKey(post.mediaUrl, mapping);
@@ -869,7 +1060,24 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
 
   const decision = policyVerdictToSafetyDecision(evaluation.verdict);
   const processingTimeMs = Date.now() - started;
-  const posts = await postsReferencingMedia(media);
+  const postsFromKeys = await postsReferencingMedia(media);
+  const postsBasename =
+    postsFromKeys.length === 0 ? await findPendingPostsMatchingMediaBasename(media) : [];
+  const posts = postsFromKeys.length ? postsFromKeys : postsBasename;
+  if (!postsFromKeys.length && postsBasename.length) {
+    logSafety("moderation_posts_linked_by_basename", {
+      media_id: mediaId,
+      job_id: jobId,
+      post_ids: postsBasename.map((p) => p.id)
+    });
+  } else if (!posts.length) {
+    logSafety("moderation_no_posts_linked", {
+      media_id: mediaId,
+      job_id: jobId,
+      module: media.module,
+      object_key: media.objectKey
+    });
+  }
 
   await media.update({
     safetyDecision: decision,
@@ -1069,7 +1277,10 @@ export async function markMediaModerationFailed(mediaId: number, jobId: number |
   if (!media) return;
   // Pipeline errors are not sexual content — auto-allow linked posts when caption is clean.
   await media.update({ safetyDecision: "SAFE", safetyCategory: "SAFE" });
-  const posts = await postsReferencingMedia(media);
+  const postsFromKeys = await postsReferencingMedia(media);
+  const postsBasename =
+    postsFromKeys.length === 0 ? await findPendingPostsMatchingMediaBasename(media) : [];
+  const posts = postsFromKeys.length ? postsFromKeys : postsBasename;
   for (const post of posts) {
     const text = moderateText(`${post.title}\n${post.description ?? ""}`);
     if (text.verdict !== "SAFE") {

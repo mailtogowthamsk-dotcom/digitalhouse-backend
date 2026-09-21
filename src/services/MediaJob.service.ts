@@ -567,8 +567,12 @@ export async function processClaimedMediaJob(job: MediaJob): Promise<void> {
       mediaId: job.mediaId
     });
     try {
-      const { moderateProcessedMedia } = await import("./contentSafety/ContentSafety.service");
+      const { moderateProcessedMedia, reconcileStuckPendingPosts } = await import(
+        "./contentSafety/ContentSafety.service"
+      );
       await moderateProcessedMedia(job.mediaId, job.id);
+      // Catch create-after-moderate races for help/marketplace still PENDING.
+      void reconcileStuckPendingPosts(10).catch(() => undefined);
     } catch (moderationError) {
       const message =
         moderationError instanceof Error ? moderationError.message : String(moderationError);
