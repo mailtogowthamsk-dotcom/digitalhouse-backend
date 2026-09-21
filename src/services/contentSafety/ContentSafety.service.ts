@@ -643,34 +643,64 @@ async function classifyVideoFromR2(
 
 async function postsReferencingMedia(media: MediaFile): Promise<Post[]> {
   const keys = new Set<string>();
-  const objectKey = media.objectKey || extractR2KeyFromUrl(media.fileUrl);
-  if (objectKey) {
-    keys.add(objectKey);
-    const published = publishedKeyFromQuarantine(objectKey);
+  const addKey = (raw: string | null | undefined) => {
+    if (!raw) return;
+    const k = extractR2KeyFromUrl(raw) ?? raw;
+    if (!k) return;
+    keys.add(k);
+    const published = publishedKeyFromQuarantine(k);
     if (published) keys.add(published);
-  }
-  if (media.fileUrl) {
-    const k = extractR2KeyFromUrl(media.fileUrl);
-    if (k) {
-      keys.add(k);
-      const published = publishedKeyFromQuarantine(k);
-      if (published) keys.add(published);
+    for (const artifact of collectMediaArtifactKeys(k, media.variantsJson)) {
+      keys.add(artifact);
+      const pub = publishedKeyFromQuarantine(artifact);
+      if (pub) keys.add(pub);
     }
-  }
-  for (const artifact of collectMediaArtifactKeys(objectKey ?? media.fileUrl, media.variantsJson)) {
-    keys.add(artifact);
-    const published = publishedKeyFromQuarantine(artifact);
-    if (published) keys.add(published);
-  }
+  };
+
+  addKey(media.objectKey);
+  addKey(media.fileUrl);
   if (keys.size === 0) return [];
-  const or = [...keys].flatMap((key) => [{ mediaUrl: key }, { thumbnailUrl: key }]);
-  return Post.findAll({
+
+  const keyList = [...keys];
+  const or = keyList.flatMap((key) => [{ mediaUrl: key }, { thumbnailUrl: key }]);
+  const byUrl = await Post.findAll({
     where: {
       userId: media.userId,
       [Op.or]: or
     },
     limit: 50
   });
+
+  const foundIds = new Set(byUrl.map((p) => p.id));
+
+  // Marketplace / help often keep the upload key only in gallery JSON; also catch
+  // staging→_full rewrite when mediaUrl was not rewritten yet.
+  const galleryCandidates = await Post.findAll({
+    where: {
+      userId: media.userId,
+      postType: { [Op.in]: ["MARKETPLACE", "HELP_REQUEST"] },
+      ...(foundIds.size ? { id: { [Op.notIn]: [...foundIds] } } : {})
+    },
+    order: [["updatedAt", "DESC"]],
+    limit: 40
+  });
+
+  const galleryHits = galleryCandidates.filter((p) => {
+    const urls =
+      p.postType === "MARKETPLACE"
+        ? parseMarketplaceGallery(p.marketplaceGallery, p.mediaUrl)
+        : parseHelpGallery(p.helpGallery, p.mediaUrl);
+    for (const u of urls) {
+      const k = extractR2KeyFromUrl(u) ?? u;
+      if (keys.has(k)) return true;
+      for (const artifact of collectMediaArtifactKeys(k, null)) {
+        if (keys.has(artifact)) return true;
+      }
+    }
+    return false;
+  });
+
+  return [...byUrl, ...galleryHits];
 }
 
 async function rewritePostMediaKeys(post: Post, mapping: Map<string, string>, transaction: Transaction): Promise<void> {
