@@ -187,6 +187,7 @@ async function getMemberStats(userId: number): Promise<MemberProfileStats> {
         userId,
         moderationStatus: "ACTIVE",
         safetyDecision: "SAFE",
+        postType: { [Op.ne]: "HELP_REQUEST" },
         [Op.or]: [
           { postType: { [Op.ne]: "MARKETPLACE" } },
           { marketplaceStatus: "LIVE" },
@@ -497,6 +498,7 @@ export async function getMemberPosts(
           userId: target.id,
           moderationStatus: "ACTIVE",
           safetyDecision: "SAFE",
+          postType: { [Op.ne]: "HELP_REQUEST" },
           [Op.or]: [
             { postType: { [Op.ne]: "MARKETPLACE" } },
             { marketplaceStatus: "LIVE" }
@@ -517,6 +519,7 @@ export async function getMemberPosts(
             visibility: "CONNECTIONS",
             moderationStatus: "ACTIVE",
             safetyDecision: "SAFE",
+            postType: { [Op.ne]: "HELP_REQUEST" },
             [Op.or]: [
               { postType: { [Op.ne]: "MARKETPLACE" } },
               { marketplaceStatus: "LIVE" }

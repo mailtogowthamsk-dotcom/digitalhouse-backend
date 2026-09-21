@@ -39,6 +39,7 @@ import {
   applyEditSafety
 } from "../contentSafety/ContentSafety.service";
 import { initialSafetyForCreate } from "../contentSafety/initialSafety";
+import { autoLiveMarketplaceIfEligible } from "../marketplace/liveListingGuard";
 
 export async function createPost(userId: number, payload: CreatePostPayload): Promise<PostDetailDto> {
   const isJob = payload.post_type === "JOB";
@@ -340,7 +341,7 @@ export async function updatePost(userId: number, postId: number, payload: Update
   const requeueForReview =
     isMarketplace &&
     marketplaceFieldTouched &&
-    (post.marketplaceStatus === "LIVE" || post.marketplaceStatus === "CHANGES_REQUESTED") &&
+    post.marketplaceStatus === "CHANGES_REQUESTED" &&
     payload.marketplace_status !== "SOLD";
 
   const resubmitFromChanges =
@@ -561,12 +562,6 @@ export async function updatePost(userId: number, postId: number, payload: Update
       marketplaceStatus: "PENDING_REVIEW" as MarketplaceStatus,
       marketplaceAdminNote: requeueForReview || resubmitFromChanges ? post.marketplaceAdminNote : null
     }),
-    ...(requeueForReview &&
-      post.marketplaceStatus === "LIVE" && {
-        marketplaceAdminNote: null,
-        marketplaceExpiresAt: null,
-        marketplaceExpiryReminder: null
-      }),
     ...(isHelp &&
       payload.help_status !== undefined && {
         helpStatus: payload.help_status
@@ -630,6 +625,10 @@ export async function updatePost(userId: number, postId: number, payload: Update
       payload.help_gallery !== undefined
   );
   await applyEditSafety(post, { caption: captionChanged, media: mediaChanged });
+
+  if (isMarketplace) {
+    await autoLiveMarketplaceIfEligible(postId);
+  }
 
   return getPost(userId, postId);
 }

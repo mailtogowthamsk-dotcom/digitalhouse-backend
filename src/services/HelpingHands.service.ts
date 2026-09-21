@@ -1,5 +1,6 @@
-import { Op } from "sequelize";
+import { Op, QueryTypes } from "sequelize";
 import { Post, User, HelpOffer, HelpAppreciation } from "../models";
+import { sequelize } from "../config/db";
 import {
   HELP_APPRECIATION_MAX,
   HELP_CATEGORY_LABELS,
@@ -10,6 +11,18 @@ import {
 } from "../constants/helpingHands.constants";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
 import * as Notifications from "./Notification.service";
+
+const DEFAULT_PAGE_SIZE = 10;
+const MAX_PAGE_SIZE = 50;
+
+function clampPage(limit?: number, offset?: number): { limit: number; offset: number } {
+  const lim = Math.min(
+    MAX_PAGE_SIZE,
+    Math.max(1, Number.isFinite(limit as number) ? Math.floor(limit as number) : DEFAULT_PAGE_SIZE)
+  );
+  const off = Math.max(0, Number.isFinite(offset as number) ? Math.floor(offset as number) : 0);
+  return { limit: lim, offset: off };
+}
 
 async function ensureSameCommunity(post: Post, userId: number): Promise<void> {
   const [author, me] = await Promise.all([
@@ -221,14 +234,46 @@ export async function listHelpersForPost(
 export async function completeHelpRequest(
   ownerUserId: number,
   postId: number,
-  opts?: { helperUserId?: number; appreciation?: string | null }
-): Promise<{ status: string; appreciationSaved: boolean }> {
+  opts?: {
+    /** Helpers the requester credits as “resolved by” (Heroes credit). */
+    resolvedByUserIds?: number[];
+    /** @deprecated use resolvedByUserIds */
+    helperUserId?: number;
+    appreciation?: string | null;
+  }
+): Promise<{ status: string; creditedCount: number; appreciationSaved: boolean }> {
   const post = await assertHelpPost(postId, ownerUserId);
   if (post.userId !== ownerUserId) {
     throw Object.assign(new Error("Only the requester can mark this completed"), { status: 403 });
   }
   if (post.helpStatus === "COMPLETED") {
-    return { status: "COMPLETED", appreciationSaved: false };
+    return { status: "COMPLETED", creditedCount: 0, appreciationSaved: false };
+  }
+
+  const activeOffers = await HelpOffer.findAll({
+    where: { postId, status: "ACTIVE" },
+    attributes: ["fromUserId"]
+  });
+  const offerIds = new Set(activeOffers.map((o) => o.fromUserId));
+
+  let resolvedBy = [
+    ...new Set(
+      (opts?.resolvedByUserIds?.length
+        ? opts.resolvedByUserIds
+        : opts?.helperUserId
+          ? [opts.helperUserId]
+          : []
+      ).map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+    )
+  ];
+
+  for (const id of resolvedBy) {
+    if (!offerIds.has(id)) {
+      throw Object.assign(
+        new Error("Resolved-by must be someone who offered help on this request"),
+        { status: 400 }
+      );
+    }
   }
 
   await post.update({
@@ -240,55 +285,55 @@ export async function completeHelpRequest(
 
   void Notifications.notifyHelpRequestResolved(ownerUserId, post.id, post.title).catch(() => {});
 
-  let appreciationSaved = false;
-  const helperUserId = opts?.helperUserId;
-  const appreciation = opts?.appreciation?.trim();
+  const appreciationRaw = opts?.appreciation?.trim();
+  if (appreciationRaw && appreciationRaw.length > HELP_APPRECIATION_MAX) {
+    throw Object.assign(new Error("Appreciation is too long"), { status: 400 });
+  }
+  const defaultMsg = "Thank you for helping resolve this request.";
+  const message = (appreciationRaw && appreciationRaw.length >= 3
+    ? appreciationRaw
+    : defaultMsg
+  ).slice(0, HELP_APPRECIATION_MAX);
 
-  if (helperUserId && appreciation) {
-    if (appreciation.length > HELP_APPRECIATION_MAX) {
-      throw Object.assign(new Error("Appreciation is too long"), { status: 400 });
-    }
-    const offer = await HelpOffer.findOne({
-      where: { postId, fromUserId: helperUserId, status: "ACTIVE" }
-    });
-    if (!offer) {
-      throw Object.assign(new Error("Helper not found on this request"), { status: 400 });
-    }
-    await HelpAppreciation.findOrCreate({
+  let appreciationSaved = false;
+  for (const helperUserId of resolvedBy) {
+    const [, created] = await HelpAppreciation.findOrCreate({
       where: { postId, helperUserId },
       defaults: {
         postId,
         helperUserId,
         fromUserId: ownerUserId,
-        message: appreciation.slice(0, HELP_APPRECIATION_MAX)
+        message
       } as any
     });
-    appreciationSaved = true;
-    void Notifications.notifyHelpAppreciationReceived(
-      helperUserId,
-      ownerUserId,
-      post.id,
-      post.title,
-      appreciation.slice(0, 120)
-    ).catch(() => {});
+    if (created) {
+      appreciationSaved = true;
+      void Notifications.notifyHelpAppreciationReceived(
+        helperUserId,
+        ownerUserId,
+        post.id,
+        post.title,
+        message.slice(0, 120)
+      ).catch(() => {});
+    }
   }
 
-  const helpers = await HelpOffer.findAll({
-    where: { postId, status: "ACTIVE" },
-    attributes: ["fromUserId"]
-  });
-  for (const h of helpers) {
+  for (const h of activeOffers) {
     void Notifications.notifyHelpRequestCompleted(h.fromUserId, post.id, post.title).catch(
       () => {}
     );
   }
 
-  return { status: "COMPLETED", appreciationSaved };
+  return {
+    status: "COMPLETED",
+    creditedCount: resolvedBy.length,
+    appreciationSaved
+  };
 }
 
 export async function getCommunityHeroes(
   userId: number,
-  limit = 20
+  opts?: { limit?: number; offset?: number }
 ): Promise<{
   items: {
     userId: number;
@@ -299,65 +344,81 @@ export async function getCommunityHeroes(
     categories: string[];
     recentAppreciation: string | null;
   }[];
+  nextOffset: number | null;
 }> {
+  const { limit, offset } = clampPage(opts?.limit, opts?.offset);
   const me = await User.findByPk(userId, { attributes: ["community"] });
   const community = me?.community ?? null;
-  const communityUsers = await User.findAll({
-    where: { status: "APPROVED", community },
-    attributes: ["id"]
-  });
-  const ids = communityUsers.map((u) => u.id);
-  if (!ids.length) return { items: [] };
 
-  // Completed help offers in this community
-  const completedPosts = await Post.findAll({
-    where: {
-      postType: "HELP_REQUEST",
-      helpStatus: "COMPLETED",
-      userId: { [Op.in]: ids }
-    },
-    attributes: ["id", "helpCategory"]
-  });
-  const postIds = completedPosts.map((p) => p.id);
-  const categoryByPost = new Map(completedPosts.map((p) => [p.id, p.helpCategory]));
+  // Credit = HelpAppreciation on COMPLETED requests (requester “Resolved by”), not mere offers.
+  // Paginate at SQL level — never load the full hero ranking into memory.
+  const ranked = await sequelize.query<{ helperUserId: number; livesHelped: number }>(
+    `
+    SELECT ha.\`helperUserId\` AS helperUserId, COUNT(*) AS livesHelped
+    FROM help_appreciations ha
+    INNER JOIN posts p ON p.id = ha.\`postId\`
+    INNER JOIN users u ON u.id = ha.\`helperUserId\`
+    WHERE p.\`postType\` = 'HELP_REQUEST'
+      AND p.\`helpStatus\` = 'COMPLETED'
+      AND u.status = 'APPROVED'
+      AND (
+        (:community IS NULL AND u.community IS NULL)
+        OR u.community = :community
+      )
+    GROUP BY ha.\`helperUserId\`
+    ORDER BY livesHelped DESC, helperUserId ASC
+    LIMIT :fetchLimit OFFSET :offset
+    `,
+    {
+      type: QueryTypes.SELECT,
+      replacements: {
+        community,
+        fetchLimit: limit + 1,
+        offset
+      }
+    }
+  );
 
-  if (!postIds.length) return { items: [] };
+  const hasMore = ranked.length > limit;
+  const page = hasMore ? ranked.slice(0, limit) : ranked;
+  if (!page.length) return { items: [], nextOffset: null };
 
-  const offers = await HelpOffer.findAll({
-    where: { postId: { [Op.in]: postIds }, status: "ACTIVE" },
-    attributes: ["fromUserId", "postId"]
-  });
-
-  const lives = new Map<number, number>();
+  const helperIds = page.map((r) => Number(r.helperUserId));
+  const [users, creditRows] = await Promise.all([
+    User.findAll({
+      where: { id: { [Op.in]: helperIds } },
+      attributes: ["id", "fullName", "profilePhoto"]
+    }),
+    HelpAppreciation.findAll({
+      where: { helperUserId: { [Op.in]: helperIds } },
+      attributes: ["helperUserId", "postId", "message", "createdAt"],
+      include: [
+        {
+          model: Post,
+          required: true,
+          attributes: ["id", "helpCategory"],
+          where: { postType: "HELP_REQUEST", helpStatus: "COMPLETED" }
+        }
+      ],
+      order: [["createdAt", "DESC"]]
+    })
+  ]);
+  const userMap = new Map(users.map((u) => [u.id, u]));
   const cats = new Map<number, Set<string>>();
-  for (const o of offers) {
-    lives.set(o.fromUserId, (lives.get(o.fromUserId) || 0) + 1);
-    const cat = categoryByPost.get(o.postId);
+  const recentByHelper = new Map<number, string>();
+  for (const c of creditRows) {
+    if (!recentByHelper.has(c.helperUserId)) recentByHelper.set(c.helperUserId, c.message);
+    const cat = (c as any).Post?.helpCategory as string | null | undefined;
     if (cat) {
-      if (!cats.has(o.fromUserId)) cats.set(o.fromUserId, new Set());
-      cats.get(o.fromUserId)!.add(cat);
+      if (!cats.has(c.helperUserId)) cats.set(c.helperUserId, new Set());
+      cats.get(c.helperUserId)!.add(cat);
     }
   }
 
-  const ranked = [...lives.entries()].sort((a, b) => b[1] - a[1]).slice(0, limit);
-  const helperIds = ranked.map(([id]) => id);
-  const users = await User.findAll({
-    where: { id: { [Op.in]: helperIds } },
-    attributes: ["id", "fullName", "profilePhoto"]
-  });
-  const userMap = new Map(users.map((u) => [u.id, u]));
-
-  const appreciations = await HelpAppreciation.findAll({
-    where: { helperUserId: { [Op.in]: helperIds } },
-    order: [["createdAt", "DESC"]]
-  });
-  const recentByHelper = new Map<number, string>();
-  for (const a of appreciations) {
-    if (!recentByHelper.has(a.helperUserId)) recentByHelper.set(a.helperUserId, a.message);
-  }
-
   const items = await Promise.all(
-    ranked.map(async ([id, count]) => {
+    page.map(async (row) => {
+      const id = Number(row.helperUserId);
+      const count = Number(row.livesHelped) || 0;
       const u = userMap.get(id);
       const profileImage = await toPublicUrlIfR2(u?.profilePhoto ?? null);
       const categories = [...(cats.get(id) || [])].map(
@@ -375,9 +436,122 @@ export async function getCommunityHeroes(
     })
   );
 
-  return { items };
+  return {
+    items,
+    nextOffset: hasMore ? offset + limit : null
+  };
 }
 
+export async function getMyHelpRequestsPage(
+  userId: number,
+  opts?: { limit?: number; offset?: number }
+): Promise<{
+  items: {
+    postId: number;
+    title: string;
+    status: string;
+    category: string | null;
+    createdAt: string;
+    helperCount: number;
+  }[];
+  nextOffset: number | null;
+}> {
+  const { limit, offset } = clampPage(opts?.limit, opts?.offset);
+  const myPosts = await Post.findAll({
+    where: { userId, postType: "HELP_REQUEST" },
+    order: [["createdAt", "DESC"]],
+    limit: limit + 1,
+    offset
+  });
+  const hasMore = myPosts.length > limit;
+  const page = hasMore ? myPosts.slice(0, limit) : myPosts;
+  const myPostIds = page.map((p) => p.id);
+  const offerCounts =
+    myPostIds.length === 0
+      ? []
+      : await HelpOffer.findAll({
+          where: { postId: { [Op.in]: myPostIds }, status: "ACTIVE" },
+          attributes: ["postId"],
+          raw: true
+        });
+  const countMap: Record<number, number> = {};
+  for (const o of offerCounts as { postId: number }[]) {
+    countMap[o.postId] = (countMap[o.postId] || 0) + 1;
+  }
+
+  return {
+    items: page.map((p) => ({
+      postId: p.id,
+      title: p.title,
+      status: p.helpStatus ?? "OPEN",
+      category: p.helpCategory,
+      createdAt: p.createdAt.toISOString(),
+      helperCount: countMap[p.id] || 0
+    })),
+    nextOffset: hasMore ? offset + limit : null
+  };
+}
+
+export async function getMyHelpContributionsPage(
+  userId: number,
+  opts?: { limit?: number; offset?: number }
+): Promise<{
+  items: {
+    postId: number;
+    title: string;
+    category: string | null;
+    personHelped: string;
+    personHelpedId: number;
+    date: string;
+    appreciation: string | null;
+  }[];
+  nextOffset: number | null;
+}> {
+  const { limit, offset } = clampPage(opts?.limit, opts?.offset);
+
+  // Contributions = only requests where requester credited you (Resolved by).
+  const credits = await HelpAppreciation.findAll({
+    where: { helperUserId: userId },
+    order: [["createdAt", "DESC"]],
+    limit: limit + 1,
+    offset,
+    include: [
+      {
+        model: Post,
+        required: true,
+        where: {
+          postType: "HELP_REQUEST",
+          helpStatus: "COMPLETED",
+          moderationStatus: "ACTIVE",
+          safetyDecision: "SAFE"
+        },
+        include: [{ association: "User", attributes: ["id", "fullName"], required: true }]
+      }
+    ]
+  });
+
+  const hasMore = credits.length > limit;
+  const page = hasMore ? credits.slice(0, limit) : credits;
+
+  return {
+    items: page.map((a) => {
+      const p = (a as any).Post as Post;
+      const author = (p as any).User as User;
+      return {
+        postId: p.id,
+        title: p.title,
+        category: p.helpCategory,
+        personHelped: author?.fullName ?? "Member",
+        personHelpedId: p.userId,
+        date: a.createdAt.toISOString(),
+        appreciation: a.message
+      };
+    }),
+    nextOffset: hasMore ? offset + limit : null
+  };
+}
+
+/** @deprecated Prefer getMyHelpRequestsPage / getMyHelpContributionsPage */
 export async function getMyHelpingActivity(userId: number): Promise<{
   requests: {
     postId: number;
@@ -396,74 +570,19 @@ export async function getMyHelpingActivity(userId: number): Promise<{
     date: string;
     appreciation: string | null;
   }[];
+  nextRequestsOffset: number | null;
+  nextContributionsOffset: number | null;
 }> {
-  const myPosts = await Post.findAll({
-    where: { userId, postType: "HELP_REQUEST" },
-    order: [["createdAt", "DESC"]],
-    limit: 50
-  });
-  const myPostIds = myPosts.map((p) => p.id);
-  const offerCounts =
-    myPostIds.length === 0
-      ? []
-      : await HelpOffer.findAll({
-          where: { postId: { [Op.in]: myPostIds }, status: "ACTIVE" },
-          attributes: ["postId"],
-          raw: true
-        });
-  const countMap: Record<number, number> = {};
-  for (const o of offerCounts as { postId: number }[]) {
-    countMap[o.postId] = (countMap[o.postId] || 0) + 1;
-  }
-
-  const requests = myPosts.map((p) => ({
-    postId: p.id,
-    title: p.title,
-    status: p.helpStatus ?? "OPEN",
-    category: p.helpCategory,
-    createdAt: p.createdAt.toISOString(),
-    helperCount: countMap[p.id] || 0
-  }));
-
-  const myOffers = await HelpOffer.findAll({
-    where: { fromUserId: userId, status: "ACTIVE" },
-    order: [["createdAt", "DESC"]],
-    limit: 50
-  });
-  const offerPostIds = myOffers.map((o) => o.postId);
-  const offerPosts =
-    offerPostIds.length === 0
-      ? []
-      : await Post.findAll({
-          where: { id: { [Op.in]: offerPostIds }, postType: "HELP_REQUEST", moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
-          include: [{ association: "User", attributes: ["id", "fullName"], required: true }]
-        });
-  const postMap = new Map(offerPosts.map((p) => [p.id, p]));
-  const apprs = offerPostIds.length
-    ? await HelpAppreciation.findAll({
-        where: { helperUserId: userId, postId: { [Op.in]: offerPostIds } }
-      })
-    : [];
-  const apprMap = new Map(apprs.map((a) => [a.postId, a.message]));
-
-  const contributions = myOffers
-    .map((o) => {
-      const p = postMap.get(o.postId);
-      if (!p) return null;
-      const author = (p as any).User as User;
-      return {
-        postId: p.id,
-        title: p.title,
-        category: p.helpCategory,
-        personHelped: author?.fullName ?? "Member",
-        personHelpedId: p.userId,
-        date: o.createdAt.toISOString(),
-        appreciation: apprMap.get(p.id) ?? null
-      };
-    })
-    .filter(Boolean) as any[];
-
-  return { requests, contributions };
+  const [requests, contributions] = await Promise.all([
+    getMyHelpRequestsPage(userId, { limit: DEFAULT_PAGE_SIZE, offset: 0 }),
+    getMyHelpContributionsPage(userId, { limit: DEFAULT_PAGE_SIZE, offset: 0 })
+  ]);
+  return {
+    requests: requests.items,
+    contributions: contributions.items,
+    nextRequestsOffset: requests.nextOffset,
+    nextContributionsOffset: contributions.nextOffset
+  };
 }
 
 /**
@@ -523,5 +642,7 @@ export const helpingHandsService = {
   completeHelpRequest,
   extendHelpRequest,
   getCommunityHeroes,
-  getMyHelpingActivity
+  getMyHelpingActivity,
+  getMyHelpRequestsPage,
+  getMyHelpContributionsPage
 };

@@ -51,13 +51,8 @@ function publicPostVisibilityFilter(): WhereOptions {
       {
         [Op.or]: [{ postType: { [Op.ne]: "MARKETPLACE" } }, { marketplaceStatus: "LIVE" }]
       },
-      {
-        [Op.or]: [
-          { postType: { [Op.ne]: "HELP_REQUEST" } },
-          { helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] } },
-          { helpStatus: null }
-        ]
-      }
+      // Help requests stay in Helping Hands module — not Explore/community search.
+      { postType: { [Op.ne]: "HELP_REQUEST" } }
     ]
   };
 }

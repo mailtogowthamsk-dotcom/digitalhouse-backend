@@ -1,9 +1,14 @@
 /**
  * Best-effort cleanup of abandoned PENDING media uploads (never attached to a post).
- * Mirrors other lifecycle jobs: setInterval + env toggles.
+ * Mirrors other lifecycle jobs: phase-aligned interval + env toggles.
  */
 import { mediaService } from "./Media.service";
 import * as SchedulerTracking from "./SystemSchedulerTracking.service";
+import {
+  SCHEDULER_PHASE_OFFSETS_MS,
+  startPhaseAlignedInterval,
+  type PhaseAlignedHandle
+} from "../utils/schedulerTiming";
 
 const JOB_INTERVAL_MS = Number(
   process.env.MEDIA_ORPHAN_CLEANUP_INTERVAL_MS || 60 * 60 * 1000
@@ -13,12 +18,12 @@ const OLDER_THAN_HOURS = Number(process.env.MEDIA_ORPHAN_CLEANUP_HOURS || 2);
 const BATCH_LIMIT = Number(process.env.MEDIA_ORPHAN_CLEANUP_BATCH || 100);
 const SCHEDULER_JOB_KEY = "media_orphan_cleanup" as const;
 
-let jobTimer: ReturnType<typeof setInterval> | null = null;
+let jobHandle: PhaseAlignedHandle | null = null;
 let jobRunning = false;
 
 export function getOrphanMediaCleanupJobRuntimeStatus() {
   return {
-    timerActive: jobTimer != null,
+    timerActive: jobHandle != null,
     running: jobRunning,
     intervalMs: JOB_INTERVAL_MS,
     envEnabled: JOB_ENABLED
@@ -72,16 +77,19 @@ export function startOrphanMediaCleanupJobs(): void {
     console.log("[media-orphan-cleanup] disabled");
     return;
   }
-  if (jobTimer) return;
-  // Delay first run slightly so boot isn't blocked by R2 deletes.
-  setTimeout(() => void runOrphanMediaCleanup(), 45_000);
-  jobTimer = setInterval(() => void runOrphanMediaCleanup(), JOB_INTERVAL_MS);
+  if (jobHandle) return;
+  jobHandle = startPhaseAlignedInterval({
+    intervalMs: JOB_INTERVAL_MS,
+    phaseOffsetMs: SCHEDULER_PHASE_OFFSETS_MS.media_orphan_cleanup,
+    run: () => void runOrphanMediaCleanup(),
+    label: "media-orphan-cleanup"
+  });
   console.log(
-    `[media-orphan-cleanup] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min (orphan > ${OLDER_THAN_HOURS}h)`
+    `[media-orphan-cleanup] orphan retention > ${OLDER_THAN_HOURS}h`
   );
 }
 
 export function stopOrphanMediaCleanupJobs(): void {
-  if (jobTimer) clearInterval(jobTimer);
-  jobTimer = null;
+  jobHandle?.clear();
+  jobHandle = null;
 }

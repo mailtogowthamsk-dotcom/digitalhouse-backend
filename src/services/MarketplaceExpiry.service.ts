@@ -7,6 +7,11 @@ import type { MarketplaceStatus } from "../constants/marketplace.constants";
 import * as Notifications from "./Notification.service";
 import * as MarketplaceSettings from "./MarketplaceSettings.service";
 import * as SchedulerTracking from "./SystemSchedulerTracking.service";
+import {
+  SCHEDULER_PHASE_OFFSETS_MS,
+  startPhaseAlignedInterval,
+  type PhaseAlignedHandle
+} from "../utils/schedulerTiming";
 
 const JOB_INTERVAL_MS = Number(
   process.env.MARKETPLACE_EXPIRY_JOB_INTERVAL_MS || 60 * 60 * 1000
@@ -14,12 +19,12 @@ const JOB_INTERVAL_MS = Number(
 const JOB_ENABLED = process.env.MARKETPLACE_EXPIRY_JOB_ENABLED !== "false";
 const SCHEDULER_JOB_KEY = "marketplace_expiry" as const;
 
-let jobTimer: ReturnType<typeof setInterval> | null = null;
+let jobHandle: PhaseAlignedHandle | null = null;
 let jobRunning = false;
 
 export function getMarketplaceExpiryJobRuntimeStatus() {
   return {
-    timerActive: jobTimer != null,
+    timerActive: jobHandle != null,
     running: jobRunning,
     intervalMs: JOB_INTERVAL_MS,
     envEnabled: JOB_ENABLED
@@ -170,16 +175,16 @@ export function startMarketplaceExpiryJobs(): void {
     console.log("[marketplace-expiry-job] disabled");
     return;
   }
-  if (jobTimer) return;
-  // Stagger vs other hourly jobs so they do not stampede after worker reload.
-  setTimeout(() => void runMarketplaceExpiryJobs(), 55_000);
-  jobTimer = setInterval(() => void runMarketplaceExpiryJobs(), JOB_INTERVAL_MS);
-  console.log(
-    `[marketplace-expiry-job] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min`
-  );
+  if (jobHandle) return;
+  jobHandle = startPhaseAlignedInterval({
+    intervalMs: JOB_INTERVAL_MS,
+    phaseOffsetMs: SCHEDULER_PHASE_OFFSETS_MS.marketplace_expiry,
+    run: () => void runMarketplaceExpiryJobs(),
+    label: "marketplace-expiry-job"
+  });
 }
 
 export function stopMarketplaceExpiryJobs(): void {
-  if (jobTimer) clearInterval(jobTimer);
-  jobTimer = null;
+  jobHandle?.clear();
+  jobHandle = null;
 }

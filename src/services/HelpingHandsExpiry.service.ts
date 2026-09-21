@@ -1,6 +1,6 @@
 /**
  * Helping Hands lifecycle — expire due requests + pre-expiry reminders.
- * Pattern mirrors MarketplaceExpiry.service (setInterval, env toggles).
+ * Pattern mirrors MarketplaceExpiry.service (phase-aligned interval, env toggles).
  */
 import { Op } from "sequelize";
 import { Post } from "../models";
@@ -11,6 +11,11 @@ import {
 import type { HelpStatus } from "../constants/helpingHands.constants";
 import * as Notifications from "./Notification.service";
 import * as SchedulerTracking from "./SystemSchedulerTracking.service";
+import {
+  SCHEDULER_PHASE_OFFSETS_MS,
+  startPhaseAlignedInterval,
+  type PhaseAlignedHandle
+} from "../utils/schedulerTiming";
 
 const JOB_INTERVAL_MS = Number(
   process.env.HELPING_HANDS_EXPIRY_JOB_INTERVAL_MS || 15 * 60 * 1000
@@ -18,12 +23,12 @@ const JOB_INTERVAL_MS = Number(
 const JOB_ENABLED = process.env.HELPING_HANDS_EXPIRY_JOB_ENABLED !== "false";
 const SCHEDULER_JOB_KEY = "helping_hands_expiry" as const;
 
-let jobTimer: ReturnType<typeof setInterval> | null = null;
+let jobHandle: PhaseAlignedHandle | null = null;
 let jobRunning = false;
 
 export function getHelpingHandsExpiryJobRuntimeStatus() {
   return {
-    timerActive: jobTimer != null,
+    timerActive: jobHandle != null,
     running: jobRunning,
     intervalMs: JOB_INTERVAL_MS,
     envEnabled: JOB_ENABLED
@@ -131,15 +136,16 @@ export function startHelpingHandsExpiryJobs(): void {
     console.log("[helping-hands-expiry-job] disabled");
     return;
   }
-  if (jobTimer) return;
-  setTimeout(() => void runHelpingHandsExpiryJobs(), 70_000);
-  jobTimer = setInterval(() => void runHelpingHandsExpiryJobs(), JOB_INTERVAL_MS);
-  console.log(
-    `[helping-hands-expiry-job] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min`
-  );
+  if (jobHandle) return;
+  jobHandle = startPhaseAlignedInterval({
+    intervalMs: JOB_INTERVAL_MS,
+    phaseOffsetMs: SCHEDULER_PHASE_OFFSETS_MS.helping_hands_expiry,
+    run: () => void runHelpingHandsExpiryJobs(),
+    label: "helping-hands-expiry-job"
+  });
 }
 
 export function stopHelpingHandsExpiryJobs(): void {
-  if (jobTimer) clearInterval(jobTimer);
-  jobTimer = null;
+  jobHandle?.clear();
+  jobHandle = null;
 }

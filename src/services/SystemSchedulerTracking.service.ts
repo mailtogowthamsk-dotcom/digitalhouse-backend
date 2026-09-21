@@ -250,6 +250,8 @@ async function trackExecutionLocked(
       try {
         if (quietAutomatic) {
           // Drop quiet tick row; keep heartbeat / lastRun only.
+          // Still clear lastError + lastSuccessAt so admin does not stay FAILED
+          // forever after an old timeout (most hourly ticks process 0 rows).
           await SystemSchedulerRun.destroy({ where: { id: runId } });
           runId = null;
           await SystemSchedulerJob.update(
@@ -257,6 +259,8 @@ async function trackExecutionLocked(
               lastRunAt: finishedAt,
               lastHeartbeatAt: finishedAt,
               lastDurationMs: durationMs,
+              lastSuccessAt: finishedAt,
+              lastError: null,
               updatedAt: finishedAt
             } as any,
             { where: { jobKey } }

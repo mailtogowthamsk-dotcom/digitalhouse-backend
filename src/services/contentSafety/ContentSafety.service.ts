@@ -18,6 +18,10 @@ import { collectMediaArtifactKeys } from "../../utils/mediaArtifactKeys";
 import { parseMarketplaceGallery } from "../../utils/marketplaceGallery";
 import { parseHelpGallery } from "../../utils/helpGallery";
 import { emitFeedNewPost } from "../../realtime/feedEvents";
+import {
+  autoLiveMarketplaceIfEligible,
+  holdMarketplaceForSafetyReview
+} from "../marketplace/liveListingGuard";
 import { classifyImageBuffer } from "./localProvider";
 import { extractModerationFramesFromPath } from "./videoFrames";
 import {
@@ -208,6 +212,7 @@ async function applyCachedMediaSafetyToPost(post: Post, media: MediaFile): Promi
       } as any,
       { where: { id: post.id, mediaVersion: post.mediaVersion } }
     );
+    if (post.postType === "MARKETPLACE") await holdMarketplaceForSafetyReview(post.id);
     return true;
   }
   if (text.verdict === "REVIEW") {
@@ -220,6 +225,7 @@ async function applyCachedMediaSafetyToPost(post: Post, media: MediaFile): Promi
       } as any,
       { where: { id: post.id, mediaVersion: post.mediaVersion } }
     );
+    if (post.postType === "MARKETPLACE") await holdMarketplaceForSafetyReview(post.id);
     return true;
   }
 
@@ -291,6 +297,7 @@ async function applyCachedMediaSafetyToPost(post: Post, media: MediaFile): Promi
       } as any,
       { where: { id: post.id, mediaVersion: post.mediaVersion } }
     );
+    if (post.postType === "MARKETPLACE") await holdMarketplaceForSafetyReview(post.id);
     logSafety("moderation_applied_cached_review", {
       post_id: post.id,
       media_id: media.id,
@@ -310,9 +317,18 @@ async function applyCachedMediaSafetyToPost(post: Post, media: MediaFile): Promi
  */
 export async function afterCreatePostSafety(post: Post): Promise<void> {
   if (post.safetyDecision === "SAFE") {
-    if (post.postType !== "MARKETPLACE" || post.marketplaceStatus === "LIVE") {
+    if (post.postType === "MARKETPLACE") {
+      await autoLiveMarketplaceIfEligible(post.id);
+    } else {
       const author = await User.findByPk(post.userId, { attributes: ["community"] });
       emitFeedNewPost(author?.community ?? null, post.id);
+    }
+    return;
+  }
+
+  if (post.safetyDecision === "REVIEW_REQUIRED" || post.safetyDecision === "BLOCKED") {
+    if (post.postType === "MARKETPLACE") {
+      await holdMarketplaceForSafetyReview(post.id);
     }
     return;
   }
@@ -434,6 +450,12 @@ export async function applyEditSafety(post: Post, changed: {
     mediaVersion: next.mediaVersion,
     moderatedMediaVersion: next.moderatedMediaVersion
   } as any);
+  if (
+    post.postType === "MARKETPLACE" &&
+    (next.safetyDecision === "REVIEW_REQUIRED" || next.safetyDecision === "BLOCKED")
+  ) {
+    await holdMarketplaceForSafetyReview(post.id);
+  }
 }
 
 async function classifyImageMedia(
@@ -718,7 +740,9 @@ export async function tryPublishIfEligible(
   if (!published) return false;
   const post = await Post.findByPk(postId);
   if (!post) return true;
-  if (post.postType !== "MARKETPLACE" || post.marketplaceStatus === "LIVE") {
+  if (post.postType === "MARKETPLACE") {
+    await autoLiveMarketplaceIfEligible(post.id);
+  } else {
     const author = await User.findByPk(post.userId, { attributes: ["community"] });
     emitFeedNewPost(author?.community ?? null, post.id);
   }
@@ -884,6 +908,9 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
         }
       );
       if (affected > 0) {
+        if (post.postType === "MARKETPLACE") {
+          await holdMarketplaceForSafetyReview(post.id);
+        }
         // REVIEW_REQUIRED still skips public promote — but posts must not keep deleted staging keys.
         const liveKey = media.objectKey || extractR2KeyFromUrl(media.fileUrl);
         if (liveKey) {
@@ -1025,6 +1052,7 @@ export async function markMediaModerationFailed(mediaId: number, jobId: number |
         } as any,
         { where: { id: post.id, mediaVersion: post.mediaVersion } }
       );
+      if (post.postType === "MARKETPLACE") await holdMarketplaceForSafetyReview(post.id);
       continue;
     }
     const mapping = await promoteQuarantineKeys(
@@ -1163,8 +1191,11 @@ export async function adminAllowPost(
     );
   }
   await deletePromotedQuarantineKeys(mapping);
-  const author = await User.findByPk(post.userId, { attributes: ["community"] });
-  if (post.postType !== "MARKETPLACE" || post.marketplaceStatus === "LIVE") {
+  const refreshed = await Post.findByPk(postId);
+  if (refreshed?.postType === "MARKETPLACE") {
+    await autoLiveMarketplaceIfEligible(postId);
+  } else {
+    const author = await User.findByPk(post.userId, { attributes: ["community"] });
     emitFeedNewPost(author?.community ?? null, post.id);
   }
   logSafety("moderation_admin_override", {
@@ -1210,6 +1241,7 @@ export async function adminRejectPost(
       code: "SAFETY_REJECT_RACE"
     });
   }
+  await holdMarketplaceForSafetyReview(postId);
   const post = await Post.findByPk(postId);
   try {
     const { ModerationAction } = await import("../../models");

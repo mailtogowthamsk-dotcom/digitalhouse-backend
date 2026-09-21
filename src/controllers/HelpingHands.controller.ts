@@ -20,13 +20,33 @@ export async function getStats(req: AuthRequest, res: Response) {
 
 export async function getHeroes(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
-  const limit = Math.min(50, Math.max(1, Number((req.query as any)?.limit) || 20));
-  const data = await helpingHandsService.getCommunityHeroes(req.user.id, limit);
+  const q = (req.query ?? {}) as Record<string, unknown>;
+  const limit = Math.min(50, Math.max(1, Number(q.limit) || 10));
+  const offset = Math.max(0, Number(q.offset) || 0);
+  const data = await helpingHandsService.getCommunityHeroes(req.user.id, { limit, offset });
   return success(res, data);
 }
 
 export async function getMyActivity(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
+  const q = (req.query ?? {}) as Record<string, unknown>;
+  const limit = Math.min(50, Math.max(1, Number(q.limit) || 10));
+  const offset = Math.max(0, Number(q.offset) || 0);
+  const sectionRaw = typeof q.section === "string" ? q.section.trim().toLowerCase() : "";
+
+  if (sectionRaw === "requests") {
+    const data = await helpingHandsService.getMyHelpRequestsPage(req.user.id, { limit, offset });
+    return success(res, { section: "requests", ...data });
+  }
+  if (sectionRaw === "contributions") {
+    const data = await helpingHandsService.getMyHelpContributionsPage(req.user.id, {
+      limit,
+      offset
+    });
+    return success(res, { section: "contributions", ...data });
+  }
+
+  // First page of each section (never the full history).
   const data = await helpingHandsService.getMyHelpingActivity(req.user.id);
   return success(res, data);
 }
@@ -67,6 +87,8 @@ export async function completeRequest(req: AuthRequest, res: Response) {
   if (postId == null) return error(res, "Invalid request id", 400);
   const body = z
     .object({
+      resolved_by_user_ids: z.array(z.coerce.number().int().positive()).max(50).optional(),
+      /** @deprecated prefer resolved_by_user_ids */
       helper_user_id: z.coerce.number().int().positive().optional(),
       appreciation: z.string().trim().min(3).max(500).nullable().optional()
     })
@@ -74,6 +96,7 @@ export async function completeRequest(req: AuthRequest, res: Response) {
     .parse(req.body ?? {});
   try {
     const data = await helpingHandsService.completeHelpRequest(req.user.id, postId, {
+      resolvedByUserIds: body.resolved_by_user_ids,
       helperUserId: body.helper_user_id,
       appreciation: body.appreciation
     });

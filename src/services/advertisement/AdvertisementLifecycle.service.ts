@@ -3,17 +3,22 @@ import { Advertisement, AdvertisementEntitlement, AdvertisementModerationLog } f
 import * as SchedulerTracking from "../SystemSchedulerTracking.service";
 import * as Notifications from "../Notification.service";
 import { assertTransition } from "./AdvertisementState.service";
+import {
+  SCHEDULER_PHASE_OFFSETS_MS,
+  startPhaseAlignedInterval,
+  type PhaseAlignedHandle
+} from "../../utils/schedulerTiming";
 
 const JOB_INTERVAL_MS = Number(process.env.ADVERTISEMENT_LIFECYCLE_JOB_INTERVAL_MS || 15 * 60 * 1000);
 const JOB_ENABLED = process.env.ADVERTISEMENT_LIFECYCLE_JOB_ENABLED !== "false";
 const SCHEDULER_JOB_KEY = "advertisement_lifecycle" as const;
 
-let jobTimer: ReturnType<typeof setInterval> | null = null;
+let jobHandle: PhaseAlignedHandle | null = null;
 let jobRunning = false;
 
 export function getAdvertisementLifecycleJobRuntimeStatus() {
   return {
-    timerActive: jobTimer != null,
+    timerActive: jobHandle != null,
     running: jobRunning,
     intervalMs: JOB_INTERVAL_MS,
     envEnabled: JOB_ENABLED
@@ -148,15 +153,16 @@ export function startAdvertisementLifecycleJobs(): void {
     console.log("[advertisement-lifecycle] disabled");
     return;
   }
-  if (jobTimer) return;
-  setTimeout(() => void runAdvertisementLifecycleJobs(), 85_000);
-  jobTimer = setInterval(() => void runAdvertisementLifecycleJobs(), JOB_INTERVAL_MS);
-  console.log(
-    `[advertisement-lifecycle] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min`
-  );
+  if (jobHandle) return;
+  jobHandle = startPhaseAlignedInterval({
+    intervalMs: JOB_INTERVAL_MS,
+    phaseOffsetMs: SCHEDULER_PHASE_OFFSETS_MS.advertisement_lifecycle,
+    run: () => void runAdvertisementLifecycleJobs(),
+    label: "advertisement-lifecycle"
+  });
 }
 
 export function stopAdvertisementLifecycleJobs(): void {
-  if (jobTimer) clearInterval(jobTimer);
-  jobTimer = null;
+  jobHandle?.clear();
+  jobHandle = null;
 }

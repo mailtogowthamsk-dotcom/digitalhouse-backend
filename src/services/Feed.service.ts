@@ -175,7 +175,8 @@ export function applyPostFilters(
       });
     }
 
-    // Active help requests only in public browse (exclude expired)
+    // Helping Hands: module-only discovery (Helping Hands home + optional Home highlights).
+    // Do not mix help requests into the general community feed — CTA is "Offer help", not Like.
     if (params.postType === "HELP_REQUEST") {
       andParts.push({
         helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
@@ -185,23 +186,7 @@ export function applyPostFilters(
         ]
       });
     } else if (!params.postType) {
-      andParts.push({
-        [Op.or]: [
-          { postType: { [Op.ne]: "HELP_REQUEST" } },
-          {
-            [Op.and]: [
-              { helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] } },
-              {
-                [Op.or]: [
-                  { helpExpiresAt: null },
-                  { helpExpiresAt: { [Op.gt]: new Date() } }
-                ]
-              }
-            ]
-          },
-          { helpStatus: null }
-        ]
-      });
+      andParts.push({ postType: { [Op.ne]: "HELP_REQUEST" } });
     }
   } else if (
     params.postType === "MARKETPLACE" &&

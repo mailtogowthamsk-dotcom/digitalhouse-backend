@@ -8,6 +8,11 @@ import { type PlatformAudience, type PlatformNotifKind } from "../../constants/p
 import { adminBroadcast } from "../Notification.service";
 import * as SchedulerTracking from "../SystemSchedulerTracking.service";
 import { audit, now } from "./shared";
+import {
+  SCHEDULER_PHASE_OFFSETS_MS,
+  startPhaseAlignedInterval,
+  type PhaseAlignedHandle
+} from "../../utils/schedulerTiming";
 
 export async function listPlatformNotifications(kind?: string) {
   const where: any = {};
@@ -136,7 +141,7 @@ export async function sendPlatformNotification(adminEmail: string | null, id: nu
 }
 
 let platformNotifJobRunning = false;
-let platformNotifTimer: ReturnType<typeof setInterval> | null = null;
+let platformNotifHandle: PhaseAlignedHandle | null = null;
 const PLATFORM_NOTIF_SCHEDULER_KEY = "platform_scheduled_notifications" as const;
 
 export function getPlatformNotificationJobRuntimeStatus() {
@@ -145,7 +150,7 @@ export function getPlatformNotificationJobRuntimeStatus() {
     Number(process.env.PLATFORM_NOTIF_JOB_INTERVAL_MS || 60_000)
   );
   return {
-    timerActive: platformNotifTimer != null,
+    timerActive: platformNotifHandle != null,
     running: platformNotifJobRunning,
     intervalMs,
     envEnabled: true
@@ -229,27 +234,24 @@ export async function processScheduledPlatformNotifications(opts?: {
 }
 
 export function startPlatformNotificationJobs(): void {
-  if (platformNotifTimer) return;
+  if (platformNotifHandle) return;
   const intervalMs = Math.max(
     15_000,
     Number(process.env.PLATFORM_NOTIF_JOB_INTERVAL_MS || 60_000)
   );
-  setTimeout(() => {
-    void processScheduledPlatformNotifications().then((n) => {
-      if (n > 0) console.log(`[platform-notif-job] sent ${n} scheduled`);
-    });
-  }, 20_000);
-  platformNotifTimer = setInterval(() => {
-    void processScheduledPlatformNotifications().then((n) => {
-      if (n > 0) console.log(`[platform-notif-job] sent ${n} scheduled`);
-    });
-  }, intervalMs);
-  console.log(
-    `[platform-notif-job] scheduled every ${Math.round(intervalMs / 1000)}s`
-  );
+  platformNotifHandle = startPhaseAlignedInterval({
+    intervalMs,
+    phaseOffsetMs: SCHEDULER_PHASE_OFFSETS_MS.platform_scheduled_notifications,
+    run: () => {
+      void processScheduledPlatformNotifications().then((n) => {
+        if (n > 0) console.log(`[platform-notif-job] sent ${n} scheduled`);
+      });
+    },
+    label: "platform-notif-job"
+  });
 }
 
 export function stopPlatformNotificationJobs(): void {
-  if (platformNotifTimer) clearInterval(platformNotifTimer);
-  platformNotifTimer = null;
+  platformNotifHandle?.clear();
+  platformNotifHandle = null;
 }

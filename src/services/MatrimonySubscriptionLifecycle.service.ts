@@ -10,17 +10,22 @@ import {
   withSubscriptionAttributes
 } from "../utils/matrimonySubscriptionSchema.util";
 import * as SchedulerTracking from "./SystemSchedulerTracking.service";
+import {
+  SCHEDULER_PHASE_OFFSETS_MS,
+  startPhaseAlignedInterval,
+  type PhaseAlignedHandle
+} from "../utils/schedulerTiming";
 
 const JOB_INTERVAL_MS = Number(process.env.MATRIMONY_SUBSCRIPTION_JOB_INTERVAL_MS || 60 * 60 * 1000);
 const EXPIRY_JOB_ENABLED = process.env.MATRIMONY_SUBSCRIPTION_JOB_ENABLED !== "false";
 const SCHEDULER_JOB_KEY = "matrimony_subscription_lifecycle" as const;
 
-let jobTimer: ReturnType<typeof setInterval> | null = null;
+let jobHandle: PhaseAlignedHandle | null = null;
 let jobRunning = false;
 
 export function getMatrimonySubscriptionJobRuntimeStatus() {
   return {
-    timerActive: jobTimer != null,
+    timerActive: jobHandle != null,
     running: jobRunning,
     intervalMs: JOB_INTERVAL_MS,
     envEnabled: EXPIRY_JOB_ENABLED
@@ -208,15 +213,16 @@ export async function runSubscriptionLifecycleJobs(opts?: {
 }
 
 export function startMatrimonySubscriptionJobs(): void {
-  if (!EXPIRY_JOB_ENABLED || jobTimer) return;
-  setTimeout(() => void runSubscriptionLifecycleJobs(), 40_000);
-  jobTimer = setInterval(() => void runSubscriptionLifecycleJobs(), JOB_INTERVAL_MS);
-  console.log(
-    `[matrimony-subscription-job] scheduled every ${Math.round(JOB_INTERVAL_MS / 60000)} min`
-  );
+  if (!EXPIRY_JOB_ENABLED || jobHandle) return;
+  jobHandle = startPhaseAlignedInterval({
+    intervalMs: JOB_INTERVAL_MS,
+    phaseOffsetMs: SCHEDULER_PHASE_OFFSETS_MS.matrimony_subscription_lifecycle,
+    run: () => void runSubscriptionLifecycleJobs(),
+    label: "matrimony-subscription-job"
+  });
 }
 
 export function stopMatrimonySubscriptionJobs(): void {
-  if (jobTimer) clearInterval(jobTimer);
-  jobTimer = null;
+  jobHandle?.clear();
+  jobHandle = null;
 }
