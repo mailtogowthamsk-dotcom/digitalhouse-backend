@@ -640,8 +640,16 @@ export async function buildPostMediaPublishMapping(post: {
   userId: number;
   mediaUrl?: string | null;
   thumbnailUrl?: string | null;
+  postType?: string | null;
+  marketplaceGallery?: unknown;
+  helpGallery?: unknown;
 }): Promise<Map<string, string>> {
   const seeds = [post.mediaUrl, post.thumbnailUrl].filter(Boolean) as string[];
+  if (post.postType === "MARKETPLACE") {
+    seeds.push(...parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl));
+  } else if (post.postType === "HELP_REQUEST") {
+    seeds.push(...parseHelpGallery(post.helpGallery, post.mediaUrl));
+  }
   const mediaFiles: MediaFile[] = [];
   for (const seed of seeds) {
     const row = await findMediaFileForPostReference(post.userId, seed);
@@ -720,6 +728,28 @@ export async function resolveLiveMediaKey(
     return publicPublishStorageKey(row.objectKey) ?? row.objectKey;
   }
   return row.objectKey;
+}
+
+/** Resolve each gallery key like cover media so SAFE listings show all photos publicly. */
+export async function resolvePublicGalleryKeys(
+  userId: number,
+  keys: string[],
+  options?: { publishSafe?: boolean }
+): Promise<string[]> {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of keys) {
+    if (!raw?.trim()) continue;
+    let k = (await resolveLiveMediaKey(userId, raw)) ?? raw;
+    if (options?.publishSafe) {
+      k = publicPublishStorageKey(k) ?? k;
+    }
+    const norm = normalizeStoredMediaKey(k) ?? k;
+    if (seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(k);
+  }
+  return out;
 }
 
 /**
@@ -895,6 +925,7 @@ export const mediaService = {
   markMediaUrlsAttached,
   cleanupOrphanPendingMedia,
   resolveLiveMediaKey,
+  resolvePublicGalleryKeys,
   rewriteMediaKeyReferences,
   findMediaFileForPostReference,
   buildPostMediaPublishMapping,

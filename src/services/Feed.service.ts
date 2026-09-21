@@ -619,12 +619,17 @@ export async function buildFeedItemsFromPosts(
             mediaService.publicPublishStorageKey(storedThumbKey) ?? storedThumbKey;
         }
       }
-      const galleryRaw =
+      const galleryParsed =
         p.postType === "MARKETPLACE"
-          ? parseMarketplaceGallery(p.marketplaceGallery, storedMediaKey ?? null)
+          ? parseMarketplaceGallery(p.marketplaceGallery, p.mediaUrl ?? null)
           : p.postType === "HELP_REQUEST"
-            ? parseHelpGallery(p.helpGallery, storedMediaKey ?? null)
+            ? parseHelpGallery(p.helpGallery, p.mediaUrl ?? null)
             : [];
+      const galleryRaw = galleryParsed.length
+        ? await mediaService.resolvePublicGalleryKeys(p.userId, galleryParsed, {
+            publishSafe: p.safetyDecision === "SAFE"
+          })
+        : [];
       const ownerView = p.userId === currentUserId;
       const resolveFeedMedia = (url: string | null | undefined) =>
         ownerView && isPrivateR2Object(url)

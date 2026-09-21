@@ -178,6 +178,31 @@ function mediaKeysForPost(post: Post): string[] {
   return [...keys];
 }
 
+/** Promote cover + full marketplace/help gallery (not only mediaUrl). */
+async function promotePostQuarantineMedia(
+  post: Post,
+  media?: MediaFile | null
+): Promise<Map<string, string>> {
+  const inputs: Array<string | null | undefined> = [
+    post.mediaUrl,
+    post.thumbnailUrl,
+    media?.objectKey,
+    media?.fileUrl
+  ];
+  if (post.postType === "MARKETPLACE") {
+    inputs.push(...parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl));
+  } else if (post.postType === "HELP_REQUEST") {
+    inputs.push(...parseHelpGallery(post.helpGallery, post.mediaUrl));
+  }
+  let variantsJson = media?.variantsJson ?? null;
+  const siblings = await findMediaFilesForPost(post);
+  for (const m of siblings) {
+    inputs.push(m.objectKey, m.fileUrl);
+    if (!variantsJson && m.variantsJson) variantsJson = m.variantsJson;
+  }
+  return promoteQuarantineKeys(inputs, variantsJson);
+}
+
 async function findMediaFilesForPost(post: Post): Promise<MediaFile[]> {
   const keys = new Set<string>();
   for (const raw of mediaKeysForPost(post)) {
@@ -243,10 +268,7 @@ async function applyCachedMediaSafetyToPost(post: Post, media: MediaFile): Promi
     (decision === "REVIEW_REQUIRED" && !prohibited && media.safetyCategory === "UNCERTAIN");
 
   if (softSafe) {
-    const mapping = await promoteQuarantineKeys(
-      [post.mediaUrl, post.thumbnailUrl, media.objectKey, media.fileUrl],
-      media.variantsJson
-    );
+    const mapping = await promotePostQuarantineMedia(post, media);
     if (mapping.size > 0) {
       await sequelize.transaction(async (transaction) => {
         const locked = await Post.findByPk(post.id, {
@@ -1184,10 +1206,7 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
       continue;
     }
 
-    const mapping = await promoteQuarantineKeys(
-      [post.mediaUrl, post.thumbnailUrl, media.objectKey, media.fileUrl],
-      media.variantsJson
-    );
+    const mapping = await promotePostQuarantineMedia(post, media);
     await sequelize.transaction(async (transaction) => {
       const locked = await Post.findByPk(post.id, { transaction, lock: Transaction.LOCK.UPDATE });
       if (!locked || locked.mediaVersion !== post.mediaVersion) return;
@@ -1296,10 +1315,7 @@ export async function markMediaModerationFailed(mediaId: number, jobId: number |
       if (post.postType === "MARKETPLACE") await holdMarketplaceForSafetyReview(post.id);
       continue;
     }
-    const mapping = await promoteQuarantineKeys(
-      [post.mediaUrl, post.thumbnailUrl, media.objectKey, media.fileUrl],
-      media.variantsJson
-    );
+    const mapping = await promotePostQuarantineMedia(post, media);
     await sequelize.transaction(async (transaction) => {
       const locked = await Post.findByPk(post.id, { transaction, lock: Transaction.LOCK.UPDATE });
       if (!locked || locked.mediaVersion !== post.mediaVersion) return;
@@ -1360,7 +1376,16 @@ export async function adminAllowPost(
   const { mediaService } = await import("../Media.service");
   const mapping = await mediaService.buildPostMediaPublishMapping(post);
   const mediaFiles: MediaFile[] = [];
-  for (const seed of [post.mediaUrl, post.thumbnailUrl]) {
+  const allowSeeds = [
+    post.mediaUrl,
+    post.thumbnailUrl,
+    ...(post.postType === "MARKETPLACE"
+      ? parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl)
+      : post.postType === "HELP_REQUEST"
+        ? parseHelpGallery(post.helpGallery, post.mediaUrl)
+        : [])
+  ];
+  for (const seed of allowSeeds) {
     if (!seed) continue;
     const row = await mediaService.findMediaFileForPostReference(post.userId, seed);
     if (row && !mediaFiles.some((m) => m.id === row.id)) mediaFiles.push(row);

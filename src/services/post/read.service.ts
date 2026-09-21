@@ -103,12 +103,17 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
       storedThumbKey = mediaService.publicPublishStorageKey(storedThumbKey) ?? storedThumbKey;
     }
   }
-  const galleryRaw =
+  const galleryParsed =
     post.postType === "MARKETPLACE"
-      ? parseMarketplaceGallery(post.marketplaceGallery, storedMediaKey ?? null)
+      ? parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null)
       : isHelp
-        ? parseHelpGallery(post.helpGallery, storedMediaKey ?? null)
+        ? parseHelpGallery(post.helpGallery, post.mediaUrl ?? null)
         : [];
+  const galleryRaw = galleryParsed.length
+    ? await mediaService.resolvePublicGalleryKeys(post.userId, galleryParsed, {
+        publishSafe: post.safetyDecision === "SAFE"
+      })
+    : [];
   const [likeCount, commentCount, likedByMe, savedByMe, mediaUrl, thumbnailUrl, authorDto, gallerySigned] =
     await Promise.all([
       PostLike.count({ where: { postId } }),
