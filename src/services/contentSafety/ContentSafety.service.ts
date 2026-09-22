@@ -11,7 +11,8 @@ import {
   CONTENT_SAFETY_POLICY_VERSION,
   LOCAL_MODEL_NAME,
   LOCAL_MODEL_VERSION,
-  QUARANTINE_MEDIA_MODULES
+  QUARANTINE_MEDIA_MODULES,
+  skipsContentSafety
 } from "../../constants/contentSafety.constants";
 import { getR2ObjectBuffer, extractR2KeyFromUrl, downloadR2ObjectToFile, isPrivateR2Object } from "../../utils/r2Client";
 import { collectMediaArtifactKeys } from "../../utils/mediaArtifactKeys";
@@ -345,6 +346,23 @@ async function applyCachedMediaSafetyToPost(post: Post, media: MediaFile): Promi
  * for the media worker (no double NSFW on the create request path).
  */
 export async function afterCreatePostSafety(post: Post): Promise<void> {
+  // Helping Hands publishes immediately — no text/media safety gate.
+  if (post.postType === "HELP_REQUEST") {
+    if (post.safetyDecision !== "SAFE") {
+      await post.update({
+        safetyDecision: "SAFE",
+        safetyCategory: "SAFE",
+        safetyFailureReason: null,
+        moderatedMediaVersion: post.mediaVersion || 1,
+        safetyPolicyVersion: CONTENT_SAFETY_POLICY_VERSION
+      } as any);
+      await post.reload();
+    }
+    const author = await User.findByPk(post.userId, { attributes: ["community"] });
+    emitFeedNewPost(author?.community ?? null, post.id);
+    return;
+  }
+
   if (post.safetyDecision === "SAFE") {
     if (post.postType === "MARKETPLACE") {
       await autoLiveMarketplaceIfEligible(post.id);
@@ -464,6 +482,18 @@ export async function applyEditSafety(post: Post, changed: {
   caption: boolean;
   media: boolean;
 }): Promise<void> {
+  if (post.postType === "HELP_REQUEST") {
+    const ver = post.mediaVersion || 1;
+    await post.update({
+      safetyDecision: "SAFE",
+      safetyCategory: "SAFE",
+      safetyFailureReason: null,
+      moderatedMediaVersion: ver,
+      safetyPolicyVersion: CONTENT_SAFETY_POLICY_VERSION
+    } as any);
+    return;
+  }
+
   const text = moderateText(`${post.title}\n${post.description ?? ""}`);
   const next = nextSafetyAfterEdit({
     captionChanged: changed.caption,
@@ -1001,6 +1031,8 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
   const started = Date.now();
   const media = await MediaFile.findByPk(mediaId);
   if (!media) return;
+  // Stories (and other skip modules) never enter NSFW / quarantine scanning.
+  if (skipsContentSafety(media.module)) return;
   if (!(QUARANTINE_MEDIA_MODULES as readonly string[]).includes(media.module)) return;
 
   const key = media.objectKey || extractR2KeyFromUrl(media.fileUrl);

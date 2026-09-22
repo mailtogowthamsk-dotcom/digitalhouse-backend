@@ -42,6 +42,9 @@ import { JobAuditLog } from "./JobAuditLog.model";
 import { HelpOffer } from "./HelpOffer.model";
 import { HelpAppreciation } from "./HelpAppreciation.model";
 import { MemberConnection } from "./MemberConnection.model";
+import { Story } from "./Story.model";
+import { StoryView } from "./StoryView.model";
+import { StoryLike } from "./StoryLike.model";
 import { MemberProfessionalIdentity } from "./MemberProfessionalIdentity.model";
 import { MemberExpertiseSelection } from "./MemberExpertiseSelection.model";
 import { MasterDataType } from "./MasterDataType.model";
@@ -324,6 +327,9 @@ export {
   AuthAnalyticsEvent,
   UsernameReservation,
   MemberConnection,
+  Story,
+  StoryView,
+  StoryLike,
   MemberProfessionalIdentity,
   MemberExpertiseSelection,
   MessageThreadPreference,

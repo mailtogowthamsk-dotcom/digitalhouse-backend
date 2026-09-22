@@ -49,6 +49,7 @@ export async function getHelpingHandsStats(userId: number): Promise<{
   activeVolunteers: number;
   requestsCompleted: number;
   livesTouched: number;
+  activeRequests: number;
 }> {
   const me = await User.findByPk(userId, { attributes: ["community"] });
   const community = me?.community ?? null;
@@ -110,7 +111,8 @@ export async function getHelpingHandsStats(userId: number): Promise<{
     peopleHelped: completed,
     activeVolunteers,
     requestsCompleted: completed,
-    livesTouched: completed + openActive
+    livesTouched: completed + openActive,
+    activeRequests: openActive
   };
 }
 

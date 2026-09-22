@@ -1,4 +1,8 @@
-import { QUARANTINE_MEDIA_MODULES, QUARANTINE_PREFIX } from "../../constants/contentSafety.constants";
+import {
+  QUARANTINE_MEDIA_MODULES,
+  QUARANTINE_PREFIX,
+  skipsContentSafety
+} from "../../constants/contentSafety.constants";
 
 const PUBLIC_ROOT = "digital-house/";
 
@@ -7,6 +11,7 @@ function normalizeKey(key: string): string {
 }
 
 export function needsUploadQuarantine(module: string, purpose?: string): boolean {
+  if (skipsContentSafety(module)) return false;
   if (purpose === "horoscope" || purpose === "identity" || purpose === "support" || purpose === "chat") {
     return false;
   }

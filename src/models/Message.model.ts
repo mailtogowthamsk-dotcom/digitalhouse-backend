@@ -7,6 +7,7 @@ export class Message extends Model<InferAttributes<Message>, InferCreationAttrib
   declare recipientId: number;
   declare body: string;
   declare sharedPostId: number | null;
+  declare sharedStoryId: number | null;
   declare clientId: string | null;
   declare deliveredAt: Date | null;
   declare readAt: Date | null;
@@ -25,6 +26,11 @@ Message.init(
     recipientId: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false },
     body: { type: DataTypes.TEXT, allowNull: false },
     sharedPostId: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+      defaultValue: null
+    },
+    sharedStoryId: {
       type: DataTypes.INTEGER.UNSIGNED,
       allowNull: true,
       defaultValue: null

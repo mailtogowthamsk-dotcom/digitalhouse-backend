@@ -88,14 +88,32 @@ export const QUARANTINE_PREFIX = "digital-house/private/quarantine/";
  * UGC modules whose new uploads stay in private quarantine until SAFE.
  * Profile photos upload to the public CDN path directly (no quarantine) —
  * avatars must load for all viewers without signed URLs.
+ *
+ * Stories are intentionally excluded — ephemeral connection-only media on
+ * local disk; no NSFW/quarantine/moderation pipeline.
+ *
+ * Helping Hands (`help`) is also excluded — community mutual-aid posts publish
+ * immediately without content-safety / quarantine scanning.
  */
 export const QUARANTINE_MEDIA_MODULES = [
   "posts",
   "jobs",
   "marketplace",
-  "help",
   "matrimony"
 ] as const;
+
+/** Modules that must never enter content-safety / quarantine scanning. */
+export const CONTENT_SAFETY_SKIP_MODULES = [
+  "stories",
+  "advertisements",
+  "prominent",
+  "help"
+] as const;
+
+export function skipsContentSafety(module: string | null | undefined): boolean {
+  if (!module) return false;
+  return (CONTENT_SAFETY_SKIP_MODULES as readonly string[]).includes(module);
+}
 
 export function isPublicSafetyDecision(decision: string | null | undefined): boolean {
   return decision === "SAFE";

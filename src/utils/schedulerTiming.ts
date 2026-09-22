@@ -82,5 +82,7 @@ export const SCHEDULER_PHASE_OFFSETS_MS = {
   /** +10 min into each 15-min window */
   advertisement_lifecycle: 10 * 60_000,
   /** +15s into each minute (platform notif is ~60s) */
-  platform_scheduled_notifications: 15_000
+  platform_scheduled_notifications: 15_000,
+  /** +7 min into each 15-min window */
+  stories_expiry: 7 * 60_000
 } as const;

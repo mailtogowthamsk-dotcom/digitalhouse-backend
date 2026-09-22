@@ -10,6 +10,7 @@ import {
   Comment,
   FeedEngagementEvent
 } from "../models";
+import { countAcceptedConnections } from "./Connection.service";
 import {
   getPresignedPutUrl,
   getCdnPublicUrl,
@@ -104,6 +105,7 @@ export type ProfileMeResponse = {
     jobs_posted: number;
     marketplace_items: number;
     help_requests: number;
+    connections_count: number;
   };
   /** Extended: modular sections + completion (optional for backward compat) */
   completion_percentage?: number;
@@ -134,6 +136,7 @@ export type ProfileStatsDto = {
   marketplaceListings: number;
   helpingHandRequests: number;
   joinedCommunities: number;
+  connectionsCount: number;
 };
 
 export type ProfileActivityItemDto = {
@@ -484,7 +487,8 @@ export async function getProfile(userId: number): Promise<ProfileMeResponse> {
       total_posts: stats.totalPosts,
       jobs_posted: stats.jobsPosted,
       marketplace_items: stats.marketplaceListings,
-      help_requests: stats.helpingHandRequests
+      help_requests: stats.helpingHandRequests,
+      connections_count: stats.connectionsCount
     },
     completion_percentage,
     show_matrimony,
@@ -535,19 +539,22 @@ export async function updateProfile(userId: number, payload: ProfileUpdatePayloa
 
 /** Get community stats for profile (current user only). */
 export async function getProfileStats(userId: number): Promise<ProfileStatsDto> {
-  const [totalPosts, jobsPosted, marketplaceListings, helpingHandRequests] = await Promise.all([
-    Post.count({ where: { userId } }),
-    Post.count({ where: { userId, postType: "JOB" } }),
-    Post.count({ where: { userId, postType: "MARKETPLACE" } }),
-    Post.count({ where: { userId, postType: "HELP_REQUEST" } })
-  ]);
+  const [totalPosts, jobsPosted, marketplaceListings, helpingHandRequests, connectionsCount] =
+    await Promise.all([
+      Post.count({ where: { userId } }),
+      Post.count({ where: { userId, postType: "JOB" } }),
+      Post.count({ where: { userId, postType: "MARKETPLACE" } }),
+      Post.count({ where: { userId, postType: "HELP_REQUEST" } }),
+      countAcceptedConnections(userId)
+    ]);
 
   return {
     totalPosts,
     jobsPosted,
     marketplaceListings,
     helpingHandRequests,
-    joinedCommunities: 0 // placeholder until communities model exists
+    joinedCommunities: 0, // placeholder until communities model exists
+    connectionsCount
   };
 }
 

@@ -4,6 +4,7 @@ data/
 logs/
 coverage/
 .expo/
+storage/
 .env
 .env.local
 .env.development.local

@@ -39,6 +39,7 @@ import {
   applyEditSafety
 } from "../contentSafety/ContentSafety.service";
 import { initialSafetyForCreate } from "../contentSafety/initialSafety";
+import { CONTENT_SAFETY_POLICY_VERSION } from "../../constants/contentSafety.constants";
 import { autoLiveMarketplaceIfEligible } from "../marketplace/liveListingGuard";
 
 export async function createPost(userId: number, payload: CreatePostPayload): Promise<PostDetailDto> {
@@ -164,11 +165,21 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
       mediaResolved.marketplaceGallery?.length ||
       (mediaResolved as { helpGallery?: string[] | null }).helpGallery?.length
   );
-  const safety = initialSafetyForCreate({
-    title: payload.title,
-    description: payload.description?.trim() ?? null,
-    hasMedia
-  });
+  // Helping Hands: skip content safety entirely (publish as SAFE immediately).
+  const safety = isHelp
+    ? {
+        safetyDecision: "SAFE" as const,
+        safetyCategory: "SAFE",
+        safetyFailureReason: null as string | null,
+        mediaVersion: 1,
+        moderatedMediaVersion: 1,
+        safetyPolicyVersion: CONTENT_SAFETY_POLICY_VERSION
+      }
+    : initialSafetyForCreate({
+        title: payload.title,
+        description: payload.description?.trim() ?? null,
+        hasMedia
+      });
 
   const post = await Post.create({
     userId,
@@ -215,6 +226,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
   ]);
 
   await afterCreatePostSafety(post);
+
   logFeedEvent(userId, "post_impression", post.id, { action: "create" });
   return getPost(userId, post.id);
 }
@@ -624,7 +636,19 @@ export async function updatePost(userId: number, postId: number, payload: Update
       payload.marketplace_gallery !== undefined ||
       payload.help_gallery !== undefined
   );
-  await applyEditSafety(post, { caption: captionChanged, media: mediaChanged });
+  if (isHelp) {
+    // Keep Helping Hands public without re-entering moderation on edit.
+    const ver = post.mediaVersion || 1;
+    await post.update({
+      safetyDecision: "SAFE",
+      safetyCategory: "SAFE",
+      safetyFailureReason: null,
+      moderatedMediaVersion: ver,
+      safetyPolicyVersion: CONTENT_SAFETY_POLICY_VERSION
+    } as any);
+  } else {
+    await applyEditSafety(post, { caption: captionChanged, media: mediaChanged });
+  }
 
   if (isMarketplace) {
     await autoLiveMarketplaceIfEligible(postId);

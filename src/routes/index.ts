@@ -21,6 +21,7 @@ import { advertisementRouter } from "./advertisement.routes";
 import { legalRouter } from "./legal.routes";
 import { websiteRouter } from "./website.routes";
 import { businessRouter } from "./business.routes";
+import { storiesRouter } from "./stories.routes";
 
 export const apiRouter = Router();
 
@@ -39,6 +40,7 @@ apiRouter.use("/matrimony", matrimonyRouter);
 apiRouter.use("/notifications", notificationsRouter);
 apiRouter.use("/connections", connectionsRouter);
 apiRouter.use("/helping-hands", helpingHandsRouter);
+apiRouter.use("/stories", storiesRouter);
 apiRouter.use("/support", supportRouter);
 apiRouter.use("/prominent-people", prominentPeopleRouter);
 apiRouter.use("/advertisements", advertisementRouter);

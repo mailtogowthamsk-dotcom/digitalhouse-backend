@@ -175,8 +175,8 @@ export function applyPostFilters(
       });
     }
 
-    // Helping Hands: module-only discovery (Helping Hands home + optional Home highlights).
-    // Do not mix help requests into the general community feed — CTA is "Offer help", not Like.
+    // Helping Hands: active requests appear in the general feed (like LIVE marketplace / JOB).
+    // Completed / expired / cancelled stay out of unscoped discovery; module feed can still filter.
     if (params.postType === "HELP_REQUEST") {
       andParts.push({
         helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
@@ -186,7 +186,18 @@ export function applyPostFilters(
         ]
       });
     } else if (!params.postType) {
-      andParts.push({ postType: { [Op.ne]: "HELP_REQUEST" } });
+      andParts.push({
+        [Op.or]: [
+          { postType: { [Op.ne]: "HELP_REQUEST" } },
+          {
+            helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
+            [Op.or]: [
+              { helpExpiresAt: null },
+              { helpExpiresAt: { [Op.gt]: new Date() } }
+            ]
+          }
+        ]
+      });
     }
   } else if (
     params.postType === "MARKETPLACE" &&
@@ -744,6 +755,7 @@ export async function buildFeedItemsFromPosts(
         helpCategory: p.helpCategory ?? null,
         helpUrgency: p.helpUrgency ?? null,
         helpLocation: p.helpLocation ?? null,
+        helpExpiresAt: p.helpExpiresAt ? p.helpExpiresAt.toISOString() : null,
         helpGallery: p.postType === "HELP_REQUEST" ? gallery : [],
         helpHelperCount: p.postType === "HELP_REQUEST" ? helpHelperMap[p.id] ?? 0 : 0
       };

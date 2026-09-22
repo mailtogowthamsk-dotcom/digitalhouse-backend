@@ -23,7 +23,8 @@ export const MEDIA_MODULES = [
   "matrimony",
   "help",
   "prominent",
-  "advertisements"
+  "advertisements",
+  "stories"
 ] as const;
 export type MediaModule = (typeof MEDIA_MODULES)[number];
 

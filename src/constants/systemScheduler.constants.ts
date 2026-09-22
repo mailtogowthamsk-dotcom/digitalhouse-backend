@@ -6,7 +6,8 @@ export const SCHEDULER_JOB_KEYS = [
   "helping_hands_expiry",
   "platform_scheduled_notifications",
   "media_orphan_cleanup",
-  "advertisement_lifecycle"
+  "advertisement_lifecycle",
+  "stories_expiry"
 ] as const;
 
 export type SchedulerJobKey = (typeof SCHEDULER_JOB_KEYS)[number];
@@ -102,6 +103,18 @@ export const SCHEDULER_JOB_DEFINITIONS: readonly SchedulerJobDefinition[] = [
     intervalEnv: "ADVERTISEMENT_LIFECYCLE_JOB_INTERVAL_MS",
     defaultIntervalMs: 15 * 60 * 1000,
     enabledEnv: "ADVERTISEMENT_LIFECYCLE_JOB_ENABLED",
+    defaultEnvEnabled: true
+  },
+  {
+    jobKey: "stories_expiry",
+    name: "Stories Expiry Cleanup",
+    module: "Stories",
+    description: "Soft-delete expired stories and permanently delete associated media files from local server storage.",
+    fileLocation: "src/services/StoriesExpiry.service.ts",
+    scheduleLabel: "Every 15 minutes at +7m (wall clock)",
+    intervalEnv: "STORIES_EXPIRY_JOB_INTERVAL_MS",
+    defaultIntervalMs: 15 * 60 * 1000,
+    enabledEnv: "STORIES_EXPIRY_JOB_ENABLED",
     defaultEnvEnabled: true
   }
 ];

@@ -81,6 +81,7 @@ export async function sharePostToConnections(
         recipientId: msg.recipientId,
         body: msg.body,
         sharedPostId: (msg as any).sharedPostId ?? resolveOriginalPostId(post),
+        sharedStoryId: null,
         clientId: null,
         deliveredAt: (msg as any).deliveredAt
           ? (msg as any).deliveredAt.toISOString()

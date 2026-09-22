@@ -26,6 +26,10 @@ import {
   startAdvertisementLifecycleJobs,
   stopAdvertisementLifecycleJobs
 } from "../services/advertisement/AdvertisementLifecycle.service";
+import {
+  startStoriesExpiryJobs,
+  stopStoriesExpiryJobs
+} from "../services/StoriesExpiry.service";
 
 export function startAllScheduledJobs(): void {
   startMatrimonySubscriptionJobs();
@@ -34,6 +38,7 @@ export function startAllScheduledJobs(): void {
   startPlatformNotificationJobs();
   startOrphanMediaCleanupJobs();
   startAdvertisementLifecycleJobs();
+  startStoriesExpiryJobs();
 }
 
 export function stopAllScheduledJobs(): void {
@@ -44,6 +49,7 @@ export function stopAllScheduledJobs(): void {
     stopPlatformNotificationJobs();
     stopOrphanMediaCleanupJobs();
     stopAdvertisementLifecycleJobs();
+    stopStoriesExpiryJobs();
   } catch (e) {
     console.warn("[scheduler] stop jobs:", e);
   }

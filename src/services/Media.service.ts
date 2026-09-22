@@ -83,6 +83,13 @@ function buildKey(
   if (purpose === "support" || purpose === "chat") {
     return `${R2_PREFIX}/private/${purpose}/${userId}/${yyyy}/${mm}/${safeName}`;
   }
+  // Stories use local server disk via PUT /api/stories/upload — never R2.
+  if (module === "stories") {
+    throw Object.assign(
+      new Error("Stories must be uploaded via /api/stories/upload (local server storage)"),
+      { status: 400 }
+    );
+  }
   if (module === "profile") {
     // Keep legacy folder so existing profile-photo-upload-url and media/upload-url stay aligned.
     const key = `${R2_PREFIX}/profile-photos/${userId}/${safeName}`;
@@ -156,6 +163,12 @@ export async function generateUploadUrl(
   module: MediaModule,
   purpose?: MediaUploadPurpose
 ): Promise<UploadUrlResult> {
+  if (module === "stories") {
+    throw Object.assign(
+      new Error("Stories must be uploaded via /api/stories/upload (local server storage)"),
+      { status: 400 }
+    );
+  }
   const mime = fileType.toLowerCase().trim();
   const fileTypeKind = inferFileType(mime);
   if (fileTypeKind === "image" && fileSize > IMAGE_MAX_BYTES) {
