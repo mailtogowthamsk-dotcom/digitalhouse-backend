@@ -122,15 +122,13 @@ export function ensureStoriesStorageReady(): void {
 
 /**
  * Multi-API-instance guard for local-only story storage.
- * PM2 cluster sets NODE_APP_INSTANCE; ecosystem.4core may set API_INSTANCES>1.
+ * Prefer explicit API_INSTANCES (set by ecosystem when scaling).
+ * Do NOT treat NODE_APP_INSTANCE alone as multi-node — PM2 can set
+ * NODE_APP_INSTANCE=0 even for a single fork/cluster worker.
  */
 export function assertStoriesStorageTopologySafe(): void {
   const apiInstances = Number(process.env.API_INSTANCES || 1);
-  const inCluster =
-    process.env.NODE_APP_INSTANCE != null &&
-    String(process.env.NODE_APP_INSTANCE).trim() !== "";
-  const multiNode =
-    (Number.isFinite(apiInstances) && apiInstances > 1) || inCluster;
+  const multiNode = Number.isFinite(apiInstances) && apiInstances > 1;
   if (!multiNode) {
     console.info(
       "[stories] Single-node local storage assumed. All API instances must share STORIES_STORAGE_DIR (NFS/shared volume) OR migrate Stories media to object storage before scaling API workers > 1."

@@ -47,6 +47,7 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         PORT: 4000,
+        API_INSTANCES: String(apiInstances),
         UV_THREADPOOL_SIZE: process.env.UV_THREADPOOL_SIZE || "8",
         DB_POOL_MAX:
           process.env.DB_POOL_MAX ||

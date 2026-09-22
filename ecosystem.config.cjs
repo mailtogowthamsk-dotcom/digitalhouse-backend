@@ -46,6 +46,7 @@ module.exports = {
       env: {
         NODE_ENV: "production",
         PORT: 4000,
+        API_INSTANCES: "1",
         // Prefer profile over raw max; override in ecosystem.local if needed.
         DB_POOL_PROFILE: process.env.DB_POOL_PROFILE || "test",
         DB_SESSION_WAIT_TIMEOUT: process.env.DB_SESSION_WAIT_TIMEOUT || "120",
