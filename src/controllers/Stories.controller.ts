@@ -22,40 +22,50 @@ function parseId(id: string | undefined): number | null {
 
 const createSchema = z
   .object({
-    media_url: z.string().trim().min(1).max(2048),
-    media_type: z.enum(["image", "video"]),
+    media_url: z.string().trim().max(2048).nullable().optional(),
+    media_type: z.enum(["image", "video", "text"]),
     caption: z.string().trim().max(STORY_CAPTION_MAX_LENGTH).nullable().optional(),
     thumbnail_url: z.string().trim().max(2048).nullable().optional(),
+    /** Client hint only — server re-probes video duration from the uploaded file. */
     duration_seconds: z.number().finite().nullable().optional(),
     mime_type: z.string().trim().max(128).nullable().optional(),
     file_size: z.number().int().positive().nullable().optional()
   })
   .strict()
   .superRefine((data, ctx) => {
-    if (data.media_type === "video") {
-      const d = data.duration_seconds;
-      if (d == null || !Number.isFinite(d)) {
+    if (data.media_type === "text") {
+      if (!data.caption?.trim()) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Video duration is required",
-          path: ["duration_seconds"]
-        });
-        return;
-      }
-      if (d < STORY_VIDEO_MIN_DURATION_SEC) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Invalid video duration",
-          path: ["duration_seconds"]
+          message: "Text is required",
+          path: ["caption"]
         });
       }
-      if (d > STORY_VIDEO_MAX_DURATION_SEC) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Videos must be 30 seconds or less.",
-          path: ["duration_seconds"]
-        });
-      }
+      return;
+    }
+    if (!data.media_url?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Media is required",
+        path: ["media_url"]
+      });
+    }
+    if (data.media_type !== "video") return;
+    const d = data.duration_seconds;
+    if (d == null || !Number.isFinite(d)) return;
+    if (d < STORY_VIDEO_MIN_DURATION_SEC) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Invalid video duration",
+        path: ["duration_seconds"]
+      });
+    }
+    if (d > STORY_VIDEO_MAX_DURATION_SEC) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Videos must be ${STORY_VIDEO_MAX_DURATION_SEC} seconds or less.`,
+        path: ["duration_seconds"]
+      });
     }
   });
 

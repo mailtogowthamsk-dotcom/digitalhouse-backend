@@ -75,6 +75,10 @@ pm2 status
 
 Redis optional later: `REDIS_URL=redis://127.0.0.1:6379` → **2** API workers (not 4 — only 4 cores total).
 
+**Stories local media:** with `API_INSTANCES>1`, set `STORIES_STORAGE_DIR` to a **shared** mount,
+`STORIES_SHARED_STORAGE_ACK=true`, and the same `STORIES_MEDIA_SIGNING_SECRET` on every API process.
+Without shared storage, keep API instances at **1**.
+
 ```bash
 pm2 logs --lines 40 | grep MYSQL_POOL
 # expect API max=12, scheduler max=6, media max=4

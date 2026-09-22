@@ -2,7 +2,10 @@
  * Production security gate — fail fast when critical config is missing/weak.
  * Import once at process start (before accepting traffic).
  */
+import path from "path";
 import { logSecurityEvent } from "../utils/securityLog";
+
+const STORIES_MEDIA_SIGNING_SECRET_MIN_LEN = 32;
 
 const WEAK_PEPPERS = new Set(["", "dev-pepper", "change_me", "secret", "pepper"]);
 const WEAK_ADMIN_KEYS = new Set([
@@ -157,6 +160,53 @@ export function assertProductionSecurityEnv(): void {
       console.info(
         "[security] REDIS_URL unset — OK for single API instance. Set REDIS_URL before scaling API workers > 1."
       );
+    }
+  }
+
+  // Stories local-media ops (inline to avoid circular imports with storiesRuntime).
+  {
+    const secret = (process.env.STORIES_MEDIA_SIGNING_SECRET || "").trim();
+    const weak = new Set([
+      "",
+      "dev-stories-media-secret",
+      "change_me",
+      "secret",
+      "stories-secret",
+      "changeme"
+    ]);
+    if (
+      !secret ||
+      secret.length < STORIES_MEDIA_SIGNING_SECRET_MIN_LEN ||
+      weak.has(secret.toLowerCase())
+    ) {
+      errors.push(
+        `STORIES_MEDIA_SIGNING_SECRET is required in production (≥${STORIES_MEDIA_SIGNING_SECRET_MIN_LEN} chars, not a weak default). Generate with: openssl rand -hex 32`
+      );
+    }
+    const storage = (process.env.STORIES_STORAGE_DIR || "").trim();
+    if (!storage) {
+      errors.push(
+        "STORIES_STORAGE_DIR is required in production (absolute path on shared or single-node disk)."
+      );
+    } else if (!path.isAbsolute(storage)) {
+      errors.push("STORIES_STORAGE_DIR must be an absolute path in production.");
+    }
+    const mode = (process.env.STORIES_CONTENT_SAFETY_MODE || "").trim().toLowerCase();
+    if (!mode) {
+      errors.push(
+        'STORIES_CONTENT_SAFETY_MODE is required in production (set to "disabled" to acknowledge Stories are not content-safety scanned).'
+      );
+    } else if (mode !== "disabled" && mode !== "enabled") {
+      errors.push('STORIES_CONTENT_SAFETY_MODE must be "disabled" or "enabled".');
+    }
+    const apiInstances = Number(process.env.API_INSTANCES || 1);
+    if (Number.isFinite(apiInstances) && apiInstances > 1) {
+      const ack = (process.env.STORIES_SHARED_STORAGE_ACK || "").trim().toLowerCase();
+      if (ack !== "true" && ack !== "1" && ack !== "yes") {
+        errors.push(
+          "API_INSTANCES>1 requires STORIES_SHARED_STORAGE_ACK=true and a shared STORIES_STORAGE_DIR (or object-storage migration)."
+        );
+      }
     }
   }
 

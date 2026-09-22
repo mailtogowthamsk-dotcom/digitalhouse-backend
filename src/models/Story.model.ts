@@ -7,7 +7,7 @@ import {
 } from "sequelize";
 import { sequelize } from "../config/db";
 
-export const STORY_MEDIA_TYPES = ["image", "video"] as const;
+export const STORY_MEDIA_TYPES = ["image", "video", "text"] as const;
 export type StoryMediaType = (typeof STORY_MEDIA_TYPES)[number];
 
 export class Story extends Model<InferAttributes<Story>, InferCreationAttributes<Story>> {
@@ -32,7 +32,7 @@ Story.init(
     userId: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false },
     mediaType: { type: DataTypes.ENUM(...STORY_MEDIA_TYPES), allowNull: false },
     mediaUrl: { type: DataTypes.STRING(2048), allowNull: false },
-    caption: { type: DataTypes.STRING(120), allowNull: true },
+    caption: { type: DataTypes.STRING(200), allowNull: true },
     thumbnailUrl: { type: DataTypes.STRING(2048), allowNull: true },
     durationSeconds: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
     mimeType: { type: DataTypes.STRING(128), allowNull: true },

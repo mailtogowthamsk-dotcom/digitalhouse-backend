@@ -109,7 +109,8 @@ export const SCHEDULER_JOB_DEFINITIONS: readonly SchedulerJobDefinition[] = [
     jobKey: "stories_expiry",
     name: "Stories Expiry Cleanup",
     module: "Stories",
-    description: "Soft-delete expired stories and permanently delete associated media files from local server storage.",
+    description:
+      "Soft-delete expired stories, permanently delete associated media, and remove abandoned temporary story uploads.",
     fileLocation: "src/services/StoriesExpiry.service.ts",
     scheduleLabel: "Every 15 minutes at +7m (wall clock)",
     intervalEnv: "STORIES_EXPIRY_JOB_INTERVAL_MS",

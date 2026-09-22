@@ -362,11 +362,14 @@ export async function listJobInterests(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const postId = parsePostId(req.params?.postId);
   if (postId == null) return error(res, "Invalid post id", 400);
-  const statusRaw = req.query?.status;
+  const q = req.query ?? {};
+  const statusRaw = q.status;
   const status = typeof statusRaw === "string" ? statusRaw.trim() : undefined;
+  const page = Math.max(1, Number(q.page) || 1);
+  const limit = Math.min(50, Math.max(1, Number(q.limit) || 10));
   try {
     const { listJobInterestsForOwner } = await import("../services/JobInterest.service");
-    const data = await listJobInterestsForOwner(req.user.id, postId, status);
+    const data = await listJobInterestsForOwner(req.user.id, postId, status, { page, limit });
     return success(res, data);
   } catch (e: any) {
     if (e?.status) return error(res, e.message, e.status);

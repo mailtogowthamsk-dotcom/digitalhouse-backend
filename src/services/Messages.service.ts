@@ -108,92 +108,126 @@ function toMessageDto(m: Message): MessageDto {
 
 export async function listThreads(
   userId: number,
-  opts?: { includeArchived?: boolean; archivedOnly?: boolean }
-): Promise<ThreadDto[]> {
-  const rows = await sequelize.query<
-    { otherUserId: number; lastMessageId: number; unreadCount: number }[]
-  >(
-    `
-    SELECT
-      IF(senderId = :me, recipientId, senderId) AS otherUserId,
-      MAX(id) AS lastMessageId,
-      SUM(CASE
-        WHEN recipientId = :me AND readAt IS NULL
-          AND deleted_for_everyone_at IS NULL
-          AND deleted_for_recipient_at IS NULL
-        THEN 1 ELSE 0 END) AS unreadCount
-    FROM messages
-    WHERE (senderId = :me OR recipientId = :me)
-      AND (${VISIBLE_TO_ME_SQL.replace(/\n/g, " ")})
-    GROUP BY otherUserId
-    ORDER BY MAX(createdAt) DESC
-    LIMIT ${Math.min(Math.max(Number(process.env.THREAD_LIST_LIMIT) || 100, 20), 200)}
-    `,
-    { type: QueryTypes.SELECT, replacements: { me: userId } }
-  );
-
-  if (rows.length === 0) return [];
-
-  const blockedIds = await getBlockedUserIds(userId);
-
-  const otherUserIds = rows
-    .map((r) => Number((r as any).otherUserId))
-    .filter((id) => !blockedIds.has(id));
-  if (otherUserIds.length === 0) return [];
-
-  const filteredRows = rows.filter((r) => !blockedIds.has(Number((r as any).otherUserId)));
-  const lastMessageIds = filteredRows.map((r) => Number((r as any).lastMessageId));
-
-  const [users, lastMessages] = await Promise.all([
-    User.findAll({ where: { id: { [Op.in]: otherUserIds } }, attributes: ["id", "fullName", "profilePhoto"] }),
-    Message.findAll({ where: { id: { [Op.in]: lastMessageIds } } })
-  ]);
-
-  const usersById = new Map<number, User>(users.map((u) => [u.id, u]));
-  const lastById = new Map<number, Message>(lastMessages.map((m) => [m.id, m]));
-  const accessMap = await getMessageAccessMap(userId, otherUserIds);
-  const leftIds = await getLeftThreadUserIds(userId);
-  const archivedIds = await getArchivedThreadUserIds(userId);
-  const prefMap = await getThreadPreferencesMap(userId, otherUserIds);
-  const presenceByUser = await revealPresenceBatch(userId, otherUserIds);
+  opts?: {
+    includeArchived?: boolean;
+    archivedOnly?: boolean;
+    /** Page size (default 25, max 50). */
+    limit?: number;
+    /** Exclusive: return threads whose last message id is older than this. */
+    cursorId?: number;
+  }
+): Promise<{ threads: ThreadDto[]; nextCursorId: number | null }> {
+  const pageSize = Math.min(Math.max(Number(opts?.limit) || 25, 10), 50);
   const includeArchived = opts?.includeArchived === true;
   const archivedOnly = opts?.archivedOnly === true;
 
-  const publicProfilePhotos = new Map<number, string | null>();
-  await Promise.all(
-    users.map(async (u) => {
-      if (!u.profilePhoto) {
-        publicProfilePhotos.set(u.id, null);
-        return;
-      }
-      publicProfilePhotos.set(u.id, await toPublicUrlIfR2(u.profilePhoto));
-    })
-  );
+  const blockedIds = await getBlockedUserIds(userId);
+  const out: ThreadDto[] = [];
+  let cursorId =
+    opts?.cursorId != null && Number.isFinite(opts.cursorId) && opts.cursorId > 0
+      ? Number(opts.cursorId)
+      : null;
+  let nextCursorId: number | null = null;
+  let guard = 0;
 
-  const threads = await Promise.all(
-    filteredRows.map(async (r) => {
+  // Over-fetch + loop because archived/left filters run after the SQL group query.
+  while (out.length < pageSize && guard < 4) {
+    guard += 1;
+    const fetchSize = Math.min((pageSize - out.length) * 3 + 5, 80);
+    const rows = await sequelize.query<
+      { otherUserId: number; lastMessageId: number; unreadCount: number }[]
+    >(
+      `
+      SELECT
+        IF(senderId = :me, recipientId, senderId) AS otherUserId,
+        MAX(id) AS lastMessageId,
+        SUM(CASE
+          WHEN recipientId = :me AND readAt IS NULL
+            AND deleted_for_everyone_at IS NULL
+            AND deleted_for_recipient_at IS NULL
+          THEN 1 ELSE 0 END) AS unreadCount
+      FROM messages
+      WHERE (senderId = :me OR recipientId = :me)
+        AND (${VISIBLE_TO_ME_SQL.replace(/\n/g, " ")})
+      GROUP BY otherUserId
+      HAVING (:cursorId IS NULL OR MAX(id) < :cursorId)
+      ORDER BY MAX(id) DESC
+      LIMIT ${fetchSize}
+      `,
+      {
+        type: QueryTypes.SELECT,
+        replacements: { me: userId, cursorId }
+      }
+    );
+
+    if (rows.length === 0) {
+      nextCursorId = null;
+      break;
+    }
+
+    const batchLastId = Number((rows[rows.length - 1] as any).lastMessageId);
+    const filteredRows = rows.filter((r) => !blockedIds.has(Number((r as any).otherUserId)));
+    if (filteredRows.length === 0) {
+      cursorId = batchLastId;
+      if (rows.length < fetchSize) {
+        nextCursorId = null;
+        break;
+      }
+      continue;
+    }
+
+    const otherUserIds = filteredRows.map((r) => Number((r as any).otherUserId));
+    const lastMessageIds = filteredRows.map((r) => Number((r as any).lastMessageId));
+
+    const [users, lastMessages] = await Promise.all([
+      User.findAll({
+        where: { id: { [Op.in]: otherUserIds } },
+        attributes: ["id", "fullName", "profilePhoto"]
+      }),
+      Message.findAll({ where: { id: { [Op.in]: lastMessageIds } } })
+    ]);
+
+    const usersById = new Map<number, User>(users.map((u) => [u.id, u]));
+    const lastById = new Map<number, Message>(lastMessages.map((m) => [m.id, m]));
+    const accessMap = await getMessageAccessMap(userId, otherUserIds);
+    const leftIds = await getLeftThreadUserIds(userId);
+    const archivedIds = await getArchivedThreadUserIds(userId);
+    const prefMap = await getThreadPreferencesMap(userId, otherUserIds);
+
+    const publicProfilePhotos = new Map<number, string | null>();
+    await Promise.all(
+      users.map(async (u) => {
+        if (!u.profilePhoto) {
+          publicProfilePhotos.set(u.id, null);
+          return;
+        }
+        publicProfilePhotos.set(u.id, await toPublicUrlIfR2(u.profilePhoto));
+      })
+    );
+
+    for (const r of filteredRows) {
+      if (out.length >= pageSize) break;
       const otherUserId = Number((r as any).otherUserId);
-      if (leftIds.has(otherUserId) && !archivedOnly && !includeArchived) return null;
+      if (leftIds.has(otherUserId) && !archivedOnly && !includeArchived) continue;
       const pref = prefMap.get(otherUserId);
       const isArchived = pref?.archived ?? archivedIds.has(otherUserId);
       if (archivedOnly) {
-        if (!isArchived) return null;
+        if (!isArchived) continue;
       } else if (isArchived && !includeArchived) {
-        return null;
+        continue;
       }
       const unreadCount = Number((r as any).unreadCount ?? 0);
       const u = usersById.get(otherUserId);
       const lm = lastById.get(Number((r as any).lastMessageId)) ?? null;
       const access = accessMap.get(otherUserId);
-
       const profileImage = publicProfilePhotos.get(otherUserId) ?? null;
 
-      return {
+      out.push({
         otherUser: {
           id: otherUserId,
           name: u?.fullName ?? "Unknown",
           profileImage,
-          online: presenceByUser[String(otherUserId)]?.online === true
+          online: false // filled below via batch presence
         },
         chatLanes: access?.chatLanes ?? [],
         primaryLane: access?.primaryLane ?? null,
@@ -213,11 +247,33 @@ export async function listThreads(
             }
           : null,
         unreadCount
-      } satisfies ThreadDto;
-    })
-  );
+      });
+    }
 
-  return threads.filter((t): t is ThreadDto => t != null);
+    if (out.length >= pageSize) {
+      const last = out[out.length - 1]!;
+      nextCursorId = last.lastMessage?.id ?? batchLastId;
+      break;
+    }
+
+    if (rows.length < fetchSize) {
+      nextCursorId = null;
+      break;
+    }
+    cursorId = batchLastId;
+  }
+
+  if (out.length > 0) {
+    const presenceByUser = await revealPresenceBatch(
+      userId,
+      out.map((t) => t.otherUser.id)
+    );
+    for (const t of out) {
+      t.otherUser.online = presenceByUser[String(t.otherUser.id)]?.online === true;
+    }
+  }
+
+  return { threads: out, nextCursorId };
 }
 
 export async function getHistory(
@@ -244,8 +300,12 @@ export async function getHistory(
     limit
   });
 
-  const messages = rows.reverse().map(toMessageDto);
-  const nextCursorId = rows.length === limit ? rows[rows.length - 1].id : null;
+  // Capture oldest id BEFORE reverse — that is the cursor for the next older page.
+  const nextCursorId = rows.length === limit ? Number(rows[rows.length - 1]!.id) : null;
+  const messages = rows
+    .slice()
+    .reverse()
+    .map(toMessageDto);
   return { messages, nextCursorId };
 }
 
@@ -415,6 +475,20 @@ export async function updateThreadPreference(
   return updatePref(me, otherUserId, patch);
 }
 
+/** Peer-scoped preference — Chat uses this instead of loading the full inbox. */
+export async function getThreadPreference(me: number, otherUserId: number) {
+  const { getThreadPreference: getPref } = await import("./ThreadPreference.service");
+  const pref = await getPref(me, otherUserId);
+  return (
+    pref ?? {
+      otherUserId,
+      muted: false,
+      archived: false,
+      leftAt: null as string | null
+    }
+  );
+}
+
 /**
  * Permanently delete the conversation between `me` and `otherUserId` from the DB.
  *
@@ -492,6 +566,7 @@ export const messagesService = {
   markRead,
   unreadCount,
   messageAccess,
-  updateThreadPreference
+  updateThreadPreference,
+  getThreadPreference
 };
 

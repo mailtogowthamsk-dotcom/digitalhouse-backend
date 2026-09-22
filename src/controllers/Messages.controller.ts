@@ -6,16 +6,20 @@ import { sendMessageSchema, validateMessagesHistoryQuery, threadPreferenceSchema
 
 type AuthRequest = Request & { user?: User };
 
-/** GET /api/messages/threads */
+/** GET /api/messages/threads?limit&cursorId&includeArchived&archivedOnly */
 export async function listThreads(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const includeArchived = String(req.query.includeArchived ?? "") === "1";
   const archivedOnly = String(req.query.archivedOnly ?? "") === "1";
-  const threads = await messagesService.listThreads(req.user.id, {
+  const limitRaw = Number(req.query.limit);
+  const cursorRaw = Number(req.query.cursorId);
+  const data = await messagesService.listThreads(req.user.id, {
     includeArchived,
-    archivedOnly
+    archivedOnly,
+    ...(Number.isFinite(limitRaw) && limitRaw > 0 ? { limit: limitRaw } : {}),
+    ...(Number.isFinite(cursorRaw) && cursorRaw > 0 ? { cursorId: cursorRaw } : {})
   });
-  return success(res, { threads });
+  return success(res, data);
 }
 
 /** GET /api/messages/with/:userId?limit&cursorId */
@@ -74,6 +78,15 @@ export async function getUnreadCount(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const count = await messagesService.unreadCount(req.user.id);
   return success(res, { count });
+}
+
+/** GET /api/messages/threads/:userId — mute/archive/left for one peer (not full inbox). */
+export async function getThreadPreference(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const otherUserId = Number(req.params.userId);
+  if (!otherUserId || otherUserId === req.user.id) return error(res, "Invalid user", 400);
+  const preference = await messagesService.getThreadPreference(req.user.id, otherUserId);
+  return success(res, { preference });
 }
 
 /** PATCH /api/messages/threads/:userId */

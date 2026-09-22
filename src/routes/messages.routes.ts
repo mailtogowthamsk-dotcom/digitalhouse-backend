@@ -13,6 +13,7 @@ messagesRouter.get("/threads", asyncHandler(MessagesController.listThreads));
 messagesRouter.get("/unread-count", asyncHandler(MessagesController.getUnreadCount));
 messagesRouter.get("/access/:userId", asyncHandler(MessagesController.getAccess));
 messagesRouter.get("/with/:userId", asyncHandler(MessagesController.getWithUser));
+messagesRouter.get("/threads/:userId", asyncHandler(MessagesController.getThreadPreference));
 messagesRouter.post("/", asyncHandler(MessagesController.send));
 messagesRouter.post("/with/:userId/read", asyncHandler(MessagesController.markRead));
 messagesRouter.patch("/threads/:userId", asyncHandler(MessagesController.updateThreadPreference));

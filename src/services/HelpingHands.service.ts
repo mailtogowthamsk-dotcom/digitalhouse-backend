@@ -189,7 +189,8 @@ export async function offerHelp(
 
 export async function listHelpersForPost(
   viewerId: number,
-  postId: number
+  postId: number,
+  opts?: { limit?: number; offset?: number }
 ): Promise<{
   items: {
     id: number;
@@ -199,9 +200,12 @@ export async function listHelpersForPost(
     author: { id: number; name: string; profile_image: string | null };
   }[];
   total: number;
+  nextOffset: number | null;
 }> {
   const post = await assertHelpPost(postId, viewerId);
-  const rows = await HelpOffer.findAll({
+  const { limit, offset } = clampPage(opts?.limit, opts?.offset);
+
+  const { rows, count } = await HelpOffer.findAndCountAll({
     where: { postId, status: "ACTIVE" },
     include: [
       {
@@ -211,7 +215,10 @@ export async function listHelpersForPost(
         required: true
       }
     ],
-    order: [["createdAt", "ASC"]]
+    order: [["createdAt", "ASC"]],
+    limit,
+    offset,
+    distinct: true
   });
 
   const items = await Promise.all(
@@ -230,7 +237,8 @@ export async function listHelpersForPost(
 
   // Owner or helper can see list; community members can see too for transparency
   void post;
-  return { items, total: items.length };
+  const nextOffset = offset + items.length < count ? offset + items.length : null;
+  return { items, total: count, nextOffset };
 }
 
 export async function completeHelpRequest(

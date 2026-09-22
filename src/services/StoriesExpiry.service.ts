@@ -1,8 +1,12 @@
 /**
  * Soft-delete expired stories + permanently delete media from local server disk
  * (auth still filters by expires_at; cleanup is not the security gate).
+ * Also removes abandoned tmp_* uploads that never became Story rows.
  */
-import { cleanupExpiredStories } from "./Stories.service";
+import {
+  cleanupExpiredStories,
+  cleanupOrphanStoryMediaUploads
+} from "./Stories.service";
 import * as SchedulerTracking from "./SystemSchedulerTracking.service";
 import {
   SCHEDULER_PHASE_OFFSETS_MS,
@@ -44,8 +48,16 @@ export async function runStoriesExpiryJobs(opts?: {
       opts?.executedBy ?? null,
       async () => {
         const cleaned = await cleanupExpiredStories(100);
-        if (cleaned > 0) console.log("[stories-expiry-job]", { cleaned });
-        return { recordsProcessed: cleaned };
+        const orphans = await cleanupOrphanStoryMediaUploads();
+        if (cleaned > 0 || orphans.deleted > 0) {
+          console.log("[stories-expiry-job]", {
+            expiredCleaned: cleaned,
+            orphanScanned: orphans.scanned,
+            orphanDeleted: orphans.deleted,
+            orphanFailures: orphans.failures
+          });
+        }
+        return { recordsProcessed: cleaned + orphans.deleted };
       }
     );
     if (!tracked.ok && tracked.error) {

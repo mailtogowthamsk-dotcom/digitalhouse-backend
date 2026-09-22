@@ -230,8 +230,9 @@ function mapOwnerInterestItem(r: JobInterest): JobInterestItem {
 export async function listJobInterestsForOwner(
   ownerUserId: number,
   postId: number,
-  statusFilter?: string | null
-): Promise<{ items: JobInterestItem[]; total: number }> {
+  statusFilter?: string | null,
+  opts?: { page?: number; limit?: number }
+): Promise<{ items: JobInterestItem[]; total: number; page: number; limit: number }> {
   const post = await Post.findByPk(postId);
   if (!post || post.postType !== "JOB") {
     throw Object.assign(new Error("Job not found"), { status: 404 });
@@ -239,6 +240,9 @@ export async function listJobInterestsForOwner(
   if (post.userId !== ownerUserId) {
     throw Object.assign(new Error("Forbidden"), { status: 403 });
   }
+
+  const page = Math.max(1, opts?.page ?? 1);
+  const limit = Math.min(50, Math.max(1, opts?.limit ?? 10));
 
   const where: Record<string, unknown> = { postId };
   if (statusFilter && statusFilter !== "all") {
@@ -249,7 +253,7 @@ export async function listJobInterestsForOwner(
     where.status = upper;
   }
 
-  const rows = await JobInterest.findAll({
+  const { rows, count } = await JobInterest.findAndCountAll({
     where,
     include: [
       {
@@ -259,11 +263,17 @@ export async function listJobInterestsForOwner(
         required: true
       }
     ],
-    order: [["createdAt", "DESC"]]
+    order: [["createdAt", "DESC"]],
+    limit,
+    offset: (page - 1) * limit
   });
 
-  const items = rows.map(mapOwnerInterestItem);
-  return { items, total: items.length };
+  return {
+    items: rows.map(mapOwnerInterestItem),
+    total: count,
+    page,
+    limit
+  };
 }
 
 export async function listMyJobApplications(

@@ -72,8 +72,14 @@ export async function listHelpers(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
   const postId = parsePostId(req.params?.postId);
   if (postId == null) return error(res, "Invalid request id", 400);
+  const q = (req.query ?? {}) as Record<string, unknown>;
+  const limit = Math.min(50, Math.max(1, Number(q.limit) || 10));
+  const offset = Math.max(0, Number(q.offset) || 0);
   try {
-    const data = await helpingHandsService.listHelpersForPost(req.user.id, postId);
+    const data = await helpingHandsService.listHelpersForPost(req.user.id, postId, {
+      limit,
+      offset
+    });
     return success(res, data);
   } catch (e: any) {
     if (e?.status) return error(res, e.message, e.status);

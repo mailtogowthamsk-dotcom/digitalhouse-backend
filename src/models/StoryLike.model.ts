@@ -30,6 +30,13 @@ StoryLike.init(
     sequelize,
     tableName: "story_likes",
     timestamps: true,
-    underscored: false
+    underscored: false,
+    indexes: [
+      {
+        name: "uq_story_likes_story_user",
+        unique: true,
+        fields: ["storyId", "userId"]
+      }
+    ]
   }
 );

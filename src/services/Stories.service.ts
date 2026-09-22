@@ -8,6 +8,8 @@ import { scheduleMessagePush } from "../realtime/messagePushQueue";
 import {
   STORY_IMAGE_DURATION_MS,
   STORY_REPLY_MAX_LENGTH,
+  STORY_TEXT_DURATION_MS,
+  STORY_TEXT_MEDIA_KEY,
   STORY_VIDEO_MAX_DURATION_SEC,
   STORY_VIDEO_MIN_DURATION_SEC,
   normalizeStoryCaption,
@@ -20,16 +22,21 @@ import {
   deleteR2ImageVariants
 } from "../utils/r2Client";
 import {
+  absolutePathForStoryKey,
   assertOwnedLocalStoryKey,
+  assertStoryVideoDuration,
   buildSignedStoryMediaPath,
+  cleanupOrphanStoryUploads,
   deleteStoryFile,
   isLocalStoryKey,
   mimeFromStoryKey,
+  promoteStoryUploadKey,
   readStoryFileStream,
   saveStoryFile,
   verifySignedStoryMediaQuery,
   type StoryMediaKind
 } from "./StoryLocalStorage.service";
+import { sequelize } from "../config/db";
 
 function serviceError(message: string, status = 400, code?: string): never {
   throw Object.assign(new Error(message), { status, code });
@@ -54,6 +61,9 @@ async function resolvePlayableUrls(
   story: Story,
   viewerId: number
 ): Promise<{ media: string | null; thumb: string | null }> {
+  if (story.mediaType === "text" || story.mediaUrl === STORY_TEXT_MEDIA_KEY) {
+    return { media: null, thumb: null };
+  }
   if (isLocalStoryKey(story.mediaUrl)) {
     return {
       media: buildSignedStoryMediaPath(story.id, viewerId, "file"),
@@ -73,6 +83,7 @@ async function purgeStoryMedia(story: Story): Promise<void> {
   const keys = [story.mediaUrl, story.thumbnailUrl].filter(Boolean) as string[];
   await Promise.all(
     keys.map(async (k) => {
+      if (k === STORY_TEXT_MEDIA_KEY || k.startsWith("text:")) return;
       if (isLocalStoryKey(k)) {
         await deleteStoryFile(k);
         return;
@@ -116,7 +127,9 @@ function toStoryDto(
           Math.max((story.durationSeconds ?? STORY_VIDEO_MIN_DURATION_SEC) * 1000, 1000),
           STORY_VIDEO_MAX_DURATION_SEC * 1000
         )
-      : STORY_IMAGE_DURATION_MS;
+      : story.mediaType === "text"
+        ? STORY_TEXT_DURATION_MS
+        : STORY_IMAGE_DURATION_MS;
   return {
     id: story.id,
     user_id: story.userId,
@@ -136,8 +149,8 @@ function toStoryDto(
 }
 
 export type CreateStoryInput = {
-  media_url: string;
-  media_type: "image" | "video";
+  media_url?: string | null;
+  media_type: "image" | "video" | "text";
   caption?: string | null;
   thumbnail_url?: string | null;
   duration_seconds?: number | null;
@@ -146,30 +159,66 @@ export type CreateStoryInput = {
 };
 
 export async function createStory(userId: number, input: CreateStoryInput) {
-  const mediaUrl = input.media_url?.trim();
-  if (!mediaUrl) serviceError("Media is required", 400, "MEDIA_REQUIRED");
-  // New stories must use local server storage (not R2).
-  assertOwnedLocalStoryKey(userId, mediaUrl);
+  if (input.media_type === "text") {
+    const caption = normalizeStoryCaption(input.caption);
+    if (!caption) serviceError("Text is required", 400, "TEXT_REQUIRED");
+    const now = new Date();
+    const story = await Story.create({
+      userId,
+      mediaType: "text",
+      mediaUrl: STORY_TEXT_MEDIA_KEY,
+      caption,
+      thumbnailUrl: null,
+      durationSeconds: null,
+      mimeType: "text/plain",
+      fileSize: null,
+      likeCount: 0,
+      createdAt: now,
+      expiresAt: storyExpiresAt(now),
+      deletedAt: null
+    });
+    const { media, thumb } = await resolvePlayableUrls(story, userId);
+    return toStoryDto(story, media, thumb, {
+      viewed_by_me: true,
+      view_count: 0,
+      liked_by_me: false,
+      like_count: 0
+    });
+  }
+
+  const mediaUrlRaw = input.media_url?.trim();
+  if (!mediaUrlRaw) serviceError("Media is required", 400, "MEDIA_REQUIRED");
+  assertOwnedLocalStoryKey(userId, mediaUrlRaw);
   if (input.media_type !== "image" && input.media_type !== "video") {
     serviceError("Invalid media type", 400, "INVALID_MEDIA_TYPE");
   }
 
-  let durationSeconds: number | null = null;
-  if (input.media_type === "video") {
-    const d = Number(input.duration_seconds);
-    if (!Number.isFinite(d) || d < STORY_VIDEO_MIN_DURATION_SEC) {
-      serviceError("Invalid video duration", 400, "INVALID_DURATION");
-    }
-    if (d > STORY_VIDEO_MAX_DURATION_SEC) {
-      serviceError("Videos must be 30 seconds or less.", 400, "VIDEO_TOO_LONG");
-    }
-    durationSeconds = Math.floor(d);
-  }
-
+  let mediaUrl = mediaUrlRaw;
   let thumbnailUrl: string | null = null;
   if (input.thumbnail_url?.trim()) {
     assertOwnedLocalStoryKey(userId, input.thumbnail_url.trim());
     thumbnailUrl = input.thumbnail_url.trim();
+  }
+
+  /** Authority: probe actual video bytes; client duration_seconds is UI-only. */
+  let durationSeconds: number | null = null;
+  if (input.media_type === "video") {
+    try {
+      durationSeconds = await assertStoryVideoDuration(absolutePathForStoryKey(mediaUrl));
+    } catch (e: any) {
+      if (e?.status) throw e;
+      serviceError("Invalid or corrupt video", 400, "INVALID_VIDEO");
+    }
+  }
+
+  try {
+    mediaUrl = await promoteStoryUploadKey(mediaUrl);
+    if (thumbnailUrl) {
+      thumbnailUrl = await promoteStoryUploadKey(thumbnailUrl);
+    }
+  } catch (e: any) {
+    if (e?.status) throw e;
+    serviceError("Invalid story media reference", 400, "INVALID_STORY_MEDIA");
   }
 
   const now = new Date();
@@ -197,19 +246,25 @@ export async function createStory(userId: number, input: CreateStoryInput) {
   });
 }
 
-/** PUT /api/stories/upload — write image/video bytes to the API server disk.
- * No R2, no media worker finalize, no content-safety / quarantine scan.
- */
+/** PUT /api/stories/upload — local disk; videos ffprobe-validated. */
 export async function uploadStoryMediaBytes(
   userId: number,
   buffer: Buffer,
   mimeType: string
-): Promise<{ key: string; byte_size: number; mime_type: string }> {
+): Promise<{
+  key: string;
+  byte_size: number;
+  mime_type: string;
+  duration_seconds: number | null;
+  media_kind: "image" | "video";
+}> {
   const saved = await saveStoryFile(userId, buffer, mimeType);
   return {
     key: saved.key,
     byte_size: saved.byteSize,
-    mime_type: saved.mimeType
+    mime_type: saved.mimeType,
+    duration_seconds: saved.durationSeconds,
+    media_kind: saved.kind
   };
 }
 
@@ -479,24 +534,56 @@ export async function toggleStoryLike(viewerId: number, storyId: number) {
   }
   await assertCanViewStory(viewerId, story);
 
-  const existing = await StoryLike.findOne({
-    where: { storyId: story.id, userId: viewerId }
+  return sequelize.transaction(async (t) => {
+    const existing = await StoryLike.findOne({
+      where: { storyId: story.id, userId: viewerId },
+      transaction: t,
+      lock: t.LOCK.UPDATE
+    });
+    if (existing) {
+      await existing.destroy({ transaction: t });
+      const likeCount = await StoryLike.count({
+        where: { storyId: story.id },
+        transaction: t
+      });
+      await story.update({ likeCount }, { transaction: t });
+      return { liked: false, like_count: likeCount };
+    }
+    try {
+      await StoryLike.create(
+        {
+          storyId: story.id,
+          userId: viewerId,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        },
+        { transaction: t }
+      );
+    } catch (e: any) {
+      if (e?.name !== "SequelizeUniqueConstraintError") throw e;
+    }
+    const likeCount = await StoryLike.count({
+      where: { storyId: story.id },
+      transaction: t
+    });
+    await story.update({ likeCount }, { transaction: t });
+    return { liked: true, like_count: likeCount };
   });
-  if (existing) {
-    await existing.destroy();
-    const next = Math.max(0, (story.likeCount ?? 0) - 1);
-    await story.update({ likeCount: next });
-    return { liked: false, like_count: next };
+}
+
+/** Remove abandoned tmp_* uploads not referenced by any Story row. */
+export async function cleanupOrphanStoryMediaUploads(maxAgeHours?: number) {
+  const rows = await Story.findAll({
+    attributes: ["mediaUrl", "thumbnailUrl"]
+  });
+  const referencedKeys = new Set<string>();
+  for (const row of rows) {
+    if (row.mediaUrl && isLocalStoryKey(row.mediaUrl)) referencedKeys.add(row.mediaUrl);
+    if (row.thumbnailUrl && isLocalStoryKey(row.thumbnailUrl)) {
+      referencedKeys.add(row.thumbnailUrl);
+    }
   }
-  await StoryLike.create({
-    storyId: story.id,
-    userId: viewerId,
-    createdAt: new Date(),
-    updatedAt: new Date()
-  });
-  const next = (story.likeCount ?? 0) + 1;
-  await story.update({ likeCount: next });
-  return { liked: true, like_count: next };
+  return cleanupOrphanStoryUploads({ referencedKeys, maxAgeHours });
 }
 
 /**
@@ -613,6 +700,7 @@ export const storiesService = {
   listStoryViewers,
   deleteStory,
   cleanupExpiredStories,
+  cleanupOrphanStoryMediaUploads,
   toggleStoryLike,
   replyToStory,
   openStoryMediaFile

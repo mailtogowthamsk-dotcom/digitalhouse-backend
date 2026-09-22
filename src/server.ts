@@ -187,6 +187,21 @@ async function initDb() {
           "Unsigned feed URLs will 400. Set it to your media-guard custom domain (e.g. https://media.konguvettuvagounder.com)."
       );
     }
+    try {
+      const {
+        ensureStoriesStorageReady,
+        assertStoriesStorageTopologySafe,
+        logStoriesContentSafetyMode
+      } = await import("./config/storiesRuntime");
+      ensureStoriesStorageReady();
+      assertStoriesStorageTopologySafe();
+      logStoriesContentSafetyMode();
+    } catch (e) {
+      console.error("[stories] startup storage/config check failed:", e);
+      if (process.env.NODE_ENV === "production") {
+        process.exit(1);
+      }
+    }
     if (process.env.NODE_ENV !== "production") {
       try {
         const { warnIfAdminJwtSecretMissing } = await import("./utils/jwt.util");
