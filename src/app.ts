@@ -10,7 +10,7 @@ import { asyncHandler } from "./middlewares/asyncHandler";
 import { apiRouter } from "./routes";
 import { errorHandler } from "./middlewares/error.middleware";
 import { apiLimiter } from "./middlewares/rateLimit.middleware";
-import { slowApiLogger } from "./middlewares/slowApi.middleware";
+import { requestMetricsMiddleware } from "./middlewares/requestMetrics.middleware";
 import { dbReady, dbFailed } from "./state";
 import { razorpayWebhook } from "./controllers/MatrimonyPayment.controller";
 import { registerAdvertisementPaymentHandlers } from "./services/advertisement/AdvertisementPaymentHandler";
@@ -97,7 +97,7 @@ for (const mount of getApiMountPaths()) {
 }
 
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "4mb" }));
-app.use(slowApiLogger);
+app.use(requestMetricsMiddleware);
 
 // Root: some platforms hit / for health – respond quickly so Railway sees the app as up
 app.get("/", (_req, res) => {

@@ -38,6 +38,20 @@ let createCount = 0;
 let destroyCount = 0;
 let timeoutCount = 0;
 let reuseCount = 0;
+/** Ring buffer of recent acquire wait times (ms) for p50/p95 when DB_POOL_DEBUG. */
+const acquireWaitSamples: number[] = [];
+const ACQUIRE_SAMPLE_MAX = 200;
+
+function recordAcquireWait(ms: number): void {
+  acquireWaitSamples.push(ms);
+  if (acquireWaitSamples.length > ACQUIRE_SAMPLE_MAX) acquireWaitSamples.shift();
+}
+
+function percentile(sorted: number[], p: number): number | null {
+  if (!sorted.length) return null;
+  const idx = Math.min(sorted.length - 1, Math.floor((p / 100) * sorted.length));
+  return sorted[idx] ?? null;
+}
 
 function readPool(sequelize: Sequelize): PoolLike | null {
   const pool = (sequelize.connectionManager as { pool?: PoolLike } | undefined)?.pool;
@@ -58,6 +72,7 @@ export function getPoolSnapshot(sequelize: Sequelize): PoolSnapshot | null {
 }
 
 export function getPoolDebugCounters() {
+  const sorted = [...acquireWaitSamples].sort((a, b) => a - b);
   return {
     acquireCount,
     releaseCount,
@@ -66,7 +81,11 @@ export function getPoolDebugCounters() {
     reuseCount,
     timeoutCount,
     peakUsing,
-    peakWaiting
+    peakWaiting,
+    acquireWaitP50Ms: percentile(sorted, 50),
+    acquireWaitP95Ms: percentile(sorted, 95),
+    acquireWaitMaxMs: sorted.length ? sorted[sorted.length - 1]! : null,
+    acquireSampleCount: sorted.length
   };
 }
 
@@ -126,6 +145,7 @@ export function installPoolDebug(sequelize: Sequelize): void {
     try {
       const conn = await origAcquire(...args);
       const waitMs = Date.now() - started;
+      recordAcquireWait(waitMs);
       acquireCount += 1;
       peakUsing = Math.max(peakUsing, pool.using);
       if (availableBefore > 0) {

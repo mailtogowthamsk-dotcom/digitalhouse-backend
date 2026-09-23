@@ -98,44 +98,67 @@ export async function getPersonalizedFeed(
   };
 
   try {
+    const { timedMs } = await import("../../utils/perfTimer");
+    let preloadMs = 0;
+    let affinityMs = 0;
+    let candidateMs = 0;
+    let fallbackMs = 0;
+    let rankingMs = 0;
+    let exposureMs = 0;
+    let hydrateMs = 0;
+    let mediaHydrateMs = 0;
+    let serializeMs = 0;
+
     // Request-scoped context: community + full connection/block sets once.
-    // Visibility must use the FULL connection list (not affinity-truncated).
-    const [community, connectionIds, blockedIds] = await Promise.all([
-      viewerCommunity(currentUserId),
-      getAcceptedConnectionUserIds(currentUserId),
-      getBlockedUserIds(currentUserId).catch(() => new Set<number>())
-    ]);
+    const preloadTimed = await timedMs(() =>
+      Promise.all([
+        viewerCommunity(currentUserId),
+        getAcceptedConnectionUserIds(currentUserId),
+        getBlockedUserIds(currentUserId).catch(() => new Set<number>())
+      ])
+    );
+    preloadMs = preloadTimed.ms;
+    const [community, connectionIds, blockedIds] = preloadTimed.value;
     queryCount += 3;
 
     const eligibleWhere = await buildEligibleWhere(currentUserId, {
       connectedIds: connectionIds,
       blockedIds
     });
-    // buildEligibleWhere with preload → 0 extra DB round-trips
 
-    const { affinity, queryCount: affinityQueries } = await loadViewerAffinity(currentUserId, {
-      connectionIds
-    });
+    const affinityTimed = await timedMs(() =>
+      loadViewerAffinity(currentUserId, { connectionIds })
+    );
+    affinityMs = affinityTimed.ms;
+    const { affinity, queryCount: affinityQueries } = affinityTimed.value;
     queryCount += affinityQueries;
 
-    const retrieved = await retrieveCandidates({
-      currentUserId,
-      community,
-      affinity,
-      seed: session.seed,
-      eligibleWhere
-    });
+    const retrievedTimed = await timedMs(() =>
+      retrieveCandidates({
+        currentUserId,
+        community,
+        affinity,
+        seed: session.seed,
+        eligibleWhere
+      })
+    );
+    candidateMs = retrievedTimed.ms;
+    const retrieved = retrievedTimed.value;
     queryCount += retrieved.queryCount;
 
     let pool = retrieved.candidates;
     if (pool.length < CFG.emptyFallbackMin) {
-      const extra = await fallbackFreshCandidates(
-        currentUserId,
-        community,
-        new Set(pool.map((c) => c.postId)),
-        CFG.emptyFallbackMin - pool.length + limit,
-        eligibleWhere
+      const fallbackTimed = await timedMs(() =>
+        fallbackFreshCandidates(
+          currentUserId,
+          community,
+          new Set(pool.map((c) => c.postId)),
+          CFG.emptyFallbackMin - pool.length + limit,
+          eligibleWhere
+        )
       );
+      fallbackMs = fallbackTimed.ms;
+      const extra = fallbackTimed.value;
       queryCount += 1;
       const byId = new Map(pool.map((c) => [c.postId, c]));
       for (const c of extra) {
@@ -159,8 +182,21 @@ export async function getPersonalizedFeed(
             : null,
         eligibleWhere
       });
-      const items = await buildFeedItemsFromPosts(tail.posts, currentUserId);
+      const itemsTimed = await timedMs(() => buildFeedItemsFromPosts(tail.posts, currentUserId));
+      mediaHydrateMs = itemsTimed.ms;
+      const items = itemsTimed.value;
       const last = tail.posts[tail.posts.length - 1];
+      logFeedMetrics({
+        mode: "personalized_empty_tail",
+        totalMs: Date.now() - started,
+        preloadMs,
+        affinityMs,
+        candidateMs,
+        fallbackMs,
+        mediaMs: mediaHydrateMs,
+        queryCount,
+        resultCount: items.length
+      });
       return {
         items,
         page,
@@ -189,6 +225,7 @@ export async function getPersonalizedFeed(
     });
     const scales = personalizationScales(tier);
 
+    const rankingStarted = Date.now();
     const overlaps = await loadTagOverlaps(
       pool.map((c) => c.postId),
       affinity.hashtagIds
@@ -210,10 +247,14 @@ export async function getPersonalizedFeed(
     const stage1Cut = stage1.slice(0, CFG.stage1Max);
     const rankedPool = stage1Cut.slice(0, CFG.stage2Max);
 
-    const exposures = await loadExposuresForPosts(
-      currentUserId,
-      rankedPool.map((c) => c.postId)
+    const exposureTimed = await timedMs(() =>
+      loadExposuresForPosts(
+        currentUserId,
+        rankedPool.map((c) => c.postId)
+      )
     );
+    exposureMs = exposureTimed.ms;
+    const exposures = exposureTimed.value;
     queryCount += 1;
 
     const stage2: ScoredCandidate[] = rankedPool.map((c) =>
@@ -231,6 +272,7 @@ export async function getPersonalizedFeed(
     stage2.sort((a, b) => compareRanked(a, b));
     const diversified = applySoftDiversity(stage2);
     diversified.sort(compareRanked);
+    rankingMs = Date.now() - rankingStarted;
     const rankedIds = diversified.map((c) => c.postId);
 
     const planned = planFeedPage(diversified, incomingCursor, limit);
@@ -239,7 +281,11 @@ export async function getPersonalizedFeed(
     let hasMore = planned.rankedHasMore;
 
     if (planned.rankedSlice.length > 0) {
-      pagePosts = await hydrateRanked(planned.rankedSlice, currentUserId, community, limit);
+      const hydrateTimed = await timedMs(() =>
+        hydrateRanked(planned.rankedSlice, currentUserId, community, limit)
+      );
+      hydrateMs = hydrateTimed.ms;
+      pagePosts = hydrateTimed.value;
       queryCount += 1;
     }
 
@@ -295,12 +341,35 @@ export async function getPersonalizedFeed(
       }
     }
 
-    const items = await buildFeedItemsFromPosts(pagePosts, currentUserId);
+    // buildFeedItemsFromPosts includes media batch resolution + DTO assembly
+    const itemsTimed = await timedMs(() => buildFeedItemsFromPosts(pagePosts, currentUserId));
+    mediaHydrateMs = itemsTimed.ms;
+    const items = itemsTimed.value;
     queryCount += 5;
+
+    const serializeStarted = Date.now();
+    const result = {
+      items,
+      page,
+      limit,
+      total: hasMore ? page * limit + 1 : (page - 1) * limit + items.length,
+      nextCursor,
+      sort: "recent" as FeedSortMode
+    };
+    serializeMs = Date.now() - serializeStarted;
 
     logFeedMetrics({
       mode: "personalized",
-      ms: Date.now() - started,
+      totalMs: Date.now() - started,
+      preloadMs,
+      affinityMs,
+      candidateMs,
+      fallbackMs,
+      rankingMs,
+      exposureMs,
+      hydrateMs,
+      mediaMs: mediaHydrateMs,
+      serializeMs,
       queryCount,
       candidateCount: retrieved.candidates.length,
       eligibleCount: pool.length,
@@ -311,14 +380,7 @@ export async function getPersonalizedFeed(
       coldStart: tier
     });
 
-    return {
-      items,
-      page,
-      limit,
-      total: hasMore ? page * limit + 1 : (page - 1) * limit + items.length,
-      nextCursor,
-      sort: "recent"
-    };
+    return result;
   } catch (err) {
     if (process.env.NODE_ENV !== "production") {
       console.warn("[personalized-feed]", err instanceof Error ? err.message : err);

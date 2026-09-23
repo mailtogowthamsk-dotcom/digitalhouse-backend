@@ -23,7 +23,15 @@ function resolvePoolMax(): number {
 
 const poolMax = resolvePoolMax();
 const connectTimeout = Math.max(5000, Number(process.env.DB_CONNECT_TIMEOUT_MS || 20000));
-const slowQueryMs = Math.max(0, Number(process.env.DB_SLOW_QUERY_MS ?? 500));
+/** Prefer SLOW_QUERY_MS; fall back to DB_SLOW_QUERY_MS (legacy). Default 250ms for Phase 3F. */
+const slowQueryMs = Math.max(
+  0,
+  Number(
+    process.env.SLOW_QUERY_MS !== undefined && process.env.SLOW_QUERY_MS !== ""
+      ? process.env.SLOW_QUERY_MS
+      : process.env.DB_SLOW_QUERY_MS ?? 250
+  )
+);
 /** MySQL session idle kill (seconds). Caps orphaned Sleep after process crash. */
 const sessionWaitTimeout = Math.max(60, Number(process.env.DB_SESSION_WAIT_TIMEOUT || 120));
 const poolIdleMs = Math.max(2000, Number(process.env.DB_POOL_IDLE_MS || 8000));
@@ -31,12 +39,39 @@ const poolEvictMs = Math.max(1000, Number(process.env.DB_POOL_EVICT_MS || 5000))
 /** Recycle connections after N uses — reduces stuck / half-open sockets. */
 const poolMaxUses = Math.max(0, Number(process.env.DB_POOL_MAX_USES || 750));
 
+/** Strip literals / long strings — keep a query fingerprint only. */
+function sanitizeSqlForLog(sql: string): string {
+  let s = sql.replace(/\s+/g, " ").trim();
+  // Replace quoted strings and long hex/base64-ish blobs
+  s = s.replace(/'([^']|''){0,500}'/g, "'?'");
+  s = s.replace(/0x[0-9a-fA-F]{16,}/g, "0x?");
+  if (s.length > 280) s = `${s.slice(0, 280)}…`;
+  return s;
+}
+
 function sequelizeLogging(sql: string, timing?: number): void {
   if (slowQueryMs <= 0) return;
   const ms = typeof timing === "number" ? timing : undefined;
   if (ms == null || ms < slowQueryMs) return;
-  const truncated = sql.length > 500 ? `${sql.slice(0, 500)}…` : sql;
-  console.warn(`[slow-query] ${ms}ms ${truncated}`);
+  let requestId: string | undefined;
+  try {
+    // Lazy require avoids circular import at module init
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getCurrentRequestId } = require("../utils/requestContext") as {
+      getCurrentRequestId: () => string | undefined;
+    };
+    requestId = getCurrentRequestId();
+  } catch {
+    /* ignore */
+  }
+  const fingerprint = sanitizeSqlForLog(sql);
+  console.warn(
+    `[slow-query] ${JSON.stringify({
+      ms,
+      requestId: requestId ?? null,
+      sql: fingerprint
+    })}`
+  );
 }
 
 /**

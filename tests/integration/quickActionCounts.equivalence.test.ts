@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { integrationEnabled, useTestDatabase } from "../../setup/db";
+import { integrationEnabled, useTestDatabase } from "../setup/db";
 
 /**
  * Live equivalence: single-aggregate vs legacy 6× COUNT must match.
@@ -12,7 +12,7 @@ describe.skipIf(!integrationEnabled())("integration — quickActionCounts equiva
     const {
       getQuickActionCounts,
       getQuickActionCountsLegacySixQueries
-    } = await import("../../../src/services/Home.service");
+    } = await import("../../src/services/Home.service");
     const [next, legacy] = await Promise.all([
       getQuickActionCounts(),
       getQuickActionCountsLegacySixQueries()

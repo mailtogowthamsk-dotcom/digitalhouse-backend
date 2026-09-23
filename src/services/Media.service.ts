@@ -779,13 +779,16 @@ async function mapWithConcurrency<T>(
 export async function resolveLiveMediaKeysBatch(
   items: Array<{ userId: number; urlOrKey: string | null | undefined }>
 ): Promise<Map<string, string | null>> {
+  const started = Date.now();
   const result = new Map<string, string | null>();
   type Work = { userId: number; raw: string; key: string; ck: string };
   const work: Work[] = [];
   const seen = new Set<string>();
+  let requested = 0;
 
   for (const item of items) {
     if (!item.urlOrKey?.trim()) continue;
+    requested += 1;
     const raw = item.urlOrKey.trim();
     const ck = `${item.userId}::${raw}`;
     if (seen.has(ck)) continue;
@@ -798,7 +801,29 @@ export async function resolveLiveMediaKeysBatch(
     work.push({ userId: item.userId, raw, key, ck });
   }
 
-  if (work.length === 0) return result;
+  if (work.length === 0) {
+    if (process.env.MEDIA_METRICS === "1" || process.env.FEED_METRICS === "1") {
+      try {
+        const { getCurrentRequestId } = await import("../utils/requestContext");
+        console.info(
+          "[media-metrics]",
+          JSON.stringify({
+            requestId: getCurrentRequestId(),
+            requested,
+            uniqueKeys: seen.size,
+            batchQueries: 0,
+            batchMs: 0,
+            fallbackCount: 0,
+            fallbackMs: 0,
+            totalMs: Date.now() - started
+          })
+        );
+      } catch {
+        /* ignore */
+      }
+    }
+    return result;
+  }
 
   const byUser = new Map<number, Work[]>();
   for (const w of work) {
@@ -808,8 +833,11 @@ export async function resolveLiveMediaKeysBatch(
   }
 
   const unresolved: Work[] = [];
+  const batchStarted = Date.now();
+  let batchQueries = 0;
   for (const [userId, list] of byUser) {
     const keys = [...new Set(list.map((w) => w.key))];
+    batchQueries += 1;
     const rows = await MediaFile.findAll({
       where: {
         userId,
@@ -833,11 +861,37 @@ export async function resolveLiveMediaKeysBatch(
       }
     }
   }
+  const batchMs = Date.now() - batchStarted;
 
   const concurrency = Math.max(1, Math.min(4, Number(process.env.MEDIA_RESOLVE_CONCURRENCY || 4)));
+  const fallbackStarted = Date.now();
   await mapWithConcurrency(unresolved, concurrency, async (w) => {
     result.set(w.ck, await resolveLiveMediaKey(w.userId, w.raw));
   });
+  const fallbackMs = Date.now() - fallbackStarted;
+
+  if (process.env.MEDIA_METRICS === "1" || process.env.FEED_METRICS === "1") {
+    try {
+      const { getCurrentRequestId } = await import("../utils/requestContext");
+      console.info(
+        "[media-metrics]",
+        JSON.stringify({
+          requestId: getCurrentRequestId(),
+          requested,
+          uniqueKeys: seen.size,
+          r2Keys: work.length,
+          authors: byUser.size,
+          batchQueries,
+          batchMs,
+          fallbackCount: unresolved.length,
+          fallbackMs,
+          totalMs: Date.now() - started
+        })
+      );
+    } catch {
+      /* ignore */
+    }
+  }
 
   return result;
 }

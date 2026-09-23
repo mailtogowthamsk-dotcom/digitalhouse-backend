@@ -1,6 +1,7 @@
 import { PlatformFeatureFlag } from "../../models";
 import { PERSONALIZED_FEED_FLAG } from "./config";
 import { isPersonalizedHomeRequest } from "./requestGate";
+import { getCurrentRequestId } from "../../utils/requestContext";
 
 export { isPersonalizedHomeRequest };
 
@@ -35,7 +36,11 @@ export async function isPersonalizedFeedEnabled(): Promise<boolean> {
 export function logFeedMetrics(payload: Record<string, unknown>): void {
   if (process.env.FEED_METRICS !== "1") return;
   try {
-    console.info("[feed-metrics]", JSON.stringify(payload));
+    const requestId = getCurrentRequestId();
+    console.info(
+      "[feed-metrics]",
+      JSON.stringify(requestId ? { requestId, ...payload } : payload)
+    );
   } catch {
     /* ignore */
   }

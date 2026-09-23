@@ -321,9 +321,11 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
     communityUpdates: n(row.communityUpdates)
   };
   if (process.env.HOME_METRICS === "1" || process.env.FEED_METRICS === "1") {
+    const { getCurrentRequestId } = await import("../utils/requestContext");
     console.info(
       "[home-metrics]",
       JSON.stringify({
+        requestId: getCurrentRequestId(),
         endpoint: "home/quick-actions",
         service: "getQuickActionCounts",
         durationMs: Date.now() - started,
@@ -494,15 +496,24 @@ export async function getHomeBootstrap(
 }> {
   const started = Date.now();
   const feedLimit = Math.min(Math.max(opts?.feedLimit ?? 6, 1), 20);
+  const metricsOn = process.env.HOME_METRICS === "1";
   const notifMod = await import("./NotificationPlatform.service");
   const storiesMod = await import("./Stories.service");
+  const { timedMs } = await import("../utils/perfTimer");
 
-  // Single unread query shared by summary.total + badge categories (no double COUNT).
-  const [userRow, quickActionCounts, unread, unreadMessagesCount, feed, stories] =
-    await Promise.all([
-      User.findByPk(userId).then((u) => (u ? toHomeUserBasic(u) : null)),
-      getQuickActionCounts(),
-      notifMod.getUnreadCounts(userId),
+  // Parallel branches — component Ms are wall times of each arm, NOT additive.
+  const [
+    userTimed,
+    quickActionsTimed,
+    unreadTimed,
+    unreadMessagesTimed,
+    feedTimed,
+    storiesTimed
+  ] = await Promise.all([
+    timedMs(() => User.findByPk(userId).then((u) => (u ? toHomeUserBasic(u) : null))),
+    timedMs(() => getQuickActionCounts()),
+    timedMs(() => notifMod.getUnreadCounts(userId)),
+    timedMs(() =>
       Message.count({
         where: {
           recipientId: userId,
@@ -510,32 +521,25 @@ export async function getHomeBootstrap(
           deletedForEveryoneAt: null,
           deletedForRecipientAt: null
         }
-      }),
-      getFeed(1, feedLimit, userId, { sort: "recent" }),
-      storiesMod.listStoryTray(userId)
-    ]);
+      })
+    ),
+    timedMs(() => getFeed(1, feedLimit, userId, { sort: "recent" })),
+    timedMs(() => storiesMod.listStoryTray(userId))
+  ]);
+
+  const userRow = userTimed.value;
+  const quickActionCounts = quickActionsTimed.value;
+  const unread = unreadTimed.value;
+  const unreadMessagesCount = unreadMessagesTimed.value;
+  const feed = feedTimed.value;
+  const stories = storiesTimed.value;
 
   if (!userRow) throw new Error("User not found");
+
+  const serializeStarted = Date.now();
   const profileImage =
     (await toPublicUrlIfR2(userRow.profileImage ?? null)) ?? userRow.profileImage ?? null;
-
-  if (process.env.HOME_METRICS === "1" || process.env.FEED_METRICS === "1") {
-    console.info(
-      "[home-metrics]",
-      JSON.stringify({
-        endpoint: "home/bootstrap",
-        service: "getHomeBootstrap",
-        durationMs: Date.now() - started,
-        feedLimit,
-        feedCount: feed?.items?.length ?? 0,
-        storyGroups: Array.isArray((stories as { groups?: unknown[] })?.groups)
-          ? (stories as { groups: unknown[] }).groups.length
-          : 0
-      })
-    );
-  }
-
-  return {
+  const payload = {
     summary: {
       user: { ...userRow, profileImage },
       quickActionCounts,
@@ -546,6 +550,45 @@ export async function getHomeBootstrap(
     stories,
     unread
   };
+  const serializeMs = Date.now() - serializeStarted;
+  const totalMs = Date.now() - started;
+
+  if (metricsOn || process.env.FEED_METRICS === "1") {
+    const { getCurrentRequestId } = await import("../utils/requestContext");
+    console.info(
+      "[home-metrics]",
+      JSON.stringify({
+        requestId: getCurrentRequestId(),
+        endpoint: "home/bootstrap",
+        service: "getHomeBootstrap",
+        parallel: true,
+        totalMs,
+        userMs: userTimed.ms,
+        quickActionsMs: quickActionsTimed.ms,
+        unreadMs: unreadTimed.ms,
+        unreadMessagesMs: unreadMessagesTimed.ms,
+        feedMs: feedTimed.ms,
+        storiesMs: storiesTimed.ms,
+        serializeMs,
+        // Dominant parallel arm (informational — do not sum arms)
+        criticalPathMs: Math.max(
+          userTimed.ms,
+          quickActionsTimed.ms,
+          unreadTimed.ms,
+          unreadMessagesTimed.ms,
+          feedTimed.ms,
+          storiesTimed.ms
+        ),
+        feedLimit,
+        feedCount: feed?.items?.length ?? 0,
+        storyGroups: Array.isArray((stories as { groups?: unknown[] })?.groups)
+          ? (stories as { groups: unknown[] }).groups.length
+          : 0
+      })
+    );
+  }
+
+  return payload;
 }
 
 export const homeService = {
