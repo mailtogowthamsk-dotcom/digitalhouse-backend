@@ -36,7 +36,8 @@ import { getPost } from "./read.service";
 import type { CreatePostPayload, PostDetailDto, UpdatePostPayload } from "./types";
 import {
   afterCreatePostSafety,
-  applyEditSafety
+  applyEditSafety,
+  ensureSkipSafetyPostPublished
 } from "../contentSafety/ContentSafety.service";
 import { initialSafetyForCreate } from "../contentSafety/initialSafety";
 import { CONTENT_SAFETY_POLICY_VERSION } from "../../constants/contentSafety.constants";
@@ -165,21 +166,22 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
       mediaResolved.marketplaceGallery?.length ||
       (mediaResolved as { helpGallery?: string[] | null }).helpGallery?.length
   );
-  // Helping Hands: skip content safety entirely (publish as SAFE immediately).
-  const safety = isHelp
-    ? {
-        safetyDecision: "SAFE" as const,
-        safetyCategory: "SAFE",
-        safetyFailureReason: null as string | null,
-        mediaVersion: 1,
-        moderatedMediaVersion: 1,
-        safetyPolicyVersion: CONTENT_SAFETY_POLICY_VERSION
-      }
-    : initialSafetyForCreate({
-        title: payload.title,
-        description: payload.description?.trim() ?? null,
-        hasMedia
-      });
+  // Helping Hands + Jobs: skip content safety entirely (publish as SAFE immediately).
+  const safety =
+    isHelp || isJob
+      ? {
+          safetyDecision: "SAFE" as const,
+          safetyCategory: "SAFE",
+          safetyFailureReason: null as string | null,
+          mediaVersion: 1,
+          moderatedMediaVersion: 1,
+          safetyPolicyVersion: CONTENT_SAFETY_POLICY_VERSION
+        }
+      : initialSafetyForCreate({
+          title: payload.title,
+          description: payload.description?.trim() ?? null,
+          hasMedia
+        });
 
   const post = await Post.create({
     userId,
@@ -636,8 +638,8 @@ export async function updatePost(userId: number, postId: number, payload: Update
       payload.marketplace_gallery !== undefined ||
       payload.help_gallery !== undefined
   );
-  if (isHelp) {
-    // Keep Helping Hands public without re-entering moderation on edit.
+  if (isHelp || isJob) {
+    // Keep Helping Hands / Jobs public without re-entering moderation on edit.
     const ver = post.mediaVersion || 1;
     await post.update({
       safetyDecision: "SAFE",
@@ -646,6 +648,7 @@ export async function updatePost(userId: number, postId: number, payload: Update
       moderatedMediaVersion: ver,
       safetyPolicyVersion: CONTENT_SAFETY_POLICY_VERSION
     } as any);
+    await ensureSkipSafetyPostPublished(post.id);
   } else {
     await applyEditSafety(post, { caption: captionChanged, media: mediaChanged });
   }

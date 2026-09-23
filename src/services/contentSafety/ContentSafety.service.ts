@@ -341,25 +341,111 @@ async function applyCachedMediaSafetyToPost(post: Post, media: MediaFile): Promi
 }
 
 /**
+ * Helping Hands + Jobs: publish immediately — promote any leftover quarantine keys
+ * (legacy uploads) and mark SAFE with no NSFW/text gate.
+ */
+async function publishPostSkippingSafety(post: Post): Promise<void> {
+  try {
+    const mapping = await promotePostQuarantineMedia(post, null);
+    if (mapping.size > 0) {
+      const siblings = await findMediaFilesForPost(post);
+      await sequelize.transaction(async (transaction) => {
+        const locked = await Post.findByPk(post.id, {
+          transaction,
+          lock: Transaction.LOCK.UPDATE
+        });
+        if (!locked) return;
+        await rewritePostMediaKeys(locked, mapping, transaction);
+        for (const m of siblings) {
+          const nextKey = rewriteStoredKey(m.objectKey || m.fileUrl, mapping);
+          const nextFileUrl = rewriteStoredKey(m.fileUrl, mapping);
+          await m.update(
+            {
+              objectKey: nextKey ?? m.objectKey,
+              fileUrl: nextFileUrl ?? m.fileUrl,
+              safetyDecision: "SAFE",
+              safetyCategory: "SAFE"
+            } as any,
+            { transaction }
+          );
+        }
+      });
+      await deletePromotedQuarantineKeys(mapping);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logSafety("moderation_skip_safety_promote_failed", {
+      post_id: post.id,
+      post_type: post.postType,
+      error: message.slice(0, 200)
+    });
+    // Still mark SAFE below — private keys can be signed for SAFE posts.
+  }
+
+  await post.reload();
+  const ver = post.mediaVersion || 1;
+  if (post.safetyDecision !== "SAFE" || post.moderatedMediaVersion !== ver) {
+    await post.update({
+      safetyDecision: "SAFE",
+      safetyCategory: "SAFE",
+      safetyFailureReason: null,
+      moderatedMediaVersion: ver,
+      safetyPolicyVersion: CONTENT_SAFETY_POLICY_VERSION
+    } as any);
+    await post.reload();
+  }
+
+  const author = await User.findByPk(post.userId, { attributes: ["community"] });
+  emitFeedNewPost(author?.community ?? null, post.id);
+}
+
+/** Re-publish HELP/JOB posts that should never stay behind the safety gate. */
+export async function ensureSkipSafetyPostPublished(postId: number): Promise<void> {
+  const post = await Post.findByPk(postId);
+  if (!post) return;
+  if (post.postType !== "HELP_REQUEST" && post.postType !== "JOB") return;
+  await publishPostSkippingSafety(post);
+}
+
+/** One-shot heal for JOB rows stuck PENDING/PROCESSING after jobs left the safety pipeline. */
+export async function publishStuckJobPostsWithoutSafety(
+  limit = 50
+): Promise<{ scanned: number; fixed: number }> {
+  const posts = await Post.findAll({
+    where: {
+      postType: "JOB",
+      safetyDecision: { [Op.ne]: "SAFE" },
+      moderationStatus: "ACTIVE",
+      deletedAt: null
+    },
+    order: [["id", "DESC"]],
+    limit: Math.min(200, Math.max(1, limit))
+  });
+  let fixed = 0;
+  for (const p of posts) {
+    try {
+      await publishPostSkippingSafety(p);
+      fixed += 1;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logSafety("moderation_job_skip_safety_heal_error", {
+        post_id: p.id,
+        error: message.slice(0, 200)
+      });
+    }
+  }
+  return { scanned: posts.length, fixed };
+}
+
+/**
  * After create: SAFE text posts go live immediately.
  * Media posts: apply worker result if already done (fast); otherwise leave PENDING
  * for the media worker (no double NSFW on the create request path).
  */
 export async function afterCreatePostSafety(post: Post): Promise<void> {
-  // Helping Hands publishes immediately — no text/media safety gate.
-  if (post.postType === "HELP_REQUEST") {
-    if (post.safetyDecision !== "SAFE") {
-      await post.update({
-        safetyDecision: "SAFE",
-        safetyCategory: "SAFE",
-        safetyFailureReason: null,
-        moderatedMediaVersion: post.mediaVersion || 1,
-        safetyPolicyVersion: CONTENT_SAFETY_POLICY_VERSION
-      } as any);
-      await post.reload();
-    }
-    const author = await User.findByPk(post.userId, { attributes: ["community"] });
-    emitFeedNewPost(author?.community ?? null, post.id);
+  // Helping Hands + Jobs publish immediately — no text/media safety gate.
+  if (post.postType === "HELP_REQUEST" || post.postType === "JOB") {
+    await publishPostSkippingSafety(post);
     return;
   }
 
@@ -854,6 +940,12 @@ export async function reconcilePendingPostSafety(postId: number): Promise<boolea
   if (!post) return false;
   if (post.safetyDecision !== "PENDING" && post.safetyDecision !== "PROCESSING") {
     return false;
+  }
+
+  // Jobs / Helping Hands never belong in the pending safety queue.
+  if (post.postType === "JOB" || post.postType === "HELP_REQUEST") {
+    await publishPostSkippingSafety(post);
+    return true;
   }
 
   if (!postHasMedia(post)) {

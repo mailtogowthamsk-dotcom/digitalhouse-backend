@@ -92,12 +92,11 @@ export const QUARANTINE_PREFIX = "digital-house/private/quarantine/";
  * Stories are intentionally excluded — ephemeral connection-only media on
  * local disk; no NSFW/quarantine/moderation pipeline.
  *
- * Helping Hands (`help`) is also excluded — community mutual-aid posts publish
+ * Helping Hands (`help`) and Jobs (`jobs`) are also excluded — they publish
  * immediately without content-safety / quarantine scanning.
  */
 export const QUARANTINE_MEDIA_MODULES = [
   "posts",
-  "jobs",
   "marketplace",
   "matrimony"
 ] as const;
@@ -107,7 +106,8 @@ export const CONTENT_SAFETY_SKIP_MODULES = [
   "stories",
   "advertisements",
   "prominent",
-  "help"
+  "help",
+  "jobs"
 ] as const;
 
 export function skipsContentSafety(module: string | null | undefined): boolean {

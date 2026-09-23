@@ -72,9 +72,27 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
   await ensureCommunityVisible(post, userId);
   const isOwner = post.userId === userId;
   if (isHiddenFromPublic(post) && !isOwner) {
-    const err = new Error("Post not found");
-    (err as any).status = 404;
-    throw err;
+    // Applications list shows ACTIVE jobs you applied to even when safety is still
+    // PENDING/PROCESSING (quarantine). Allow those applicants to open the job again;
+    // never surface BLOCKED content this way.
+    let canApplicantView = false;
+    if (
+      post.postType === "JOB" &&
+      post.moderationStatus === "ACTIVE" &&
+      post.safetyDecision !== "BLOCKED"
+    ) {
+      const { JobInterest } = await import("../../models");
+      const application = await JobInterest.findOne({
+        where: { postId, fromUserId: userId },
+        attributes: ["id"]
+      });
+      canApplicantView = Boolean(application);
+    }
+    if (!canApplicantView) {
+      const err = new Error("Post not found");
+      (err as any).status = 404;
+      throw err;
+    }
   }
 
   if (post.postType === "MARKETPLACE") {

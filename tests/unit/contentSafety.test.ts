@@ -207,6 +207,8 @@ describe("create-post safety gate", () => {
 describe("quarantine keys", () => {
   it("places UGC under private quarantine and can map back", () => {
     expect(needsUploadQuarantine("posts")).toBe(true);
+    expect(needsUploadQuarantine("jobs")).toBe(false);
+    expect(needsUploadQuarantine("help")).toBe(false);
     expect(needsUploadQuarantine("advertisements")).toBe(false);
     const q = toQuarantineKey("digital-house/images/posts/posts/2026/08/a.webp");
     expect(q.startsWith("digital-house/private/quarantine/")).toBe(true);
