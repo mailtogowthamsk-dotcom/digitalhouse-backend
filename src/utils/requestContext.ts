@@ -1,12 +1,15 @@
 /**
  * Request-scoped context (AsyncLocalStorage).
  * Holds only non-sensitive correlation fields — never tokens or bodies.
+ * Optional P4G memo bucket is attached by requestScopedMemo (not secrets).
  */
 
 import { AsyncLocalStorage } from "async_hooks";
 
 export type RequestContextStore = {
   requestId: string;
+  /** Opaque request-local caches (e.g. connection/block id memo). */
+  p4gMemo?: unknown;
 };
 
 const als = new AsyncLocalStorage<RequestContextStore>();

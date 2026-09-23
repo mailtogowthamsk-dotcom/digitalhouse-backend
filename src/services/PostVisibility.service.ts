@@ -19,23 +19,27 @@ export { POST_VISIBILITIES } from "../constants/postVisibility.constants";
 /**
  * Accepted connection peer IDs for a user (undirected).
  * Optimized for feed WHERE clauses — IDs only, no user DTO hydration.
+ * P4G: request-scoped memo when feed ∥ stories both need the same set.
  */
 export async function getAcceptedConnectionUserIds(userId: number): Promise<number[]> {
   if (!userId) return [];
-  const rows = await MemberConnection.findAll({
-    where: {
-      status: "ACCEPTED",
-      [Op.or]: [{ requesterUserId: userId }, { recipientUserId: userId }]
-    },
-    attributes: ["requesterUserId", "recipientUserId"],
-    raw: true
+  const { memoAcceptedConnectionUserIds } = await import("../utils/requestScopedMemo");
+  return memoAcceptedConnectionUserIds(userId, async () => {
+    const rows = await MemberConnection.findAll({
+      where: {
+        status: "ACCEPTED",
+        [Op.or]: [{ requesterUserId: userId }, { recipientUserId: userId }]
+      },
+      attributes: ["requesterUserId", "recipientUserId"],
+      raw: true
+    });
+    const ids = new Set<number>();
+    for (const row of rows as Array<{ requesterUserId: number; recipientUserId: number }>) {
+      const other = row.requesterUserId === userId ? row.recipientUserId : row.requesterUserId;
+      if (other && other !== userId) ids.add(other);
+    }
+    return [...ids];
   });
-  const ids = new Set<number>();
-  for (const row of rows as Array<{ requesterUserId: number; recipientUserId: number }>) {
-    const other = row.requesterUserId === userId ? row.recipientUserId : row.requesterUserId;
-    if (other && other !== userId) ids.add(other);
-  }
-  return [...ids];
 }
 
 export type AudienceFilterMode =

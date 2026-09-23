@@ -1,5 +1,6 @@
 import { Op, literal, type WhereOptions } from "sequelize";
-import { User, Post, PostLike, SavedPost, HelpOffer } from "../models";
+import { User, Post, SavedPost } from "../models";
+import { hydrateFeedEngagement } from "./feed/hydrateFeedEngagement";
 import { isPrivateR2Object, toPrivateSignedUrlIfR2, toPublicUrlIfR2 } from "../utils/r2Client";
 import type { FeedAuthorDto, FeedItemDto, FeedResultDto } from "./Home.service";
 import { resolvePostMediaType } from "../constants/postMedia.constants";
@@ -517,71 +518,8 @@ export async function buildFeedItemsFromPosts(
   if (postIds.length === 0) return [];
 
   // Use denormalized likeCount/commentCount on posts — skip scanning post_likes/comments.
+  // P4A: one UNION ALL engagement round-trip (was 5 parallel findAll → pool contention).
   const jobPostIds = pagePosts.filter((p) => p.postType === "JOB").map((p) => p.id);
-  const [myLikes, mySaves, helpOffers, myJobInterests, jobInterestCounts] = await Promise.all([
-    PostLike.findAll({
-      where: { postId: { [Op.in]: postIds }, userId: currentUserId },
-      attributes: ["postId"],
-      raw: true
-    }),
-    SavedPost.findAll({
-      where: { postId: { [Op.in]: postIds }, userId: currentUserId },
-      attributes: ["postId"],
-      raw: true
-    }),
-    HelpOffer.findAll({
-      where: { postId: { [Op.in]: postIds }, status: "ACTIVE" },
-      attributes: ["postId"],
-      raw: true
-    }),
-    jobPostIds.length
-      ? (async () => {
-          const { JobInterest } = await import("../models");
-          return JobInterest.findAll({
-            where: { postId: { [Op.in]: jobPostIds }, fromUserId: currentUserId },
-            attributes: ["postId", "status"],
-            raw: true
-          });
-        })()
-      : Promise.resolve([] as Array<{ postId: number; status: string }>),
-    jobPostIds.length
-      ? (async () => {
-          const { JobInterest } = await import("../models");
-          const rows = await JobInterest.findAll({
-            where: { postId: { [Op.in]: jobPostIds } },
-            attributes: ["postId"],
-            raw: true
-          });
-          const map: Record<number, number> = {};
-          for (const r of rows as { postId: number }[]) {
-            map[r.postId] = (map[r.postId] || 0) + 1;
-          }
-          return map;
-        })()
-      : Promise.resolve({} as Record<number, number>)
-  ]);
-
-  const likeMap: Record<number, number> = {};
-  const commentMap: Record<number, number> = {};
-  const helpHelperMap: Record<number, number> = {};
-  for (const p of pagePosts) {
-    likeMap[p.id] = Number((p as any).likeCount ?? 0) || 0;
-    commentMap[p.id] = Number((p as any).commentCount ?? 0) || 0;
-    helpHelperMap[p.id] = 0;
-  }
-  helpOffers.forEach((r: { postId: number }) => {
-    helpHelperMap[r.postId] = (helpHelperMap[r.postId] || 0) + 1;
-  });
-
-  const likedSet = new Set(myLikes.map((r: { postId: number }) => r.postId));
-  const savedSet = new Set(mySaves.map((r: { postId: number }) => r.postId));
-  const jobInterestStatusByPost = new Map(
-    (myJobInterests as Array<{ postId: number; status: string }>).map((r) => [
-      r.postId,
-      r.status
-    ])
-  );
-  const jobApplicationCountByPost = jobInterestCounts as Record<number, number>;
 
   const originalIds = [
     ...new Set(
@@ -590,20 +528,6 @@ export async function buildFeedItemsFromPosts(
         .filter((id): id is number => typeof id === "number" && id > 0)
     )
   ];
-  const originalPosts =
-    originalIds.length > 0
-      ? await Post.findAll({
-          where: { id: { [Op.in]: originalIds }, moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
-          include: [
-            {
-              association: "User",
-              attributes: ["id", "fullName", "profilePhoto", "status"],
-              required: true
-            }
-          ]
-        })
-      : [];
-  const originalById = new Map(originalPosts.map((op) => [op.id, op]));
   const { mediaService } = await import("./Media.service");
 
   // Batch-resolve all distinct media keys for this page (exact objectKey IN + bounded fallback).
@@ -623,7 +547,52 @@ export async function buildFeedItemsFromPosts(
       mediaResolveJobs.push({ userId: p.userId, urlOrKey: g });
     }
   }
-  const liveKeyMap = await mediaService.resolveLiveMediaKeysBatch(mediaResolveJobs);
+
+  // P4G: engagement, original-post rows, and media family lookup are independent.
+  // Collapses sequential RTT waves at the end of personalized feed (after stories usually finishes).
+  const [engagement, originalPosts, liveKeyMap] = await Promise.all([
+    hydrateFeedEngagement({
+      userId: currentUserId,
+      postIds,
+      jobPostIds
+    }),
+    originalIds.length > 0
+      ? Post.findAll({
+          where: {
+            id: { [Op.in]: originalIds },
+            moderationStatus: "ACTIVE",
+            safetyDecision: "SAFE"
+          },
+          include: [
+            {
+              association: "User",
+              attributes: ["id", "fullName", "profilePhoto", "status"],
+              required: true
+            }
+          ]
+        })
+      : Promise.resolve([] as Post[]),
+    mediaService.resolveLiveMediaKeysBatch(mediaResolveJobs)
+  ]);
+
+  const {
+    likedSet,
+    savedSet,
+    helpHelperMap: helpCountsFromDb,
+    jobInterestStatusByPost,
+    jobApplicationCountByPost
+  } = engagement;
+
+  const likeMap: Record<number, number> = {};
+  const commentMap: Record<number, number> = {};
+  const helpHelperMap: Record<number, number> = {};
+  for (const p of pagePosts) {
+    likeMap[p.id] = Number((p as any).likeCount ?? 0) || 0;
+    commentMap[p.id] = Number((p as any).commentCount ?? 0) || 0;
+    helpHelperMap[p.id] = helpCountsFromDb[p.id] ?? 0;
+  }
+
+  const originalById = new Map(originalPosts.map((op) => [op.id, op]));
   const resolveFromMap = (userId: number, key: string | null | undefined): string | null => {
     if (!key) return null;
     const ck = `${userId}::${key.trim()}`;

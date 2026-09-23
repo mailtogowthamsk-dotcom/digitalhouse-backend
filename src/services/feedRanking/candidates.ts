@@ -13,6 +13,7 @@ import {
 import { applyPostFilters, engagementScoreSql, FEED_POST_ATTRIBUTES } from "../Feed.service";
 import { audienceVisibilityWhere, getAcceptedConnectionUserIds } from "../PostVisibility.service";
 import { FEED_RANKING_CONFIG as CFG } from "./config";
+import { allSettledWithConcurrency, feedCandidateConcurrency } from "./feedConcurrency";
 import type { CandidateSource, FeedCandidate, ViewerAffinity } from "./types";
 import { mergeCandidate } from "./math";
 
@@ -102,6 +103,8 @@ export async function loadViewerAffinity(
     preload?.connectionIds ?? (await getAcceptedConnectionUserIds(currentUserId));
   if (!preload?.connectionIds) queryCount += 1;
 
+  // Same 5 preference queries as before — pool max=3 naturally waves them.
+  // (Do not artificially serialize further; that only adds latency when the pool is free.)
   const [likeRows, commentRows, saveRows, expertiseRows, profile] = await Promise.all([
     PostLike.findAll({
       where: { userId: currentUserId },
@@ -147,16 +150,6 @@ export async function loadViewerAffinity(
   ];
 
   const hashtagIds = new Set<number>();
-  if (engagedPostIds.length > 0) {
-    const links = await PostHashtag.findAll({
-      where: { postId: { [Op.in]: engagedPostIds } },
-      attributes: ["hashtagId"],
-      raw: true
-    }).catch(() => [] as Array<{ hashtagId: number }>);
-    queryCount += 1;
-    for (const l of links) hashtagIds.add(l.hashtagId);
-  }
-
   const tokens = new Set<string>();
   const hobbies = profile?.personal && typeof profile.personal === "object" ? profile.personal.hobbies : null;
   if (typeof hobbies === "string" && hobbies.trim()) {
@@ -165,18 +158,31 @@ export async function loadViewerAffinity(
       if (t.length >= 2 && t.length <= 64) tokens.add(t);
     }
   }
-  if (expertiseRows.length > 0) {
-    const items = await MasterDataItem.findAll({
-      where: { id: { [Op.in]: expertiseRows.map((r) => r.expertiseItemId) } },
-      attributes: ["label"]
-    }).catch(() => [] as MasterDataItem[]);
-    queryCount += 1;
-    for (const it of items) {
-      const t = String(it.label || "")
-        .trim()
-        .toLowerCase();
-      if (t.length >= 2) tokens.add(t);
-    }
+
+  // P4C: PostHashtag(engaged) and MasterData labels are independent — run together (was sequential).
+  const [links, expertiseItems] = await Promise.all([
+    engagedPostIds.length > 0
+      ? PostHashtag.findAll({
+          where: { postId: { [Op.in]: engagedPostIds } },
+          attributes: ["hashtagId"],
+          raw: true
+        }).catch(() => [] as Array<{ hashtagId: number }>)
+      : Promise.resolve([] as Array<{ hashtagId: number }>),
+    expertiseRows.length > 0
+      ? MasterDataItem.findAll({
+          where: { id: { [Op.in]: expertiseRows.map((r) => r.expertiseItemId) } },
+          attributes: ["label"]
+        }).catch(() => [] as MasterDataItem[])
+      : Promise.resolve([] as MasterDataItem[])
+  ]);
+  if (engagedPostIds.length > 0) queryCount += 1;
+  if (expertiseRows.length > 0) queryCount += 1;
+  for (const l of links) hashtagIds.add(l.hashtagId);
+  for (const it of expertiseItems) {
+    const t = String(it.label || "")
+      .trim()
+      .toLowerCase();
+    if (t.length >= 2) tokens.add(t);
   }
 
   if (tokens.size > 0 && hashtagIds.size < CFG.affinity.maxHashtagIds) {
@@ -222,12 +228,8 @@ async function connectionCandidates(
   });
 }
 
-async function interestCandidates(
-  where: WhereOptions,
-  community: string | null,
-  hashtagIds: number[]
-): Promise<FeedCandidate[]> {
-  // Posts matching derived affinity tags — not "posts I liked".
+/** Hashtag → post IDs for interest source (separate from findCandidates so fan-out stays 1 query each). */
+async function interestPostIds(hashtagIds: number[]): Promise<number[]> {
   if (hashtagIds.length === 0) return [];
   const links = await PostHashtag.findAll({
     where: { hashtagId: { [Op.in]: hashtagIds } },
@@ -235,10 +237,17 @@ async function interestCandidates(
     limit: CFG.sourceMax.interest * 8,
     raw: true
   }).catch(() => [] as Array<{ postId: number }>);
-  const ids = [...new Set(links.map((l) => l.postId))];
-  if (ids.length === 0) return [];
+  return [...new Set(links.map((l) => l.postId))];
+}
+
+async function interestCandidatesFromIds(
+  where: WhereOptions,
+  community: string | null,
+  postIds: number[]
+): Promise<FeedCandidate[]> {
+  if (postIds.length === 0) return [];
   return findCandidates({
-    where: { [Op.and]: [where, { id: { [Op.in]: ids.slice(0, 320) } }] },
+    where: { [Op.and]: [where, { id: { [Op.in]: postIds.slice(0, 320) } }] },
     community,
     source: "interest",
     limit: CFG.sourceMax.interest
@@ -275,26 +284,41 @@ export async function retrieveCandidates(params: {
   const hashtagIds = [...params.affinity.hashtagIds];
   const exploreOffset = params.seed % CFG.explorationOffsetModulo;
 
-  const settled = await Promise.allSettled([
-    connectionCandidates(where, params.community, connectionIds),
-    interestCandidates(where, params.community, hashtagIds),
-    findCandidates({
-      where,
-      community: params.community,
-      source: "fresh",
-      limit: CFG.sourceMax.fresh,
-      createdAfter: daysAgo(CFG.lookbackDays.fresh)
-    }),
-    discoveryCandidates(where, params.community),
-    findCandidates({
-      where,
-      community: params.community,
-      source: "exploration",
-      limit: CFG.sourceMax.exploration,
-      offset: exploreOffset,
-      createdAfter: daysAgo(CFG.lookbackDays.exploration)
-    })
-  ]);
+  // Prefetch interest post IDs before the source fan-out so each source is one Post.findAll
+  // (previously interest nested PostHashtag + findAll inside Promise.allSettled → 2 RTTs on that branch).
+  let interestIds: number[] = [];
+  let interestLookupQueries = 0;
+  if (hashtagIds.length > 0) {
+    interestIds = await interestPostIds(hashtagIds);
+    interestLookupQueries = 1;
+  }
+
+  const sourceTasks: Array<() => Promise<FeedCandidate[]>> = [
+    () => connectionCandidates(where, params.community, connectionIds),
+    () => interestCandidatesFromIds(where, params.community, interestIds),
+    () =>
+      findCandidates({
+        where,
+        community: params.community,
+        source: "fresh",
+        limit: CFG.sourceMax.fresh,
+        createdAfter: daysAgo(CFG.lookbackDays.fresh)
+      }),
+    () => discoveryCandidates(where, params.community),
+    () =>
+      findCandidates({
+        where,
+        community: params.community,
+        source: "exploration",
+        limit: CFG.sourceMax.exploration,
+        offset: exploreOffset,
+        createdAfter: daysAgo(CFG.lookbackDays.exploration)
+      })
+  ];
+
+  // Cap in-flight source queries (default 2) so pool max=3 is not saturated by feed alone
+  // when /auth/me + /legal/status + ads overlap. Same result set as unbounded Promise.allSettled.
+  const settled = await allSettledWithConcurrency(sourceTasks, feedCandidateConcurrency());
 
   const sourceCounts: Record<string, number> = {
     connection: 0,
@@ -322,8 +346,8 @@ export async function retrieveCandidates(params: {
 
   return {
     candidates: [...byId.values()],
-    // eligible where (unless preloaded) + 5 source queries (+ interest hashtag lookup)
-    queryCount: whereQueryCost + 5 + (hashtagIds.length > 0 ? 1 : 0),
+    // eligible where (unless preloaded) + interest hashtag lookup + 5 source queries
+    queryCount: whereQueryCost + interestLookupQueries + 5,
     sourceCounts
   };
 }
@@ -331,13 +355,16 @@ export async function retrieveCandidates(params: {
 export async function loadTagOverlaps(postIds: number[], userHashtagIds: Set<number>): Promise<Map<number, number>> {
   const map = new Map<number, number>();
   if (postIds.length === 0 || userHashtagIds.size === 0) return map;
+  // Push affinity filter into SQL — same overlap counts, less row transfer than fetch-all-then-filter.
   const links = await PostHashtag.findAll({
-    where: { postId: { [Op.in]: postIds } },
+    where: {
+      postId: { [Op.in]: postIds },
+      hashtagId: { [Op.in]: [...userHashtagIds] }
+    },
     attributes: ["postId", "hashtagId"],
     raw: true
   }).catch(() => [] as Array<{ postId: number; hashtagId: number }>);
   for (const l of links) {
-    if (!userHashtagIds.has(l.hashtagId)) continue;
     map.set(l.postId, (map.get(l.postId) || 0) + 1);
   }
   return map;

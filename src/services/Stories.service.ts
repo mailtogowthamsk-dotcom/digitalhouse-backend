@@ -1,6 +1,7 @@
 import { Op } from "sequelize";
 import { Message, Story, StoryLike, StoryView, User } from "../models";
-import { hasAcceptedConnection, listConnections } from "./Connection.service";
+import { hasAcceptedConnection } from "./Connection.service";
+import { getAcceptedConnectionUserIds } from "./PostVisibility.service";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
 import { assertCanSendMessage } from "./MessagePermission.service";
 import { emitMessageEvents } from "../realtime/messageEvents";
@@ -269,48 +270,40 @@ export async function uploadStoryMediaBytes(
 }
 
 export async function listStoryTray(viewerId: number) {
+  const started = Date.now();
+  const metricsOn = process.env.STORY_METRICS === "1" || process.env.HOME_METRICS === "1";
+  const { timedMs } = await import("../utils/perfTimer");
   const now = new Date();
-  const [connections, blocked] = await Promise.all([
-    listConnections(viewerId),
-    getBlockedUserIds(viewerId).catch(() => new Set<number>())
-  ]);
-  const peerIds = connections
-    .map((c) => c.user.id)
-    .filter((id) => id !== viewerId && !blocked.has(id));
+
+  // P4G: IDs-only connections (same accepted set as feed) — avoid listConnections'
+  // full user DTO hydration; authors are loaded once below for users with stories.
+  const connTimed = await timedMs(() =>
+    Promise.all([
+      getAcceptedConnectionUserIds(viewerId),
+      getBlockedUserIds(viewerId).catch(() => new Set<number>())
+    ])
+  );
+  const [connectionIds, blocked] = connTimed.value;
+  const peerIds = connectionIds.filter((id) => id !== viewerId && !blocked.has(id));
   const authorIds = [viewerId, ...peerIds];
 
-  const stories = await Story.findAll({
-    where: {
-      userId: { [Op.in]: authorIds },
-      deletedAt: null,
-      expiresAt: { [Op.gt]: now }
-    },
-    order: [
-      ["userId", "ASC"],
-      ["createdAt", "ASC"]
-    ],
-    limit: 500
-  });
+  const storiesTimed = await timedMs(() =>
+    Story.findAll({
+      where: {
+        userId: { [Op.in]: authorIds },
+        deletedAt: null,
+        expiresAt: { [Op.gt]: now }
+      },
+      order: [
+        ["userId", "ASC"],
+        ["createdAt", "ASC"]
+      ],
+      limit: 500
+    })
+  );
+  const stories = storiesTimed.value;
 
   const storyIds = stories.map((s) => s.id);
-  const myViews =
-    storyIds.length === 0
-      ? []
-      : await StoryView.findAll({
-          where: { viewerId, storyId: { [Op.in]: storyIds } },
-          attributes: ["storyId"]
-        });
-  const viewedSet = new Set(myViews.map((v) => v.storyId));
-
-  const myLikes =
-    storyIds.length === 0
-      ? []
-      : await StoryLike.findAll({
-          where: { userId: viewerId, storyId: { [Op.in]: storyIds } },
-          attributes: ["storyId"]
-        });
-  const likedSet = new Set(myLikes.map((l) => l.storyId));
-
   const byUser = new Map<number, Story[]>();
   for (const s of stories) {
     const list = byUser.get(s.userId) ?? [];
@@ -319,24 +312,47 @@ export async function listStoryTray(viewerId: number) {
   }
 
   const userIds = [...byUser.keys()];
-  const users = await User.findAll({
-    where: { id: { [Op.in]: userIds } },
-    attributes: ["id", "fullName", "username", "profilePhoto"]
-  });
-  const userMap = new Map(users.map((u) => [u.id, u]));
+  const ownIds = (byUser.get(viewerId) ?? []).map((s) => s.id);
 
+  // P4G: views + likes + authors (+ owner view rows) are independent after the tray query.
+  const hydrateTimed = await timedMs(async () => {
+    const emptyViews: StoryView[] = [];
+    const emptyLikes: StoryLike[] = [];
+    const [myViews, myLikes, users, ownerViewRows] = await Promise.all([
+      storyIds.length === 0
+        ? Promise.resolve(emptyViews)
+        : StoryView.findAll({
+            where: { viewerId, storyId: { [Op.in]: storyIds } },
+            attributes: ["storyId"]
+          }),
+      storyIds.length === 0
+        ? Promise.resolve(emptyLikes)
+        : StoryLike.findAll({
+            where: { userId: viewerId, storyId: { [Op.in]: storyIds } },
+            attributes: ["storyId"]
+          }),
+      userIds.length === 0
+        ? Promise.resolve([] as User[])
+        : User.findAll({
+            where: { id: { [Op.in]: userIds } },
+            attributes: ["id", "fullName", "username", "profilePhoto"]
+          }),
+      ownIds.length
+        ? StoryView.findAll({
+            where: { storyId: { [Op.in]: ownIds } },
+            attributes: ["storyId"]
+          })
+        : Promise.resolve(emptyViews)
+    ]);
+    return { myViews, myLikes, users, ownerViewRows };
+  });
+  const { myViews, myLikes, users, ownerViewRows } = hydrateTimed.value;
+  const viewedSet = new Set(myViews.map((v) => v.storyId));
+  const likedSet = new Set(myLikes.map((l) => l.storyId));
+  const userMap = new Map(users.map((u) => [u.id, u]));
   const ownerViewCounts = new Map<number, number>();
-  if (byUser.has(viewerId)) {
-    const ownIds = (byUser.get(viewerId) ?? []).map((s) => s.id);
-    if (ownIds.length) {
-      const counts = await StoryView.findAll({
-        where: { storyId: { [Op.in]: ownIds } },
-        attributes: ["storyId"]
-      });
-      for (const row of counts) {
-        ownerViewCounts.set(row.storyId, (ownerViewCounts.get(row.storyId) ?? 0) + 1);
-      }
-    }
+  for (const row of ownerViewRows) {
+    ownerViewCounts.set(row.storyId, (ownerViewCounts.get(row.storyId) ?? 0) + 1);
   }
 
   type Group = {
@@ -352,6 +368,7 @@ export async function listStoryTray(viewerId: number) {
     stories: ReturnType<typeof toStoryDto>[];
   };
 
+  const dtoStarted = Date.now();
   const groups: Group[] = [];
   for (const [uid, list] of byUser) {
     const u = userMap.get(uid);
@@ -389,6 +406,26 @@ export async function listStoryTray(viewerId: number) {
     if (a.has_unseen !== b.has_unseen) return a.has_unseen ? -1 : 1;
     return new Date(b.latest_at).getTime() - new Date(a.latest_at).getTime();
   });
+  const dtoMs = Date.now() - dtoStarted;
+
+  if (metricsOn) {
+    const { getCurrentRequestId } = await import("../utils/requestContext");
+    console.info(
+      "[story-metrics]",
+      JSON.stringify({
+        requestId: getCurrentRequestId(),
+        service: "listStoryTray",
+        totalMs: Date.now() - started,
+        connectionsMs: connTimed.ms,
+        trayMs: storiesTimed.ms,
+        hydrateMs: hydrateTimed.ms,
+        dtoMs,
+        storyCount: stories.length,
+        groupCount: groups.length,
+        peerCount: peerIds.length
+      })
+    );
+  }
 
   return { groups };
 }

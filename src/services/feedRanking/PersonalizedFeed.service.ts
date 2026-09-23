@@ -14,6 +14,7 @@ import {
   loadViewerAffinity,
   retrieveCandidates
 } from "./candidates";
+import { feedCandidateConcurrency } from "./feedConcurrency";
 import { loadExposuresForPosts } from "./exposureWrite";
 import { planFeedPage } from "./pagination";
 import {
@@ -341,11 +342,12 @@ export async function getPersonalizedFeed(
       }
     }
 
-    // buildFeedItemsFromPosts includes media batch resolution + DTO assembly
+    // buildFeedItemsFromPosts: P4A engagement = 1 SQL; media has its own [media-metrics].
+    // (Previously hardcoded +5 from pre-P4A five-way engagement fan-out.)
     const itemsTimed = await timedMs(() => buildFeedItemsFromPosts(pagePosts, currentUserId));
     mediaHydrateMs = itemsTimed.ms;
     const items = itemsTimed.value;
-    queryCount += 5;
+    queryCount += 1;
 
     const serializeStarted = Date.now();
     const result = {
@@ -371,6 +373,7 @@ export async function getPersonalizedFeed(
       mediaMs: mediaHydrateMs,
       serializeMs,
       queryCount,
+      candidateConcurrency: feedCandidateConcurrency(),
       candidateCount: retrieved.candidates.length,
       eligibleCount: pool.length,
       stage1Count: stage1Cut.length,

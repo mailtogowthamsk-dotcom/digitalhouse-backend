@@ -500,41 +500,64 @@ export async function getHomeBootstrap(
   const notifMod = await import("./NotificationPlatform.service");
   const storiesMod = await import("./Stories.service");
   const { timedMs } = await import("../utils/perfTimer");
+  const { mapWithConcurrency } = await import("./feedRanking/feedConcurrency");
 
-  // Parallel branches — component Ms are wall times of each arm, NOT additive.
-  const [
-    userTimed,
-    quickActionsTimed,
-    unreadTimed,
-    unreadMessagesTimed,
-    feedTimed,
-    storiesTimed
-  ] = await Promise.all([
-    timedMs(() => User.findByPk(userId).then((u) => (u ? toHomeUserBasic(u) : null))),
-    timedMs(() => getQuickActionCounts()),
-    timedMs(() => notifMod.getUnreadCounts(userId)),
-    timedMs(() =>
-      Message.count({
-        where: {
-          recipientId: userId,
-          readAt: null,
-          deletedForEveryoneAt: null,
-          deletedForRecipientAt: null
-        }
-      })
-    ),
+  /**
+   * P4F — staged bootstrap (same response contract as prior 6-way Promise.all).
+   *
+   * BEFORE: user + QAC + unread + messages + feed + stories all start together.
+   *         Feed nested fan-out (≤3) + stories (connections/blocked) saturate pool=3.
+   *
+   * AFTER:
+   *   Stage A — light summary arms only (concurrency ≤2)
+   *   Stage B — feed ∥ stories (two heavy arms; no light competition)
+   *
+   * Do not fully serialize feed→stories: that can inflate wall time more than it
+   * saves under tunnel RTT. Separating light from heavy is the safe win.
+   */
+  const lightConcurrency = Math.max(
+    1,
+    Math.min(2, Number(process.env.HOME_BOOTSTRAP_LIGHT_CONCURRENCY || 2))
+  );
+
+  const stageAStarted = Date.now();
+  const [userTimed, quickActionsTimed, unreadTimed, unreadMessagesTimed] =
+    await mapWithConcurrency(
+      [
+        () => timedMs(() => User.findByPk(userId).then((u) => (u ? toHomeUserBasic(u) : null))),
+        () => timedMs(() => getQuickActionCounts()),
+        () => timedMs(() => notifMod.getUnreadCounts(userId)),
+        () =>
+          timedMs(() =>
+            Message.count({
+              where: {
+                recipientId: userId,
+                readAt: null,
+                deletedForEveryoneAt: null,
+                deletedForRecipientAt: null
+              }
+            })
+          )
+      ],
+      lightConcurrency
+    );
+  const stageAMs = Date.now() - stageAStarted;
+
+  const userRow = userTimed.value;
+  if (!userRow) throw new Error("User not found");
+
+  const stageBStarted = Date.now();
+  const [feedTimed, storiesTimed] = await Promise.all([
     timedMs(() => getFeed(1, feedLimit, userId, { sort: "recent" })),
     timedMs(() => storiesMod.listStoryTray(userId))
   ]);
+  const stageBMs = Date.now() - stageBStarted;
 
-  const userRow = userTimed.value;
   const quickActionCounts = quickActionsTimed.value;
   const unread = unreadTimed.value;
   const unreadMessagesCount = unreadMessagesTimed.value;
   const feed = feedTimed.value;
   const stories = storiesTimed.value;
-
-  if (!userRow) throw new Error("User not found");
 
   const serializeStarted = Date.now();
   const profileImage =
@@ -561,7 +584,11 @@ export async function getHomeBootstrap(
         requestId: getCurrentRequestId(),
         endpoint: "home/bootstrap",
         service: "getHomeBootstrap",
-        parallel: true,
+        parallel: false,
+        staged: true,
+        lightConcurrency,
+        stageAMs,
+        stageBMs,
         totalMs,
         userMs: userTimed.ms,
         quickActionsMs: quickActionsTimed.ms,
@@ -570,15 +597,7 @@ export async function getHomeBootstrap(
         feedMs: feedTimed.ms,
         storiesMs: storiesTimed.ms,
         serializeMs,
-        // Dominant parallel arm (informational — do not sum arms)
-        criticalPathMs: Math.max(
-          userTimed.ms,
-          quickActionsTimed.ms,
-          unreadTimed.ms,
-          unreadMessagesTimed.ms,
-          feedTimed.ms,
-          storiesTimed.ms
-        ),
+        criticalPathMs: stageAMs + Math.max(feedTimed.ms, storiesTimed.ms),
         feedLimit,
         feedCount: feed?.items?.length ?? 0,
         storyGroups: Array.isArray((stories as { groups?: unknown[] })?.groups)

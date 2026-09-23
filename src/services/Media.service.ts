@@ -20,6 +20,11 @@ import {
   videoStagingKeyFromOptimized,
   collectMediaArtifactKeys
 } from "../utils/mediaArtifactKeys";
+import {
+  matchLiveMediaKeyFromRows,
+  ownedLookupBaseName,
+  stagingLookupBaseName
+} from "../utils/mediaLiveKeyMatch";
 import { MediaFile, MediaJob, Post, User } from "../models";
 import type { MediaModule, MediaFileType } from "../models";
 import {
@@ -752,6 +757,43 @@ function liveObjectKeyFromRow(row: MediaFile): string {
   return row.objectKey;
 }
 
+function buildFamilyWhereForKeys(userId: number, keys: string[]): Record<string, unknown> {
+  const orParts: Array<Record<string, unknown>> = [
+    { objectKey: { [Op.in]: keys } },
+    { fileUrl: { [Op.in]: keys } }
+  ];
+  const seenPattern = new Set<string>();
+  const pushLike = (field: "objectKey" | "fileUrl", pattern: string) => {
+    const id = `${field}:${pattern}`;
+    if (seenPattern.has(id)) return;
+    seenPattern.add(id);
+    orParts.push({ [field]: { [Op.like]: pattern } });
+  };
+
+  for (const key of keys) {
+    const fileName = path.basename(key);
+    const ownedBase = ownedLookupBaseName(key);
+    const stagingBase = stagingLookupBaseName(key);
+    if (ownedBase) {
+      pushLike("objectKey", `%/${ownedBase}%`);
+      pushLike("fileUrl", `%/${ownedBase}%`);
+    }
+    if (fileName) pushLike("fileUrl", `%${fileName}%`);
+    if (stagingBase) {
+      pushLike("objectKey", `%/${stagingBase}_full.webp`);
+      pushLike("objectKey", `%/${stagingBase}_opt.mp4`);
+      pushLike("objectKey", `%/${stagingBase}.%`);
+      pushLike("fileUrl", `%/${stagingBase}%`);
+    }
+  }
+
+  return {
+    userId,
+    processingStatus: "completed",
+    [Op.or]: orParts
+  };
+}
+
 async function mapWithConcurrency<T>(
   items: T[],
   concurrency: number,
@@ -772,8 +814,8 @@ async function mapWithConcurrency<T>(
 
 /**
  * Batch-resolve media keys for a feed/page hydrate.
- * Fast path: exact `objectKey IN (...)` per author (1 query per distinct userId).
- * Slow path: bounded-concurrency `resolveLiveMediaKey` for staging/LIKE fallbacks.
+ * P4D: one family query per author (exact objectKey/fileUrl + staging LIKE patterns),
+ * then in-memory match. Residual per-key resolveLiveMediaKey only if family miss.
  * Map key: `${userId}::${rawUrlOrKey}` → resolved storage key (or null).
  */
 export async function resolveLiveMediaKeysBatch(
@@ -811,9 +853,11 @@ export async function resolveLiveMediaKeysBatch(
             requestId: getCurrentRequestId(),
             requested,
             uniqueKeys: seen.size,
+            uniqueMediaInputCount: seen.size,
             batchQueries: 0,
             batchMs: 0,
             fallbackCount: 0,
+            fallbackQueryCount: 0,
             fallbackMs: 0,
             totalMs: Date.now() - started
           })
@@ -835,40 +879,53 @@ export async function resolveLiveMediaKeysBatch(
   const unresolved: Work[] = [];
   const batchStarted = Date.now();
   let batchQueries = 0;
-  for (const [userId, list] of byUser) {
+  let familyHits = 0;
+  const authorEntries = [...byUser.entries()];
+  // Keep author fan-out ≤ pool headroom (default 2 under DB_POOL_MAX=3).
+  const authorConcurrency = Math.max(
+    1,
+    Math.min(2, Number(process.env.MEDIA_AUTHOR_CONCURRENCY || 2), authorEntries.length)
+  );
+
+  await mapWithConcurrency(authorEntries, authorConcurrency, async ([userId, list]) => {
     const keys = [...new Set(list.map((w) => w.key))];
     batchQueries += 1;
     const rows = await MediaFile.findAll({
-      where: {
-        userId,
-        processingStatus: "completed",
-        objectKey: { [Op.in]: keys }
-      },
+      where: buildFamilyWhereForKeys(userId, keys) as any,
+      attributes: ["id", "objectKey", "fileUrl", "processingStatus", "safetyDecision"],
       order: [["id", "DESC"]]
     });
-    const byObjectKey = new Map<string, MediaFile>();
-    for (const row of rows) {
-      if (row.objectKey && !byObjectKey.has(row.objectKey)) {
-        byObjectKey.set(row.objectKey, row);
-      }
-    }
     for (const w of list) {
-      const owned = byObjectKey.get(w.key);
-      if (owned?.objectKey && owned.processingStatus === "completed") {
-        result.set(w.ck, liveObjectKeyFromRow(owned));
+      const matched = matchLiveMediaKeyFromRows(w.key, rows);
+      if (matched) {
+        familyHits += 1;
+        result.set(w.ck, matched);
       } else {
+        // Family WHERE already covers exact + owned/staging LIKE patterns used by
+        // resolveLiveMediaKey. A miss means no completed row — same as resolveLiveMediaKey
+        // returning the original key after 1–2 wasted round-trips. Keep the key locally.
+        result.set(w.ck, w.key);
         unresolved.push(w);
       }
     }
-  }
+  });
   const batchMs = Date.now() - batchStarted;
 
-  const concurrency = Math.max(1, Math.min(4, Number(process.env.MEDIA_RESOLVE_CONCURRENCY || 4)));
-  const fallbackStarted = Date.now();
-  await mapWithConcurrency(unresolved, concurrency, async (w) => {
-    result.set(w.ck, await resolveLiveMediaKey(w.userId, w.raw));
-  });
-  const fallbackMs = Date.now() - fallbackStarted;
+  // Optional legacy residual (off by default). Only needed if family patterns diverge.
+  const legacyFallback =
+    process.env.MEDIA_RESOLVE_LEGACY_FALLBACK === "1" ||
+    process.env.MEDIA_RESOLVE_LEGACY_FALLBACK === "true";
+  let fallbackMs = 0;
+  let fallbackQueryCount = 0;
+  if (legacyFallback && unresolved.length > 0) {
+    const concurrency = Math.max(1, Math.min(2, Number(process.env.MEDIA_RESOLVE_CONCURRENCY || 2)));
+    const fallbackStarted = Date.now();
+    await mapWithConcurrency(unresolved, concurrency, async (w) => {
+      result.set(w.ck, await resolveLiveMediaKey(w.userId, w.raw));
+      fallbackQueryCount += 1;
+    });
+    fallbackMs = Date.now() - fallbackStarted;
+  }
 
   if (process.env.MEDIA_METRICS === "1" || process.env.FEED_METRICS === "1") {
     try {
@@ -879,12 +936,18 @@ export async function resolveLiveMediaKeysBatch(
           requestId: getCurrentRequestId(),
           requested,
           uniqueKeys: seen.size,
+          uniqueMediaInputCount: seen.size,
+          mediaInputCount: requested,
           r2Keys: work.length,
           authors: byUser.size,
           batchQueries,
           batchMs,
-          fallbackCount: unresolved.length,
+          familyHits,
+          familyMisses: unresolved.length,
+          fallbackCount: legacyFallback ? unresolved.length : 0,
+          fallbackQueryCount,
           fallbackMs,
+          legacyFallback,
           totalMs: Date.now() - started
         })
       );

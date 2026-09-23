@@ -31,19 +31,22 @@ async function ensureTables(): Promise<boolean> {
 
 /** User ids hidden from viewer (either direction block). */
 export async function getBlockedUserIds(viewerId: number): Promise<Set<number>> {
-  if (!(await ensureTables())) return new Set();
-  const rows = await MatrimonyBlock.findAll({
-    where: {
-      [Op.or]: [{ userId: viewerId }, { blockedUserId: viewerId }]
-    },
-    attributes: ["userId", "blockedUserId"]
+  const { memoBlockedUserIds } = await import("../utils/requestScopedMemo");
+  return memoBlockedUserIds(viewerId, async () => {
+    if (!(await ensureTables())) return new Set();
+    const rows = await MatrimonyBlock.findAll({
+      where: {
+        [Op.or]: [{ userId: viewerId }, { blockedUserId: viewerId }]
+      },
+      attributes: ["userId", "blockedUserId"]
+    });
+    const set = new Set<number>();
+    for (const r of rows) {
+      if (r.userId === viewerId) set.add(r.blockedUserId);
+      else set.add(r.userId);
+    }
+    return set;
   });
-  const set = new Set<number>();
-  for (const r of rows) {
-    if (r.userId === viewerId) set.add(r.blockedUserId);
-    else set.add(r.userId);
-  }
-  return set;
 }
 
 export async function assertNotBlocked(userId: number, otherUserId: number): Promise<void> {
