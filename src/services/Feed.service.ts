@@ -606,6 +606,30 @@ export async function buildFeedItemsFromPosts(
   const originalById = new Map(originalPosts.map((op) => [op.id, op]));
   const { mediaService } = await import("./Media.service");
 
+  // Batch-resolve all distinct media keys for this page (exact objectKey IN + bounded fallback).
+  const mediaResolveJobs: Array<{ userId: number; urlOrKey: string }> = [];
+  const galleryByPostId = new Map<number, string[]>();
+  for (const p of pagePosts) {
+    if (p.mediaUrl) mediaResolveJobs.push({ userId: p.userId, urlOrKey: p.mediaUrl });
+    if (p.thumbnailUrl) mediaResolveJobs.push({ userId: p.userId, urlOrKey: p.thumbnailUrl });
+    const galleryParsed =
+      p.postType === "MARKETPLACE"
+        ? parseMarketplaceGallery(p.marketplaceGallery, p.mediaUrl ?? null)
+        : p.postType === "HELP_REQUEST"
+          ? parseHelpGallery(p.helpGallery, p.mediaUrl ?? null)
+          : [];
+    galleryByPostId.set(p.id, galleryParsed);
+    for (const g of galleryParsed) {
+      mediaResolveJobs.push({ userId: p.userId, urlOrKey: g });
+    }
+  }
+  const liveKeyMap = await mediaService.resolveLiveMediaKeysBatch(mediaResolveJobs);
+  const resolveFromMap = (userId: number, key: string | null | undefined): string | null => {
+    if (!key) return null;
+    const ck = `${userId}::${key.trim()}`;
+    return liveKeyMap.has(ck) ? liveKeyMap.get(ck) ?? null : key;
+  };
+
   return Promise.all(
     pagePosts.map(async (p) => {
       const author = (p as any).User as User;
@@ -615,22 +639,21 @@ export async function buildFeedItemsFromPosts(
       let storedMediaKey = p.mediaUrl;
       let storedThumbKey = p.thumbnailUrl;
       if (storedMediaKey) {
-        storedMediaKey =
-          (await mediaService.resolveLiveMediaKey(p.userId, storedMediaKey)) ?? storedMediaKey;
+        storedMediaKey = resolveFromMap(p.userId, storedMediaKey) ?? storedMediaKey;
       }
       if (storedThumbKey) {
-        storedThumbKey =
-          (await mediaService.resolveLiveMediaKey(p.userId, storedThumbKey)) ?? storedThumbKey;
+        storedThumbKey = resolveFromMap(p.userId, storedThumbKey) ?? storedThumbKey;
       }
-      const galleryParsed =
-        p.postType === "MARKETPLACE"
-          ? parseMarketplaceGallery(p.marketplaceGallery, p.mediaUrl ?? null)
-          : p.postType === "HELP_REQUEST"
-            ? parseHelpGallery(p.helpGallery, p.mediaUrl ?? null)
-            : [];
-      const galleryRaw = galleryParsed.length
-        ? await mediaService.resolvePublicGalleryKeys(p.userId, galleryParsed)
-        : [];
+      const galleryParsed = galleryByPostId.get(p.id) ?? [];
+      const gallerySeen = new Set<string>();
+      const galleryRaw: string[] = [];
+      for (const raw of galleryParsed) {
+        const k = resolveFromMap(p.userId, raw) ?? raw;
+        const norm = k.trim();
+        if (!norm || gallerySeen.has(norm)) continue;
+        gallerySeen.add(norm);
+        galleryRaw.push(k);
+      }
       const ownerView = p.userId === currentUserId;
       // SAFE listings may still have un-promoted quarantine gallery keys — sign for everyone.
       const canSignPrivate = ownerView || p.safetyDecision === "SAFE";

@@ -50,10 +50,20 @@ export type AudienceFilterMode =
  * SQL WHERE fragment enforcing post audience visibility at the database layer.
  * Never rely on client-side filtering alone.
  */
+export type AudienceVisibilityPreload = {
+  authorId?: number;
+  isConnectedToAuthor?: boolean;
+  isSelf?: boolean;
+  /** When set, skips MemberConnection lookup (feed mode). */
+  connectedIds?: number[];
+  /** When set, skips block-list lookup (feed mode). */
+  blockedIds?: Set<number>;
+};
+
 export async function audienceVisibilityWhere(
   viewerId: number,
   mode: AudienceFilterMode,
-  opts?: { authorId?: number; isConnectedToAuthor?: boolean; isSelf?: boolean }
+  opts?: AudienceVisibilityPreload
 ): Promise<WhereOptions> {
   if (mode === "discovery") {
     return { visibility: "PUBLIC" };
@@ -73,11 +83,12 @@ export async function audienceVisibilityWhere(
     return { visibility: "PUBLIC" };
   }
 
-  // feed mode
-  const [connectedIds, blockedIds] = await Promise.all([
-    getAcceptedConnectionUserIds(viewerId),
-    getBlockedUserIds(viewerId).catch(() => new Set<number>())
-  ]);
+  // feed mode — reuse request-scoped connection/block sets when provided
+  const connectedIds =
+    opts?.connectedIds ?? (await getAcceptedConnectionUserIds(viewerId));
+  const blockedIds =
+    opts?.blockedIds ??
+    (await getBlockedUserIds(viewerId).catch(() => new Set<number>()));
   const orParts: WhereOptions[] = [
     { visibility: "PUBLIC" },
     { userId: viewerId }

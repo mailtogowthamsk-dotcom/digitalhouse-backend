@@ -25,6 +25,8 @@ export async function bootstrap(req: Request, res: Response) {
   const appVersion = typeof req.query.appVersion === "string" ? req.query.appVersion : null;
   const userId = (req as any).user?.id ?? null;
   const data = await Platform.getPlatformBootstrap({ platform, appVersion, userId });
+  // Short private TTL — flags/menus change rarely; cuts repeat launch load.
+  res.setHeader("Cache-Control", "private, max-age=30");
   return success(res, data);
 }
 

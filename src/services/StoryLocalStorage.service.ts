@@ -323,9 +323,17 @@ export async function readStoryFileStream(relativeKey: string): Promise<{
   stat: fs.Stats;
 }> {
   const abs = absolutePathForStoryKey(relativeKey);
-  const stat = await fs.promises.stat(abs);
+  let stat: fs.Stats;
+  try {
+    stat = await fs.promises.stat(abs);
+  } catch (e: any) {
+    if (e?.code === "ENOENT") {
+      throw Object.assign(new Error("Story media not found"), { status: 404, code: "STORY_MEDIA_MISSING" });
+    }
+    throw e;
+  }
   if (!stat.isFile()) {
-    throw Object.assign(new Error("Story media not found"), { status: 404 });
+    throw Object.assign(new Error("Story media not found"), { status: 404, code: "STORY_MEDIA_MISSING" });
   }
   return { absolutePath: abs, stat };
 }

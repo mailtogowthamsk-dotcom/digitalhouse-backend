@@ -11,5 +11,6 @@ homeRouter.use(authMiddleware);
 
 homeRouter.get("/summary", asyncHandler(HomeController.getSummary));
 homeRouter.get("/quick-actions", asyncHandler(HomeController.getQuickActions));
+homeRouter.get("/bootstrap", asyncHandler(HomeController.getBootstrap));
 homeRouter.get("/feed", asyncHandler(HomeController.getFeed));
 homeRouter.get("/highlights", asyncHandler(HomeController.getHighlights));

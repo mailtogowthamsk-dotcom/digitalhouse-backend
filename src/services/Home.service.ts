@@ -1,5 +1,6 @@
 import { Op } from "sequelize";
 import { User, Post, Notification, Message, PostLike, Comment } from "../models";
+import { sequelize } from "../config/db";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
 
 // --- DTOs (type-safe, no email/mobile) ---
@@ -186,15 +187,18 @@ export async function getSummary(userId: number): Promise<HomeSummaryDto> {
   };
 }
 
-/** Get module counters for quick actions (JOIN approved users — no giant IN list). */
-export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
+/**
+ * Reference implementation: 6 COUNT+JOIN queries (pre-optimization).
+ * Kept for equivalence tests only — production uses getQuickActionCounts.
+ */
+export async function getQuickActionCountsLegacySixQueries(): Promise<QuickActionCountsDto> {
   const approvedInclude = {
     association: "User" as const,
     attributes: [] as string[],
     required: true as const,
     where: approvedUserScope
   };
-
+  const now = new Date();
   const [
     totalPosts,
     openJobs,
@@ -203,7 +207,11 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
     helpingHandRequests,
     communityUpdates
   ] = await Promise.all([
-    Post.count({ include: [approvedInclude], distinct: true, where: { moderationStatus: "ACTIVE", safetyDecision: "SAFE" } }),
+    Post.count({
+      include: [approvedInclude],
+      distinct: true,
+      where: { moderationStatus: "ACTIVE", safetyDecision: "SAFE" }
+    }),
     Post.count({
       where: {
         postType: "JOB",
@@ -214,7 +222,7 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
           {
             [Op.or]: [
               { jobApplicationDeadline: null },
-              { jobApplicationDeadline: { [Op.gt]: new Date() } }
+              { jobApplicationDeadline: { [Op.gt]: now } }
             ]
           }
         ]
@@ -223,7 +231,12 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
       distinct: true
     }),
     Post.count({
-      where: { postType: "MARKETPLACE", marketplaceStatus: "LIVE", moderationStatus: "ACTIVE", safetyDecision: "SAFE" },
+      where: {
+        postType: "MARKETPLACE",
+        marketplaceStatus: "LIVE",
+        moderationStatus: "ACTIVE",
+        safetyDecision: "SAFE"
+      },
       include: [approvedInclude],
       distinct: true
     }),
@@ -238,7 +251,7 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
         moderationStatus: "ACTIVE",
         safetyDecision: "SAFE",
         helpStatus: { [Op.in]: ["OPEN", "IN_PROGRESS"] },
-        [Op.or]: [{ helpExpiresAt: null }, { helpExpiresAt: { [Op.gt]: new Date() } }]
+        [Op.or]: [{ helpExpiresAt: null }, { helpExpiresAt: { [Op.gt]: now } }]
       },
       include: [approvedInclude],
       distinct: true
@@ -249,7 +262,6 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
       distinct: true
     })
   ]);
-
   return {
     totalPosts,
     openJobs,
@@ -258,6 +270,68 @@ export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
     helpingHandRequests,
     communityUpdates
   };
+}
+
+/** Get module counters for quick actions (JOIN approved users — no giant IN list). */
+export async function getQuickActionCounts(): Promise<QuickActionCountsDto> {
+  /**
+   * One aggregate scan instead of 6 parallel COUNT+JOIN round-trips.
+   * Semantics match getQuickActionCountsLegacySixQueries (ACTIVE+SAFE + approved author).
+   * JOIN is 1:1 posts→users so COUNT(*) ≡ COUNT(DISTINCT post id).
+   */
+  const started = Date.now();
+  const now = new Date();
+  const [rows] = await sequelize.query(
+    `SELECT
+       COUNT(*) AS totalPosts,
+       COALESCE(SUM(CASE
+         WHEN p.postType = 'JOB'
+          AND (p.jobStatus = 'OPEN' OR p.jobStatus IS NULL)
+          AND (p.jobApplicationDeadline IS NULL OR p.jobApplicationDeadline > :now)
+         THEN 1 ELSE 0 END), 0) AS openJobs,
+       COALESCE(SUM(CASE
+         WHEN p.postType = 'MARKETPLACE' AND p.marketplaceStatus = 'LIVE'
+         THEN 1 ELSE 0 END), 0) AS marketplaceItems,
+       COALESCE(SUM(CASE
+         WHEN p.postType = 'MATRIMONY'
+         THEN 1 ELSE 0 END), 0) AS matrimonyProfiles,
+       COALESCE(SUM(CASE
+         WHEN p.postType = 'HELP_REQUEST'
+          AND p.helpStatus IN ('OPEN', 'IN_PROGRESS')
+          AND (p.helpExpiresAt IS NULL OR p.helpExpiresAt > :now)
+         THEN 1 ELSE 0 END), 0) AS helpingHandRequests,
+       COALESCE(SUM(CASE
+         WHEN p.postType = 'ANNOUNCEMENT'
+         THEN 1 ELSE 0 END), 0) AS communityUpdates
+     FROM posts p
+     INNER JOIN users u ON u.id = p.userId AND u.status = 'APPROVED'
+     WHERE p.moderation_status = 'ACTIVE'
+       AND p.safety_decision = 'SAFE'`,
+    { replacements: { now } }
+  );
+
+  const row = (rows as Array<Record<string, number | string>>)[0] ?? {};
+  const n = (v: unknown) => Number(v) || 0;
+  const result = {
+    totalPosts: n(row.totalPosts),
+    openJobs: n(row.openJobs),
+    marketplaceItems: n(row.marketplaceItems),
+    matrimonyProfiles: n(row.matrimonyProfiles),
+    helpingHandRequests: n(row.helpingHandRequests),
+    communityUpdates: n(row.communityUpdates)
+  };
+  if (process.env.HOME_METRICS === "1" || process.env.FEED_METRICS === "1") {
+    console.info(
+      "[home-metrics]",
+      JSON.stringify({
+        endpoint: "home/quick-actions",
+        service: "getQuickActionCounts",
+        durationMs: Date.now() - started,
+        queryCount: 1
+      })
+    );
+  }
+  return result;
 }
 
 /** Delegates to Feed.service (ranking, cursor, liked/saved flags). */
@@ -402,9 +476,83 @@ export async function getHighlights(): Promise<HighlightsDto> {
   };
 }
 
+export async function getHomeBootstrap(
+  userId: number,
+  opts?: { feedLimit?: number }
+): Promise<{
+  summary: HomeSummaryDto;
+  feed: Awaited<ReturnType<typeof getFeed>>;
+  stories: { groups: unknown[] };
+  unread: {
+    total: number;
+    social: number;
+    matrimony: number;
+    messages: number;
+    community: number;
+    system: number;
+  };
+}> {
+  const started = Date.now();
+  const feedLimit = Math.min(Math.max(opts?.feedLimit ?? 6, 1), 20);
+  const notifMod = await import("./NotificationPlatform.service");
+  const storiesMod = await import("./Stories.service");
+
+  // Single unread query shared by summary.total + badge categories (no double COUNT).
+  const [userRow, quickActionCounts, unread, unreadMessagesCount, feed, stories] =
+    await Promise.all([
+      User.findByPk(userId).then((u) => (u ? toHomeUserBasic(u) : null)),
+      getQuickActionCounts(),
+      notifMod.getUnreadCounts(userId),
+      Message.count({
+        where: {
+          recipientId: userId,
+          readAt: null,
+          deletedForEveryoneAt: null,
+          deletedForRecipientAt: null
+        }
+      }),
+      getFeed(1, feedLimit, userId, { sort: "recent" }),
+      storiesMod.listStoryTray(userId)
+    ]);
+
+  if (!userRow) throw new Error("User not found");
+  const profileImage =
+    (await toPublicUrlIfR2(userRow.profileImage ?? null)) ?? userRow.profileImage ?? null;
+
+  if (process.env.HOME_METRICS === "1" || process.env.FEED_METRICS === "1") {
+    console.info(
+      "[home-metrics]",
+      JSON.stringify({
+        endpoint: "home/bootstrap",
+        service: "getHomeBootstrap",
+        durationMs: Date.now() - started,
+        feedLimit,
+        feedCount: feed?.items?.length ?? 0,
+        storyGroups: Array.isArray((stories as { groups?: unknown[] })?.groups)
+          ? (stories as { groups: unknown[] }).groups.length
+          : 0
+      })
+    );
+  }
+
+  return {
+    summary: {
+      user: { ...userRow, profileImage },
+      quickActionCounts,
+      unreadNotificationsCount: unread.total,
+      unreadMessagesCount
+    },
+    feed,
+    stories,
+    unread
+  };
+}
+
 export const homeService = {
   getSummary,
   getQuickActionCounts,
+  getQuickActionCountsLegacySixQueries,
   getFeed,
-  getHighlights
+  getHighlights,
+  getHomeBootstrap
 };

@@ -49,8 +49,11 @@ function userInclude(community: string | null) {
   };
 }
 
-export async function buildEligibleWhere(currentUserId: number): Promise<WhereOptions> {
-  const visibility = await audienceVisibilityWhere(currentUserId, "feed");
+export async function buildEligibleWhere(
+  currentUserId: number,
+  preload?: { connectedIds?: number[]; blockedIds?: Set<number> }
+): Promise<WhereOptions> {
+  const visibility = await audienceVisibilityWhere(currentUserId, "feed", preload);
   return applyPostFilters(visibility, {}, currentUserId);
 }
 
@@ -91,11 +94,13 @@ async function findCandidates(opts: {
 }
 
 export async function loadViewerAffinity(
-  currentUserId: number
+  currentUserId: number,
+  preload?: { connectionIds?: number[] }
 ): Promise<{ affinity: ViewerAffinity; queryCount: number }> {
   let queryCount = 0;
-  const connectionIds = await getAcceptedConnectionUserIds(currentUserId);
-  queryCount += 1;
+  const connectionIds =
+    preload?.connectionIds ?? (await getAcceptedConnectionUserIds(currentUserId));
+  if (!preload?.connectionIds) queryCount += 1;
 
   const [likeRows, commentRows, saveRows, expertiseRows, profile] = await Promise.all([
     PostLike.findAll({
@@ -261,8 +266,11 @@ export async function retrieveCandidates(params: {
   community: string | null;
   affinity: ViewerAffinity;
   seed: number;
+  /** Prebuilt eligibility WHERE — avoids reloading connections/blocks per source. */
+  eligibleWhere?: WhereOptions;
 }): Promise<{ candidates: FeedCandidate[]; queryCount: number; sourceCounts: Record<string, number> }> {
-  const where = await buildEligibleWhere(params.currentUserId);
+  const where = params.eligibleWhere ?? (await buildEligibleWhere(params.currentUserId));
+  const whereQueryCost = params.eligibleWhere ? 0 : 1;
   const connectionIds = [...params.affinity.connectionIds];
   const hashtagIds = [...params.affinity.hashtagIds];
   const exploreOffset = params.seed % CFG.explorationOffsetModulo;
@@ -314,8 +322,8 @@ export async function retrieveCandidates(params: {
 
   return {
     candidates: [...byId.values()],
-    // eligible where + 5 source queries (+ interest hashtag lookup inside interestCandidates)
-    queryCount: 1 + 5 + (hashtagIds.length > 0 ? 1 : 0),
+    // eligible where (unless preloaded) + 5 source queries (+ interest hashtag lookup)
+    queryCount: whereQueryCost + 5 + (hashtagIds.length > 0 ? 1 : 0),
     sourceCounts
   };
 }
@@ -339,10 +347,11 @@ export async function fallbackFreshCandidates(
   currentUserId: number,
   community: string | null,
   excludeIds: Set<number>,
-  need: number
+  need: number,
+  eligibleWhere?: WhereOptions
 ): Promise<FeedCandidate[]> {
   if (need <= 0) return [];
-  const where = await buildEligibleWhere(currentUserId);
+  const where = eligibleWhere ?? (await buildEligibleWhere(currentUserId));
   const extra = await findCandidates({
     where: excludeIds.size ? { [Op.and]: [where, { id: { [Op.notIn]: [...excludeIds].slice(0, 500) } }] } : where,
     community,
@@ -359,9 +368,10 @@ export async function fetchChronoTail(params: {
   excludeIds: number[];
   limit: number;
   after?: { createdAt: Date; postId: number } | null;
+  eligibleWhere?: WhereOptions;
 }): Promise<{ posts: Post[]; hasMore: boolean }> {
   if (params.limit <= 0) return { posts: [], hasMore: false };
-  const where = await buildEligibleWhere(params.currentUserId);
+  const where = params.eligibleWhere ?? (await buildEligibleWhere(params.currentUserId));
   const parts: WhereOptions[] = [where];
   if (params.excludeIds.length > 0) {
     parts.push({ id: { [Op.notIn]: params.excludeIds.slice(0, 200) } });

@@ -1,3 +1,4 @@
+import { Op } from "sequelize";
 import {
   PlatformMaintenance,
   PlatformFeatureFlag,
@@ -8,24 +9,40 @@ import {
   DEFAULT_MENU_ITEMS
 } from "../../constants/platform.constants";
 import { recordConfigChange } from "../PlatformConfigAudit.service";
-import { audit, now } from "./shared";
+import { now } from "./shared";
 
-/** Ensure singleton maintenance + default flags/menus exist */
+/**
+ * Process-local memo: defaults only need to exist once per API process.
+ * Previously every /platform/bootstrap did ~20+ serial findOne round-trips.
+ */
+let defaultsReadyPromise: Promise<void> | null = null;
+let defaultsEnsured = false;
+
+/** Ensure singleton maintenance + default flags/menus exist (idempotent, once per process). */
 export async function ensurePlatformDefaults(): Promise<void> {
-  const maint = await PlatformMaintenance.findOne();
-  if (!maint) {
-    await PlatformMaintenance.create({
-      enabled: false,
-      title: "Under Maintenance",
-      description: "We will be back shortly.",
-      createdAt: now(),
-      updatedAt: now()
-    } as any);
-  }
+  if (defaultsEnsured) return;
+  if (defaultsReadyPromise) return defaultsReadyPromise;
 
-  for (const f of DEFAULT_FEATURE_FLAGS) {
-    const exists = await PlatformFeatureFlag.findOne({ where: { code: f.code } });
-    if (!exists) {
+  defaultsReadyPromise = (async () => {
+    const maint = await PlatformMaintenance.findOne();
+    if (!maint) {
+      await PlatformMaintenance.create({
+        enabled: false,
+        title: "Under Maintenance",
+        description: "We will be back shortly.",
+        createdAt: now(),
+        updatedAt: now()
+      } as any);
+    }
+
+    const flagCodes = DEFAULT_FEATURE_FLAGS.map((f) => f.code);
+    const existingFlags = await PlatformFeatureFlag.findAll({
+      where: { code: { [Op.in]: flagCodes } },
+      attributes: ["code"]
+    });
+    const haveFlag = new Set(existingFlags.map((f) => f.code));
+    for (const f of DEFAULT_FEATURE_FLAGS) {
+      if (haveFlag.has(f.code)) continue;
       await PlatformFeatureFlag.create({
         code: f.code,
         label: f.label,
@@ -35,11 +52,15 @@ export async function ensurePlatformDefaults(): Promise<void> {
         updatedAt: now()
       } as any);
     }
-  }
 
-  for (const m of DEFAULT_MENU_ITEMS) {
-    const exists = await PlatformMenuItem.findOne({ where: { code: m.code } });
-    if (!exists) {
+    const menuCodes = DEFAULT_MENU_ITEMS.map((m) => m.code);
+    const existingMenus = await PlatformMenuItem.findAll({
+      where: { code: { [Op.in]: menuCodes } },
+      attributes: ["code"]
+    });
+    const haveMenu = new Set(existingMenus.map((m) => m.code));
+    for (const m of DEFAULT_MENU_ITEMS) {
+      if (haveMenu.has(m.code)) continue;
       await PlatformMenuItem.create({
         code: m.code,
         label: m.label,
@@ -51,7 +72,14 @@ export async function ensurePlatformDefaults(): Promise<void> {
         updatedAt: now()
       } as any);
     }
-  }
+
+    defaultsEnsured = true;
+  })().catch((err) => {
+    defaultsReadyPromise = null;
+    throw err;
+  });
+
+  return defaultsReadyPromise;
 }
 
 export async function listFeatureFlags() {

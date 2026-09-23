@@ -68,3 +68,16 @@ export async function getHighlights(_req: AuthRequest, res: Response) {
   const data = await homeService.getHighlights();
   return success(res, data);
 }
+
+/**
+ * GET /api/home/bootstrap
+ * Cold-start orchestrator: summary + feed page 1 + story tray + unread counts.
+ * Existing /summary, /feed, /stories, /notifications/counts remain for other callers.
+ */
+export async function getBootstrap(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const limitRaw = Number(req.query.limit);
+  const feedLimit = Number.isFinite(limitRaw) ? limitRaw : 6;
+  const data = await homeService.getHomeBootstrap(req.user.id, { feedLimit });
+  return success(res, data);
+}

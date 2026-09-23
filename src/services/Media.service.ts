@@ -744,6 +744,104 @@ export async function resolveLiveMediaKey(
   return row.objectKey;
 }
 
+function liveObjectKeyFromRow(row: MediaFile): string {
+  if (!row.objectKey) return "";
+  if (row.safetyDecision === "SAFE" && !isPrivateR2Object(row.objectKey)) {
+    return publicPublishStorageKey(row.objectKey) ?? row.objectKey;
+  }
+  return row.objectKey;
+}
+
+async function mapWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  if (items.length === 0) return;
+  const limit = Math.min(Math.max(1, concurrency), items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: limit }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        await fn(items[i]!);
+      }
+    })
+  );
+}
+
+/**
+ * Batch-resolve media keys for a feed/page hydrate.
+ * Fast path: exact `objectKey IN (...)` per author (1 query per distinct userId).
+ * Slow path: bounded-concurrency `resolveLiveMediaKey` for staging/LIKE fallbacks.
+ * Map key: `${userId}::${rawUrlOrKey}` → resolved storage key (or null).
+ */
+export async function resolveLiveMediaKeysBatch(
+  items: Array<{ userId: number; urlOrKey: string | null | undefined }>
+): Promise<Map<string, string | null>> {
+  const result = new Map<string, string | null>();
+  type Work = { userId: number; raw: string; key: string; ck: string };
+  const work: Work[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    if (!item.urlOrKey?.trim()) continue;
+    const raw = item.urlOrKey.trim();
+    const ck = `${item.userId}::${raw}`;
+    if (seen.has(ck)) continue;
+    seen.add(ck);
+    const key = extractR2KeyFromUrl(raw) ?? raw;
+    if (!key.startsWith(`${R2_PREFIX}/`)) {
+      result.set(ck, key);
+      continue;
+    }
+    work.push({ userId: item.userId, raw, key, ck });
+  }
+
+  if (work.length === 0) return result;
+
+  const byUser = new Map<number, Work[]>();
+  for (const w of work) {
+    const list = byUser.get(w.userId);
+    if (list) list.push(w);
+    else byUser.set(w.userId, [w]);
+  }
+
+  const unresolved: Work[] = [];
+  for (const [userId, list] of byUser) {
+    const keys = [...new Set(list.map((w) => w.key))];
+    const rows = await MediaFile.findAll({
+      where: {
+        userId,
+        processingStatus: "completed",
+        objectKey: { [Op.in]: keys }
+      },
+      order: [["id", "DESC"]]
+    });
+    const byObjectKey = new Map<string, MediaFile>();
+    for (const row of rows) {
+      if (row.objectKey && !byObjectKey.has(row.objectKey)) {
+        byObjectKey.set(row.objectKey, row);
+      }
+    }
+    for (const w of list) {
+      const owned = byObjectKey.get(w.key);
+      if (owned?.objectKey && owned.processingStatus === "completed") {
+        result.set(w.ck, liveObjectKeyFromRow(owned));
+      } else {
+        unresolved.push(w);
+      }
+    }
+  }
+
+  const concurrency = Math.max(1, Math.min(4, Number(process.env.MEDIA_RESOLVE_CONCURRENCY || 4)));
+  await mapWithConcurrency(unresolved, concurrency, async (w) => {
+    result.set(w.ck, await resolveLiveMediaKey(w.userId, w.raw));
+  });
+
+  return result;
+}
+
 /** Resolve each gallery key like cover media so SAFE listings show all photos. */
 export async function resolvePublicGalleryKeys(
   userId: number,
@@ -752,9 +850,10 @@ export async function resolvePublicGalleryKeys(
 ): Promise<string[]> {
   const out: string[] = [];
   const seen = new Set<string>();
+  const batch = await resolveLiveMediaKeysBatch(keys.map((raw) => ({ userId, urlOrKey: raw })));
   for (const raw of keys) {
     if (!raw?.trim()) continue;
-    const k = (await resolveLiveMediaKey(userId, raw)) ?? raw;
+    const k = batch.get(`${userId}::${raw.trim()}`) ?? raw;
     const norm = normalizeStoredMediaKey(k) ?? k;
     if (seen.has(norm)) continue;
     seen.add(norm);
@@ -936,6 +1035,7 @@ export const mediaService = {
   markMediaUrlsAttached,
   cleanupOrphanPendingMedia,
   resolveLiveMediaKey,
+  resolveLiveMediaKeysBatch,
   resolvePublicGalleryKeys,
   rewriteMediaKeyReferences,
   findMediaFileForPostReference,

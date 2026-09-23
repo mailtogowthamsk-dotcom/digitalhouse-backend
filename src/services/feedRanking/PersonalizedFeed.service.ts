@@ -7,6 +7,7 @@ import { FEED_RANKING_CONFIG as CFG } from "./config";
 import { decodeFeedCursor, encodeFeedCursor, encodeTailStartCursor, isOpaqueFeedCursor, makeSessionContext } from "./cursor";
 import { logFeedMetrics } from "./flag";
 import {
+  buildEligibleWhere,
   fallbackFreshCandidates,
   fetchChronoTail,
   loadTagOverlaps,
@@ -23,6 +24,8 @@ import {
 } from "./math";
 import { scoreHomeFeedCandidate } from "./signals";
 import type { ScoredCandidate } from "./types";
+import { getAcceptedConnectionUserIds } from "../PostVisibility.service";
+import { getBlockedUserIds } from "../MatrimonySafety.service";
 
 const APPROVED = "APPROVED";
 
@@ -95,17 +98,32 @@ export async function getPersonalizedFeed(
   };
 
   try {
-    const community = await viewerCommunity(currentUserId);
-    queryCount += 1;
+    // Request-scoped context: community + full connection/block sets once.
+    // Visibility must use the FULL connection list (not affinity-truncated).
+    const [community, connectionIds, blockedIds] = await Promise.all([
+      viewerCommunity(currentUserId),
+      getAcceptedConnectionUserIds(currentUserId),
+      getBlockedUserIds(currentUserId).catch(() => new Set<number>())
+    ]);
+    queryCount += 3;
 
-    const { affinity, queryCount: affinityQueries } = await loadViewerAffinity(currentUserId);
+    const eligibleWhere = await buildEligibleWhere(currentUserId, {
+      connectedIds: connectionIds,
+      blockedIds
+    });
+    // buildEligibleWhere with preload → 0 extra DB round-trips
+
+    const { affinity, queryCount: affinityQueries } = await loadViewerAffinity(currentUserId, {
+      connectionIds
+    });
     queryCount += affinityQueries;
 
     const retrieved = await retrieveCandidates({
       currentUserId,
       community,
       affinity,
-      seed: session.seed
+      seed: session.seed,
+      eligibleWhere
     });
     queryCount += retrieved.queryCount;
 
@@ -115,7 +133,8 @@ export async function getPersonalizedFeed(
         currentUserId,
         community,
         new Set(pool.map((c) => c.postId)),
-        CFG.emptyFallbackMin - pool.length + limit
+        CFG.emptyFallbackMin - pool.length + limit,
+        eligibleWhere
       );
       queryCount += 1;
       const byId = new Map(pool.map((c) => [c.postId, c]));
@@ -137,7 +156,8 @@ export async function getPersonalizedFeed(
         after:
           incomingCursor?.phase === "tail" && incomingCursor.postId > 0
             ? { createdAt: new Date(incomingCursor.tieBreaker), postId: incomingCursor.postId }
-            : null
+            : null,
+        eligibleWhere
       });
       const items = await buildFeedItemsFromPosts(tail.posts, currentUserId);
       const last = tail.posts[tail.posts.length - 1];
@@ -243,7 +263,8 @@ export async function getPersonalizedFeed(
           community,
           excludeIds: rankedIds,
           limit: fill,
-          after: planned.tailAfter
+          after: planned.tailAfter,
+          eligibleWhere
         });
         queryCount += 1;
         pagePosts = pagePosts.concat(tail.posts);
@@ -265,7 +286,8 @@ export async function getPersonalizedFeed(
           community,
           excludeIds: rankedIds,
           limit: 1,
-          after: null
+          after: null,
+          eligibleWhere
         });
         queryCount += 1;
         hasMore = peek.posts.length > 0 || peek.hasMore;

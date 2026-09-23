@@ -145,16 +145,36 @@ export async function toNotificationDto(row: Notification): Promise<Notification
 }
 
 export async function getUnreadCounts(userId: number): Promise<UnreadCountsDto> {
-  const base = { userId, readAt: null, deletedAt: null };
-  const [total, social, matrimony, messages, community, system] = await Promise.all([
-    Notification.count({ where: base }),
-    Notification.count({ where: { ...base, category: "SOCIAL" } }),
-    Notification.count({ where: { ...base, category: "MATRIMONY" } }),
-    Notification.count({ where: { ...base, category: "MESSAGES" } }),
-    Notification.count({ where: { ...base, category: "COMMUNITY" } }),
-    Notification.count({ where: { ...base, category: "SYSTEM" } })
-  ]);
-  return { total, social, matrimony, messages, community, system };
+  // One GROUP BY instead of 6 parallel COUNT queries (cold-start pool saver).
+  const [rows] = await sequelize.query(
+    `SELECT category AS category, COUNT(*) AS cnt
+     FROM notifications
+     WHERE userId = :userId AND readAt IS NULL AND deleted_at IS NULL
+     GROUP BY category`,
+    { replacements: { userId } }
+  );
+
+  const byCat: Record<string, number> = {
+    SOCIAL: 0,
+    MATRIMONY: 0,
+    MESSAGES: 0,
+    COMMUNITY: 0,
+    SYSTEM: 0
+  };
+  let total = 0;
+  for (const r of rows as Array<{ category: string; cnt: number | string }>) {
+    const n = Number(r.cnt) || 0;
+    total += n;
+    if (r.category in byCat) byCat[r.category] = n;
+  }
+  return {
+    total,
+    social: byCat.SOCIAL,
+    matrimony: byCat.MATRIMONY,
+    messages: byCat.MESSAGES,
+    community: byCat.COMMUNITY,
+    system: byCat.SYSTEM
+  };
 }
 
 /**
