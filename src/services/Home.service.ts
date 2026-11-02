@@ -503,7 +503,6 @@ export async function getHomeBootstrap(
   const notifMod = await import("./NotificationPlatform.service");
   const storiesMod = await import("./Stories.service");
   const { timedMs } = await import("../utils/perfTimer");
-  const { mapWithConcurrency } = await import("./feedRanking/feedConcurrency");
 
   /**
    * P4F — staged bootstrap (same response contract as prior 6-way Promise.all).
@@ -524,26 +523,25 @@ export async function getHomeBootstrap(
   );
 
   const stageAStarted = Date.now();
-  const [userTimed, quickActionsTimed, unreadTimed, unreadMessagesTimed] =
-    await mapWithConcurrency(
-      [
-        () => timedMs(() => User.findByPk(userId).then((u) => (u ? toHomeUserBasic(u) : null))),
-        () => timedMs(() => getQuickActionCounts()),
-        () => timedMs(() => notifMod.getUnreadCounts(userId)),
-        () =>
-          timedMs(() =>
-            Message.count({
-              where: {
-                recipientId: userId,
-                readAt: null,
-                deletedForEveryoneAt: null,
-                deletedForRecipientAt: null
-              }
-            })
-          )
-      ],
-      lightConcurrency
-    );
+  // Two pairs, not one mixed array: mapWithConcurrency infers a single result
+  // type and tsc rejects the unread/count arms. Concurrency stays at 2.
+  const [userTimed, quickActionsTimed] = await Promise.all([
+    timedMs(() => User.findByPk(userId).then((u) => (u ? toHomeUserBasic(u) : null))),
+    timedMs(() => getQuickActionCounts())
+  ]);
+  const [unreadTimed, unreadMessagesTimed] = await Promise.all([
+    timedMs(() => notifMod.getUnreadCounts(userId)),
+    timedMs(() =>
+      Message.count({
+        where: {
+          recipientId: userId,
+          readAt: null,
+          deletedForEveryoneAt: null,
+          deletedForRecipientAt: null
+        }
+      })
+    )
+  ]);
   const stageAMs = Date.now() - stageAStarted;
 
   const userRow = userTimed.value;
