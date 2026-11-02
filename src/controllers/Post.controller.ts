@@ -512,3 +512,17 @@ export async function repostPost(req: AuthRequest, res: Response) {
     throw e;
   }
 }
+
+export async function undoRepost(req: AuthRequest, res: Response) {
+  if (!req.user) return error(res, "Unauthorized", 401);
+  const postId = parsePostId(req.params?.postId);
+  if (postId == null) return error(res, "Invalid post id", 400);
+  try {
+    const { postShareService } = await import("../services/PostShare.service");
+    const data = await postShareService.undoRepost(req.user.id, postId);
+    return success(res, data);
+  } catch (e: any) {
+    if (e?.status) return error(res, e.message, e.status);
+    throw e;
+  }
+}

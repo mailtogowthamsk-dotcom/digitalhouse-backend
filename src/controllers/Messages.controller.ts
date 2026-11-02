@@ -55,8 +55,9 @@ export async function send(req: AuthRequest, res: Response) {
     const message = await messagesService.sendMessage(
       req.user.id,
       body.recipientId,
-      body.body,
-      body.clientId
+      body.body ?? "",
+      body.clientId,
+      body.sharedPostId ?? null
     );
     return success(res, { message }, 201);
   } catch (e: any) {

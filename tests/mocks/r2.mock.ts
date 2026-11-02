@@ -13,7 +13,12 @@ export function createR2MockFns() {
 
   return {
     getPresignedPutUrl: vi.fn(async (key: string) => `https://r2.test.local/put/${key}`),
-    getPresignedGetUrl: vi.fn(async (key: string) => `https://r2.test.local/get/${key}?sig=test`),
+    getPresignedGetUrl: vi.fn(async (key: string, _ttl?: number, opts?: { responseCacheControl?: string }) => {
+      const cc = opts?.responseCacheControl
+        ? `&response-cache-control=${encodeURIComponent(opts.responseCacheControl)}`
+        : "";
+      return `https://r2.test.local/get/${key}?sig=test${cc}`;
+    }),
     getCdnPublicUrl: vi.fn((key: string) => `${cdn}/${key.replace(/^\//, "")}`),
     toPublicUrlIfR2: vi.fn((url: string | null | undefined) => {
       if (!url) return null;
@@ -37,9 +42,17 @@ export function createR2MockFns() {
     extractR2KeyFromUrl: vi.fn((u: string) => u.replace(/^https?:\/\/[^/]+\//, "")),
     normalizeR2ObjectKey: vi.fn((key: string) => key.replace(/^\//, "")),
     getR2ObjectBuffer: vi.fn(async () => Buffer.from("mock-object")),
-    getR2ObjectMetadata: vi.fn(async () => ({ contentType: "image/jpeg", byteSize: 12 })),
+    getR2ObjectMetadata: vi.fn(async () => ({
+      contentType: "image/jpeg",
+      byteSize: 12,
+      metadata: {}
+    })),
     putR2ObjectBuffer: vi.fn(async () => undefined),
+    putR2ObjectFromFile: vi.fn(async () => undefined),
+    listR2ObjectsByPrefix: vi.fn(async () => [] as Array<{ key: string; lastModified: Date | null }>),
+    copyR2Object: vi.fn(async () => undefined),
     deleteR2ObjectByKey: vi.fn(async () => undefined),
+    deleteR2ObjectByKeyOrThrow: vi.fn(async () => undefined),
     deleteR2ImageVariants: vi.fn(async () => undefined),
     deleteMediaArtifacts: vi.fn(async () => undefined),
     deleteR2ObjectIfStored: vi.fn(async () => undefined),

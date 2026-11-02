@@ -88,10 +88,10 @@ function buildKey(
   if (purpose === "support" || purpose === "chat") {
     return `${R2_PREFIX}/private/${purpose}/${userId}/${yyyy}/${mm}/${safeName}`;
   }
-  // Stories use local server disk via PUT /api/stories/upload — never R2.
+  // Stories use PUT /api/stories/upload (R2 or local) — never the generic media upload-url flow.
   if (module === "stories") {
     throw Object.assign(
-      new Error("Stories must be uploaded via /api/stories/upload (local server storage)"),
+      new Error("Stories must be uploaded via /api/stories/upload"),
       { status: 400 }
     );
   }
@@ -170,7 +170,7 @@ export async function generateUploadUrl(
 ): Promise<UploadUrlResult> {
   if (module === "stories") {
     throw Object.assign(
-      new Error("Stories must be uploaded via /api/stories/upload (local server storage)"),
+      new Error("Stories must be uploaded via /api/stories/upload"),
       { status: 400 }
     );
   }

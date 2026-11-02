@@ -107,6 +107,11 @@ function groupTitle(type: NotificationType, count: number, sampleName: string): 
   if (type === NOTIFICATION_TYPES.POST_LIKE) {
     return count === 1 ? `${sampleName} liked your post` : `${count} people liked your post`;
   }
+  if (type === NOTIFICATION_TYPES.POST_REPOST) {
+    return count === 1
+      ? `${sampleName} reposted your post`
+      : `${count} people reposted your post`;
+  }
   if (type === NOTIFICATION_TYPES.POST_COMMENT) {
     return count === 1 ? `${sampleName} commented on your post` : `${count} new comments on your post`;
   }

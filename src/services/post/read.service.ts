@@ -28,6 +28,7 @@ export async function deletePost(userId: number, postId: number): Promise<void> 
     (err as any).status = 403;
     throw err;
   }
+  const isRepost = Boolean(post.originalPostId);
   const mediaUrl = post.mediaUrl;
   const gallery =
     post.postType === "MARKETPLACE"
@@ -38,19 +39,20 @@ export async function deletePost(userId: number, postId: number): Promise<void> 
           ? [mediaUrl]
           : [];
   if (post.thumbnailUrl) gallery.push(post.thumbnailUrl);
-  if (post.postType === "JOB") {
+  if (!isRepost && post.postType === "JOB") {
     const { JobInterest } = await import("../../models");
     await JobInterest.destroy({ where: { postId } });
   }
-  if (post.postType === "HELP_REQUEST") {
+  if (!isRepost && post.postType === "HELP_REQUEST") {
     const { HelpOffer, HelpAppreciation } = await import("../../models");
     await HelpOffer.destroy({ where: { postId } });
     await HelpAppreciation.destroy({ where: { postId } });
   }
   await post.destroy();
-  await Promise.all(
-    [...new Set(gallery)].map((u) => deleteR2ImageVariants(u))
-  );
+  // Repost rows only reference the original's media keys — never delete R2 objects.
+  if (!isRepost) {
+    await Promise.all([...new Set(gallery)].map((u) => deleteR2ImageVariants(u)));
+  }
 }
 
 export async function getPost(userId: number, postId: number): Promise<PostDetailDto> {
@@ -68,22 +70,48 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     (err as any).status = 404;
     throw err;
   }
-  const author = (post as any).User as User;
-  await ensureCommunityVisible(post, userId);
-  const isOwner = post.userId === userId;
-  if (isHiddenFromPublic(post) && !isOwner) {
+
+  const wrapper = post;
+  const wrapperAuthor = (post as any).User as User;
+  let display = post;
+  let author = wrapperAuthor;
+  const isRepost = Boolean(post.originalPostId);
+
+  if (isRepost && post.originalPostId) {
+    const original = await Post.findByPk(post.originalPostId, {
+      include: [
+        {
+          association: "User",
+          attributes: ["id", "fullName", "profilePhoto", "status"],
+          required: true
+        }
+      ]
+    });
+    if (!original) {
+      const err = new Error("Post not found");
+      (err as any).status = 404;
+      throw err;
+    }
+    display = original;
+    author = (original as any).User as User;
+  }
+
+  await ensureCommunityVisible(wrapper, userId);
+  const contentPostId = display.id;
+  const isOwner = display.userId === userId;
+  if (isHiddenFromPublic(display) && !isOwner) {
     // Applications list shows ACTIVE jobs you applied to even when safety is still
     // PENDING/PROCESSING (quarantine). Allow those applicants to open the job again;
     // never surface BLOCKED content this way.
     let canApplicantView = false;
     if (
-      post.postType === "JOB" &&
-      post.moderationStatus === "ACTIVE" &&
-      post.safetyDecision !== "BLOCKED"
+      display.postType === "JOB" &&
+      display.moderationStatus === "ACTIVE" &&
+      display.safetyDecision !== "BLOCKED"
     ) {
       const { JobInterest } = await import("../../models");
       const application = await JobInterest.findOne({
-        where: { postId, fromUserId: userId },
+        where: { postId: contentPostId, fromUserId: userId },
         attributes: ["id"]
       });
       canApplicantView = Boolean(application);
@@ -95,54 +123,58 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     }
   }
 
-  if (post.postType === "MARKETPLACE") {
-    if (post.marketplaceStatus !== "LIVE" && !isOwner) {
+  if (display.postType === "MARKETPLACE") {
+    if (display.marketplaceStatus !== "LIVE" && !isOwner) {
       const err = new Error("Post not found");
       (err as any).status = 404;
       throw err;
     }
   }
 
-  const isHelp = post.postType === "HELP_REQUEST";
+  const isHelp = display.postType === "HELP_REQUEST";
   const { mediaService } = await import("../Media.service");
-  let storedMediaKey = post.mediaUrl;
-  let storedThumbKey = post.thumbnailUrl;
+  let storedMediaKey = display.mediaUrl;
+  let storedThumbKey = display.thumbnailUrl;
   if (storedMediaKey) {
     storedMediaKey =
-      (await mediaService.resolveLiveMediaKey(post.userId, storedMediaKey)) ?? storedMediaKey;
+      (await mediaService.resolveLiveMediaKey(display.userId, storedMediaKey)) ?? storedMediaKey;
   }
   if (storedThumbKey) {
     storedThumbKey =
-      (await mediaService.resolveLiveMediaKey(post.userId, storedThumbKey)) ?? storedThumbKey;
+      (await mediaService.resolveLiveMediaKey(display.userId, storedThumbKey)) ?? storedThumbKey;
   }
   const galleryParsed =
-    post.postType === "MARKETPLACE"
-      ? parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null)
+    display.postType === "MARKETPLACE"
+      ? parseMarketplaceGallery(display.marketplaceGallery, display.mediaUrl ?? null)
       : isHelp
-        ? parseHelpGallery(post.helpGallery, post.mediaUrl ?? null)
+        ? parseHelpGallery(display.helpGallery, display.mediaUrl ?? null)
         : [];
   const galleryRaw = galleryParsed.length
-    ? await mediaService.resolvePublicGalleryKeys(post.userId, galleryParsed)
+    ? await mediaService.resolvePublicGalleryKeys(display.userId, galleryParsed)
     : [];
-  const canSignPrivate = isOwner || post.safetyDecision === "SAFE";
-  const [likeCount, commentCount, likedByMe, savedByMe, mediaUrl, thumbnailUrl, authorDto, gallerySigned] =
+  const canSignPrivate = isOwner || display.safetyDecision === "SAFE";
+  const [likeCount, commentCount, likedByMe, savedByMe, mediaUrl, thumbnailUrl, authorDto, gallerySigned, myRepost] =
     await Promise.all([
-      PostLike.count({ where: { postId } }),
-      Comment.count({ where: { postId } }),
-      PostLike.findOne({ where: { postId, userId } }).then((r) => !!r),
-      SavedPost.findOne({ where: { postId, userId } }).then((r) => !!r),
+      PostLike.count({ where: { postId: contentPostId } }),
+      Comment.count({ where: { postId: contentPostId } }),
+      PostLike.findOne({ where: { postId: contentPostId, userId } }).then((r) => !!r),
+      SavedPost.findOne({ where: { postId: contentPostId, userId } }).then((r) => !!r),
       canSignPrivate && isPrivateR2Object(storedMediaKey)
         ? toPrivateSignedUrlIfR2(storedMediaKey)
         : Promise.resolve(toPublicUrlIfR2(storedMediaKey ?? null)),
       canSignPrivate && isPrivateR2Object(storedThumbKey)
         ? toPrivateSignedUrlIfR2(storedThumbKey)
         : Promise.resolve(toPublicUrlIfR2(storedThumbKey ?? null)),
-      toAuthorDto(author),
-      post.postType === "MARKETPLACE"
+      Promise.resolve(toAuthorDto(author)),
+      display.postType === "MARKETPLACE"
         ? publicMarketplaceGallery(galleryRaw, { signPrivate: canSignPrivate })
         : isHelp
           ? publicHelpGallery(galleryRaw, { signPrivate: canSignPrivate })
-          : Promise.resolve([] as string[])
+          : Promise.resolve([] as string[]),
+      Post.findOne({
+        where: { userId, originalPostId: contentPostId, moderationStatus: "ACTIVE" },
+        attributes: ["id"]
+      })
     ]);
 
   let jobExtra: {
@@ -154,14 +186,14 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     job_listing_status?: string;
     job_accepting_applications?: boolean;
   } = {};
-  if (post.postType === "JOB") {
+  if (display.postType === "JOB") {
     const JobInterestService = await import("../JobInterest.service");
     const { deriveJobListingStatus, isJobAcceptingApplications } = await import(
       "../../utils/jobListingStatus"
     );
     const [interestCount, myInterest] = await Promise.all([
-      JobInterestService.countJobInterests(postId),
-      JobInterestService.getMyJobInterest(userId, postId)
+      JobInterestService.countJobInterests(contentPostId),
+      JobInterestService.getMyJobInterest(userId, contentPostId)
     ]);
     jobExtra = {
       job_interest_count: interestCount,
@@ -169,8 +201,8 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
       job_can_message_poster: myInterest.canMessage,
       job_application_status: myInterest.status,
       job_interest_id: myInterest.interestId,
-      job_listing_status: deriveJobListingStatus(post),
-      job_accepting_applications: isJobAcceptingApplications(post)
+      job_listing_status: deriveJobListingStatus(display),
+      job_accepting_applications: isJobAcceptingApplications(display)
     };
   }
 
@@ -181,8 +213,8 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
   if (isHelp) {
     const { HelpOffer } = await import("../../models");
     const [helperCount, myOffer] = await Promise.all([
-      HelpOffer.count({ where: { postId, status: "ACTIVE" } }),
-      HelpOffer.findOne({ where: { postId, fromUserId: userId, status: "ACTIVE" } })
+      HelpOffer.count({ where: { postId: contentPostId, status: "ACTIVE" } }),
+      HelpOffer.findOne({ where: { postId: contentPostId, fromUserId: userId, status: "ACTIVE" } })
     ]);
     helpExtra = {
       help_helper_count: helperCount,
@@ -190,57 +222,44 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     };
   }
 
-  let repostExtra: {
-    is_repost?: boolean;
-    original_post_id?: number | null;
-    original_author?: PostAuthorDto | null;
-  } = {};
-  if (post.originalPostId) {
-    const original = await Post.findByPk(post.originalPostId, {
-      include: [
-        { association: "User", attributes: ["id", "fullName", "profilePhoto", "status"], required: true }
-      ]
-    });
-    const originalUser = original ? ((original as any).User as User) : null;
-    repostExtra = {
-      is_repost: true,
-      original_post_id: post.originalPostId,
-      original_author: originalUser ? toAuthorDto(originalUser) : null
-    };
-  }
+  const wrapperAuthorDto = isRepost ? toAuthorDto(wrapperAuthor) : null;
 
   return {
-    id: post.id,
-    user_id: post.userId,
-    post_type: post.postType,
-    title: post.title,
-    description: post.description ?? null,
-    ...mediaMetaFromPost(post, mediaUrl, thumbnailUrl),
-    pinned: post.pinned,
-    urgent: post.urgent,
-    meetup_at: post.meetupAt ? post.meetupAt.toISOString() : null,
-    job_status: post.jobStatus ?? null,
-    ...jobFieldsFromPost(post),
+    id: wrapper.id,
+    user_id: display.userId,
+    post_type: display.postType,
+    title: display.title,
+    description: display.description ?? null,
+    ...mediaMetaFromPost(display, mediaUrl, thumbnailUrl),
+    pinned: display.pinned,
+    urgent: display.urgent,
+    meetup_at: display.meetupAt ? display.meetupAt.toISOString() : null,
+    job_status: display.jobStatus ?? null,
+    ...jobFieldsFromPost(display),
     ...marketplaceFieldsFromPost(
-      post,
-      post.postType === "MARKETPLACE" ? gallerySigned : undefined
+      display,
+      display.postType === "MARKETPLACE" ? gallerySigned : undefined
     ),
     ...helpFieldsFromPost(
-      post,
+      display,
       isHelp ? gallerySigned : undefined
     ),
-    ...visibilityFieldsFromPost(post),
-    created_at: post.createdAt.toISOString(),
-    updated_at: post.updatedAt.toISOString(),
+    ...visibilityFieldsFromPost(display),
+    created_at: display.createdAt.toISOString(),
+    updated_at: display.updatedAt.toISOString(),
     author: authorDto,
     like_count: likeCount,
     comment_count: commentCount,
     liked_by_me: likedByMe,
     saved_by_me: savedByMe,
-    safety_decision: isOwner ? post.safetyDecision : undefined,
-    safety_category: isOwner ? post.safetyCategory ?? null : undefined,
+    safety_decision: isOwner ? display.safetyDecision : undefined,
+    safety_category: isOwner ? display.safetyCategory ?? null : undefined,
     ...jobExtra,
     ...helpExtra,
-    ...repostExtra
+    is_repost: isRepost,
+    original_post_id: wrapper.originalPostId ?? null,
+    original_author: isRepost ? authorDto : null,
+    reposted_by: wrapperAuthorDto,
+    reposted_by_me: Boolean(myRepost)
   };
 }

@@ -136,7 +136,8 @@ export async function repostPost(userId: number, postId: number): Promise<PostDe
     attributes: ["id", "moderationStatus", "deletedAt", "safetyDecision", "mediaVersion"]
   });
   if (existing) {
-    if (existing.moderationStatus === "SOFT_DELETED" || existing.deletedAt) {
+    const wasInactive = existing.moderationStatus === "SOFT_DELETED" || Boolean(existing.deletedAt);
+    if (wasInactive) {
       await existing.update({
         moderationStatus: "ACTIVE",
         deletedAt: null,
@@ -146,68 +147,100 @@ export async function repostPost(userId: number, postId: number): Promise<PostDe
         mediaVersion: root.mediaVersion || existing.mediaVersion || 1,
         moderatedMediaVersion: root.safetyDecision === "SAFE" ? root.mediaVersion || 1 : null
       } as any);
+      await publishRepost(userId, existing, root);
     }
     return postService.getPost(userId, existing.id);
   }
 
-  const repost = await Post.create({
-    userId,
-    originalPostId: rootId,
-    postType: root.postType,
-    visibility: root.visibility ?? "PUBLIC",
-    title: root.title,
-    description: root.description,
-    mediaUrl: root.mediaUrl,
-    mediaType: root.mediaType,
-    thumbnailUrl: root.thumbnailUrl,
-    videoDuration: root.videoDuration,
-    mimeType: root.mimeType,
-    fileSize: root.fileSize,
-    pinned: false,
-    urgent: false,
-    meetupAt: root.meetupAt,
-    jobStatus: root.jobStatus,
-    jobCompany: root.jobCompany,
-    jobLocation: root.jobLocation,
-    jobEmploymentType: root.jobEmploymentType,
-    jobSalaryMin: root.jobSalaryMin,
-    jobSalaryMax: root.jobSalaryMax,
-    marketplaceStatus: root.postType === "MARKETPLACE" ? root.marketplaceStatus : null,
-    marketplaceIntent: root.marketplaceIntent,
-    marketplaceCategory: root.marketplaceCategory,
-    marketplaceCondition: root.marketplaceCondition,
-    marketplacePrice: root.marketplacePrice,
-    marketplaceNegotiable: root.marketplaceNegotiable,
-    marketplaceDistrict: root.marketplaceDistrict,
-    marketplaceAdminNote: null,
-    marketplaceExpiresAt: root.marketplaceExpiresAt,
-    marketplaceExpiryReminder: null,
-    marketplaceGallery: root.marketplaceGallery,
-    marketplaceFeatured: false,
-    marketplaceFeaturedAt: null,
-    helpStatus: root.helpStatus,
-    helpCategory: root.helpCategory,
-    helpUrgency: root.helpUrgency,
-    helpLocation: root.helpLocation,
-    helpContactPhone: root.helpContactPhone,
-    helpGallery: root.helpGallery,
-    safetyDecision: root.safetyDecision === "SAFE" ? "SAFE" : "PENDING",
-    safetyCategory: root.safetyCategory,
-    mediaVersion: root.mediaVersion || 1,
-    moderatedMediaVersion: root.safetyDecision === "SAFE" ? root.mediaVersion || 1 : null,
-    safetyPolicyVersion: root.safetyPolicyVersion
-  } as any);
+  let repost: Post;
+  try {
+    repost = await Post.create({
+      userId,
+      originalPostId: rootId,
+      postType: root.postType,
+      visibility: root.visibility ?? "PUBLIC",
+      title: root.title,
+      description: root.description,
+      mediaUrl: root.mediaUrl,
+      mediaType: root.mediaType,
+      thumbnailUrl: root.thumbnailUrl,
+      videoDuration: root.videoDuration,
+      mimeType: root.mimeType,
+      fileSize: root.fileSize,
+      pinned: false,
+      urgent: false,
+      meetupAt: root.meetupAt,
+      jobStatus: root.jobStatus,
+      jobCompany: root.jobCompany,
+      jobLocation: root.jobLocation,
+      jobEmploymentType: root.jobEmploymentType,
+      jobSalaryMin: root.jobSalaryMin,
+      jobSalaryMax: root.jobSalaryMax,
+      marketplaceStatus: root.postType === "MARKETPLACE" ? root.marketplaceStatus : null,
+      marketplaceIntent: root.marketplaceIntent,
+      marketplaceCategory: root.marketplaceCategory,
+      marketplaceCondition: root.marketplaceCondition,
+      marketplacePrice: root.marketplacePrice,
+      marketplaceNegotiable: root.marketplaceNegotiable,
+      marketplaceDistrict: root.marketplaceDistrict,
+      marketplaceAdminNote: null,
+      marketplaceExpiresAt: root.marketplaceExpiresAt,
+      marketplaceExpiryReminder: null,
+      marketplaceGallery: root.marketplaceGallery,
+      marketplaceFeatured: false,
+      marketplaceFeaturedAt: null,
+      helpStatus: root.helpStatus,
+      helpCategory: root.helpCategory,
+      helpUrgency: root.helpUrgency,
+      helpLocation: root.helpLocation,
+      helpContactPhone: root.helpContactPhone,
+      helpGallery: root.helpGallery,
+      safetyDecision: root.safetyDecision === "SAFE" ? "SAFE" : "PENDING",
+      safetyCategory: root.safetyCategory,
+      mediaVersion: root.mediaVersion || 1,
+      moderatedMediaVersion: root.safetyDecision === "SAFE" ? root.mediaVersion || 1 : null,
+      safetyPolicyVersion: root.safetyPolicyVersion
+    } as any);
+  } catch (e: unknown) {
+    const code = (e as { parent?: { code?: string }; name?: string })?.parent?.code
+      ?? (e as { name?: string })?.name;
+    if (code === "ER_DUP_ENTRY" || code === "SequelizeUniqueConstraintError") {
+      const again = await Post.findOne({ where: { userId, originalPostId: rootId } });
+      if (again) return postService.getPost(userId, again.id);
+    }
+    throw e;
+  }
 
-  const detail = await postService.getPost(userId, repost.id);
+  await publishRepost(userId, repost, root);
+  return postService.getPost(userId, repost.id);
+}
+
+async function publishRepost(userId: number, repost: Post, root: Post): Promise<void> {
   if (repost.safetyDecision === "SAFE") {
-    const { User: UserModel } = await import("../models");
-    const me = await UserModel.findByPk(userId, { attributes: ["community"] });
+    const me = await User.findByPk(userId, { attributes: ["community"] });
     emitFeedNewPost(me?.community ?? null, repost.id);
   }
-  return detail;
+  void NotificationService.notifyPostRepost(root.userId, userId, root.id, root.title).catch(() => {});
+}
+
+/**
+ * Remove the current user's repost wrapper for this post (original or wrapper id).
+ * Does not delete the original post or its media.
+ */
+export async function undoRepost(userId: number, postId: number): Promise<{ undone: true }> {
+  const source = await Post.findByPk(postId, { attributes: ["id", "originalPostId"] });
+  if (!source) serviceError("Post not found", 404, "POST_NOT_FOUND");
+  const rootId = resolveOriginalPostId(source);
+  const wrapper = await Post.findOne({
+    where: { userId, originalPostId: rootId }
+  });
+  if (!wrapper) serviceError("You have not reposted this post", 404, "REPOST_NOT_FOUND");
+  await postService.deletePost(userId, wrapper.id);
+  return { undone: true };
 }
 
 export const postShareService = {
   sharePostToConnections,
-  repostPost
+  repostPost,
+  undoRepost
 };

@@ -509,6 +509,26 @@ export async function notifyPostShared(
   });
 }
 
+export async function notifyPostRepost(
+  postOwnerId: number,
+  actorId: number,
+  postId: number,
+  postTitle: string
+): Promise<void> {
+  if (postOwnerId === actorId) return;
+  const name = await senderName(actorId);
+  await Platform.dispatchNotification({
+    userId: postOwnerId,
+    type: NOTIFICATION_TYPES.POST_REPOST,
+    title: `${name} reposted your post`,
+    body: postTitle.slice(0, 80),
+    actorUserId: actorId,
+    actionType: NOTIFICATION_ACTIONS.OPEN_POST,
+    actionTargetId: postId,
+    groupKey: `post_repost:${postId}`
+  });
+}
+
 export async function notifyPostComment(
   postOwnerId: number,
   commenterId: number,

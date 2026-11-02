@@ -9,6 +9,7 @@ import {
   STORY_VIDEO_MIN_DURATION_SEC
 } from "../constants/stories.constants";
 import type { User } from "../models";
+import { storyGatewayCacheHeaders } from "../config/storiesCache.config";
 
 type AuthRequest = Request & {
   user?: User;
@@ -99,8 +100,8 @@ export async function create(req: AuthRequest, res: Response) {
 
 /**
  * PUT /api/stories/upload
- * Body = raw file bytes. Stored on the API server disk (not R2).
- * Header: Content-Type = image/* | video/mp4
+ * Body = raw file bytes. Stored on R2 (default) or local disk when
+ * STORIES_STORAGE_BACKEND=local. Header: Content-Type = image/* | video/mp4
  */
 export async function uploadMedia(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
@@ -221,12 +222,28 @@ async function streamStoryMedia(req: AuthRequest, res: Response, kind: "file" | 
       e: typeof req.query.e === "string" ? req.query.e : undefined,
       s: typeof req.query.s === "string" ? req.query.s : undefined
     });
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    const cacheHeaders = storyGatewayCacheHeaders();
+    for (const [name, value] of Object.entries(cacheHeaders)) {
+      res.setHeader(name, value);
+    }
+    if (opened.delivery === "r2-redirect") {
+      // Live HMAC + connection check already passed. Object bytes come from R2
+      // (Range/seek supported by R2). Set Location raw — res.redirect() can
+      // re-encode presigned query strings and break the signature.
+      // Do not cache this 302: Location is a viewer-specific signed URL.
+      res.status(302);
+      res.setHeader("Location", opened.redirectUrl);
+      return res.end();
+    }
     res.setHeader("Content-Type", opened.mimeType);
     res.setHeader("Content-Length", String(opened.byteSize));
-    res.setHeader("Cache-Control", "private, max-age=300");
-    res.setHeader("X-Content-Type-Options", "nosniff");
     return res.sendFile(opened.absolutePath);
   } catch (e: any) {
+    const cacheHeaders = storyGatewayCacheHeaders();
+    for (const [name, value] of Object.entries(cacheHeaders)) {
+      res.setHeader(name, value);
+    }
     if (e?.status) return error(res, e.message, e.status);
     throw e;
   }

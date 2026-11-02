@@ -517,10 +517,6 @@ export async function buildFeedItemsFromPosts(
   const postIds = pagePosts.map((p) => p.id);
   if (postIds.length === 0) return [];
 
-  // Use denormalized likeCount/commentCount on posts — skip scanning post_likes/comments.
-  // P4A: one UNION ALL engagement round-trip (was 5 parallel findAll → pool contention).
-  const jobPostIds = pagePosts.filter((p) => p.postType === "JOB").map((p) => p.id);
-
   const originalIds = [
     ...new Set(
       pagePosts
@@ -530,34 +526,9 @@ export async function buildFeedItemsFromPosts(
   ];
   const { mediaService } = await import("./Media.service");
 
-  // Batch-resolve all distinct media keys for this page (exact objectKey IN + bounded fallback).
-  const mediaResolveJobs: Array<{ userId: number; urlOrKey: string }> = [];
-  const galleryByPostId = new Map<number, string[]>();
-  for (const p of pagePosts) {
-    if (p.mediaUrl) mediaResolveJobs.push({ userId: p.userId, urlOrKey: p.mediaUrl });
-    if (p.thumbnailUrl) mediaResolveJobs.push({ userId: p.userId, urlOrKey: p.thumbnailUrl });
-    const galleryParsed =
-      p.postType === "MARKETPLACE"
-        ? parseMarketplaceGallery(p.marketplaceGallery, p.mediaUrl ?? null)
-        : p.postType === "HELP_REQUEST"
-          ? parseHelpGallery(p.helpGallery, p.mediaUrl ?? null)
-          : [];
-    galleryByPostId.set(p.id, galleryParsed);
-    for (const g of galleryParsed) {
-      mediaResolveJobs.push({ userId: p.userId, urlOrKey: g });
-    }
-  }
-
-  // P4G: engagement, original-post rows, and media family lookup are independent.
-  // Collapses sequential RTT waves at the end of personalized feed (after stories usually finishes).
-  const [engagement, originalPosts, liveKeyMap] = await Promise.all([
-    hydrateFeedEngagement({
-      userId: currentUserId,
-      postIds,
-      jobPostIds
-    }),
+  const originalPosts =
     originalIds.length > 0
-      ? Post.findAll({
+      ? await Post.findAll({
           where: {
             id: { [Op.in]: originalIds },
             moderationStatus: "ACTIVE",
@@ -566,14 +537,74 @@ export async function buildFeedItemsFromPosts(
           include: [
             {
               association: "User",
-              attributes: ["id", "fullName", "profilePhoto", "status"],
+              attributes: ["id", "fullName", "profilePhoto", "status", "username"],
               required: true
             }
           ]
         })
-      : Promise.resolve([] as Post[]),
-    mediaService.resolveLiveMediaKeysBatch(mediaResolveJobs)
+      : ([] as Post[]);
+  const originalById = new Map(originalPosts.map((op) => [op.id, op]));
+
+  // Hide wrappers whose original is gone. Ranking over-fetches, so a short page is OK.
+  const visiblePosts = pagePosts.filter(
+    (p) => !p.originalPostId || originalById.has(p.originalPostId)
+  );
+  if (visiblePosts.length === 0) return [];
+
+  const displayOf = (p: Post): Post =>
+    p.originalPostId ? originalById.get(p.originalPostId) ?? p : p;
+
+  const displayIds = [...new Set(visiblePosts.map((p) => displayOf(p).id))];
+  const jobPostIds = [
+    ...new Set(visiblePosts.map((p) => displayOf(p)).filter((s) => s.postType === "JOB").map((s) => s.id))
+  ];
+  const rootIdsForMine = [
+    ...new Set(
+      visiblePosts.map((p) => (p.originalPostId ? p.originalPostId : p.id)).filter((id) => id > 0)
+    )
+  ];
+
+  // Batch-resolve all distinct media keys for this page (exact objectKey IN + bounded fallback).
+  const mediaResolveJobs: Array<{ userId: number; urlOrKey: string }> = [];
+  const galleryByPostId = new Map<number, string[]>();
+  for (const p of visiblePosts) {
+    const source = displayOf(p);
+    const ownerId = source.userId;
+    if (source.mediaUrl) mediaResolveJobs.push({ userId: ownerId, urlOrKey: source.mediaUrl });
+    if (source.thumbnailUrl) mediaResolveJobs.push({ userId: ownerId, urlOrKey: source.thumbnailUrl });
+    const galleryParsed =
+      source.postType === "MARKETPLACE"
+        ? parseMarketplaceGallery(source.marketplaceGallery, source.mediaUrl ?? null)
+        : source.postType === "HELP_REQUEST"
+          ? parseHelpGallery(source.helpGallery, source.mediaUrl ?? null)
+          : [];
+    galleryByPostId.set(p.id, galleryParsed);
+    for (const g of galleryParsed) {
+      mediaResolveJobs.push({ userId: ownerId, urlOrKey: g });
+    }
+  }
+
+  const [engagement, liveKeyMap, myRepostRows] = await Promise.all([
+    hydrateFeedEngagement({
+      userId: currentUserId,
+      postIds: displayIds,
+      jobPostIds
+    }),
+    mediaService.resolveLiveMediaKeysBatch(mediaResolveJobs),
+    rootIdsForMine.length > 0
+      ? Post.findAll({
+          where: {
+            userId: currentUserId,
+            originalPostId: { [Op.in]: rootIdsForMine },
+            moderationStatus: "ACTIVE"
+          },
+          attributes: ["originalPostId"]
+        })
+      : Promise.resolve([] as Post[])
   ]);
+  const myRepostRootIds = new Set(
+    myRepostRows.map((r) => Number(r.originalPostId)).filter((id) => id > 0)
+  );
 
   const {
     likedSet,
@@ -586,13 +617,13 @@ export async function buildFeedItemsFromPosts(
   const likeMap: Record<number, number> = {};
   const commentMap: Record<number, number> = {};
   const helpHelperMap: Record<number, number> = {};
-  for (const p of pagePosts) {
-    likeMap[p.id] = Number((p as any).likeCount ?? 0) || 0;
-    commentMap[p.id] = Number((p as any).commentCount ?? 0) || 0;
-    helpHelperMap[p.id] = helpCountsFromDb[p.id] ?? 0;
+  for (const p of visiblePosts) {
+    const source = displayOf(p);
+    likeMap[source.id] = Number((source as any).likeCount ?? 0) || 0;
+    commentMap[source.id] = Number((source as any).commentCount ?? 0) || 0;
+    helpHelperMap[source.id] = helpCountsFromDb[source.id] ?? 0;
   }
 
-  const originalById = new Map(originalPosts.map((op) => [op.id, op]));
   const resolveFromMap = (userId: number, key: string | null | undefined): string | null => {
     if (!key) return null;
     const ck = `${userId}::${key.trim()}`;
@@ -600,50 +631,57 @@ export async function buildFeedItemsFromPosts(
   };
 
   return Promise.all(
-    pagePosts.map(async (p) => {
-      const author = (p as any).User as User;
+    visiblePosts.map(async (p) => {
+      const source = displayOf(p);
+      const isRepost = Boolean(p.originalPostId);
+      const wrapperAuthor = (p as any).User as User;
+      const author = ((source as any).User as User) ?? wrapperAuthor;
       const rawScore = Number((p as any).get?.("engagementScore") ?? 0);
       const engagementScore = Number.isFinite(rawScore) ? rawScore : 0;
+      const mediaOwnerId = source.userId;
       // posts.media_url may still point at deleted staging; media_files.objectKey is canonical.
-      let storedMediaKey = p.mediaUrl;
-      let storedThumbKey = p.thumbnailUrl;
+      let storedMediaKey = source.mediaUrl;
+      let storedThumbKey = source.thumbnailUrl;
       if (storedMediaKey) {
-        storedMediaKey = resolveFromMap(p.userId, storedMediaKey) ?? storedMediaKey;
+        storedMediaKey = resolveFromMap(mediaOwnerId, storedMediaKey) ?? storedMediaKey;
       }
       if (storedThumbKey) {
-        storedThumbKey = resolveFromMap(p.userId, storedThumbKey) ?? storedThumbKey;
+        storedThumbKey = resolveFromMap(mediaOwnerId, storedThumbKey) ?? storedThumbKey;
       }
       const galleryParsed = galleryByPostId.get(p.id) ?? [];
       const gallerySeen = new Set<string>();
       const galleryRaw: string[] = [];
       for (const raw of galleryParsed) {
-        const k = resolveFromMap(p.userId, raw) ?? raw;
+        const k = resolveFromMap(mediaOwnerId, raw) ?? raw;
         const norm = k.trim();
         if (!norm || gallerySeen.has(norm)) continue;
         gallerySeen.add(norm);
         galleryRaw.push(k);
       }
-      const ownerView = p.userId === currentUserId;
+      const ownerView = source.userId === currentUserId;
       // SAFE listings may still have un-promoted quarantine gallery keys — sign for everyone.
-      const canSignPrivate = ownerView || p.safetyDecision === "SAFE";
+      const canSignPrivate = ownerView || source.safetyDecision === "SAFE";
       const resolveFeedMedia = (url: string | null | undefined) =>
         canSignPrivate && isPrivateR2Object(url)
           ? toPrivateSignedUrlIfR2(url)
           : Promise.resolve(toPublicUrlIfR2(url ?? null));
-      const [mediaUrl, thumbnailUrl, profileImage, gallery] = await Promise.all([
+      const [mediaUrl, thumbnailUrl, profileImage, gallery, wrapperProfileImage] = await Promise.all([
         resolveFeedMedia(storedMediaKey),
         resolveFeedMedia(storedThumbKey),
         author ? Promise.resolve(toPublicUrlIfR2(author.profilePhoto ?? null)) : Promise.resolve(null),
         galleryRaw.length
-          ? p.postType === "MARKETPLACE"
+          ? source.postType === "MARKETPLACE"
             ? publicMarketplaceGallery(galleryRaw, { signPrivate: canSignPrivate })
             : publicHelpGallery(galleryRaw, { signPrivate: canSignPrivate })
-          : Promise.resolve([] as string[])
+          : Promise.resolve([] as string[]),
+        isRepost && wrapperAuthor
+          ? Promise.resolve(toPublicUrlIfR2(wrapperAuthor.profilePhoto ?? null))
+          : Promise.resolve(null)
       ]);
       const mediaType = resolvePostMediaType({
         mediaUrl: storedMediaKey,
-        mediaType: p.mediaType as any,
-        mimeType: p.mimeType
+        mediaType: source.mediaType as any,
+        mimeType: source.mimeType
       });
 
       // Bandwidth: images expose thumb/medium/full; feed clients should use medium/thumb.
@@ -672,84 +710,81 @@ export async function buildFeedItemsFromPosts(
         feedThumb = thumbnailUrl || mediaUrlThumb;
       }
 
-      const original = p.originalPostId ? originalById.get(p.originalPostId) : null;
-      const originalUser = original ? ((original as any).User as User) : null;
-      const originalProfileImage = originalUser
-        ? (await toPublicUrlIfR2(originalUser.profilePhoto ?? null))
-        : null;
+      const rootId = source.id;
+      const authorDto = author
+        ? { ...toFeedAuthor(author), profileImage: profileImage ?? null }
+        : { userId: 0, username: null, name: "Unknown", profileImage: null, verified: false };
       return {
         postId: p.id,
-        postType: p.postType,
-        visibility: (p as any).visibility ?? "PUBLIC",
-        title: p.title,
-        description: p.description ?? null,
+        postType: source.postType,
+        visibility: (source as any).visibility ?? "PUBLIC",
+        title: source.title,
+        description: source.description ?? null,
         mediaUrl: feedMediaUrl,
         mediaType,
         mediaUrlThumb,
         mediaUrlMedium,
         mediaUrlFull,
         thumbnailUrl: feedThumb,
-        videoDuration: p.videoDuration ?? null,
-        mimeType: p.mimeType ?? null,
-        fileSize: p.fileSize ?? null,
-        createdAt: p.createdAt.toISOString(),
-        author: author
-          ? { ...toFeedAuthor(author), profileImage: profileImage ?? null }
-          : { userId: 0, username: null, name: "Unknown", profileImage: null, verified: false },
-        isRepost: Boolean(p.originalPostId),
+        videoDuration: source.videoDuration ?? null,
+        mimeType: source.mimeType ?? null,
+        fileSize: source.fileSize ?? null,
+        createdAt: source.createdAt.toISOString(),
+        author: authorDto,
+        isRepost,
         originalPostId: p.originalPostId ?? null,
-        originalAuthor: originalUser
-          ? {
-              ...toFeedAuthor(originalUser),
-              profileImage: originalProfileImage
-            }
-          : null,
-        counts: { likes: likeMap[p.id] ?? 0, comments: commentMap[p.id] ?? 0 },
-        likedByMe: likedSet.has(p.id),
-        savedByMe: savedSet.has(p.id),
+        originalAuthor: isRepost ? authorDto : null,
+        repostedBy:
+          isRepost && wrapperAuthor
+            ? { ...toFeedAuthor(wrapperAuthor), profileImage: wrapperProfileImage }
+            : null,
+        repostedByMe: myRepostRootIds.has(rootId),
+        counts: { likes: likeMap[rootId] ?? 0, comments: commentMap[rootId] ?? 0 },
+        likedByMe: likedSet.has(rootId),
+        savedByMe: savedSet.has(rootId),
         engagementScore: Math.round(engagementScore * 100) / 100,
         isTrending: engagementScore >= TRENDING_SCORE_THRESHOLD,
-        jobStatus: p.jobStatus ?? null,
-        jobCompany: p.jobCompany ?? null,
-        jobCategory: p.jobCategory ?? null,
-        jobLocation: p.jobLocation ?? null,
-        jobEmploymentType: p.jobEmploymentType ?? null,
-        jobWorkMode: p.jobWorkMode ?? null,
-        jobExperience: p.jobExperience ?? null,
-        jobSkills: Array.isArray(p.jobSkills) ? (p.jobSkills as string[]) : null,
-        jobSalaryMin: p.jobSalaryMin ?? null,
-        jobSalaryMax: p.jobSalaryMax ?? null,
-        jobApplicationDeadline: p.jobApplicationDeadline
-          ? p.jobApplicationDeadline.toISOString()
+        jobStatus: source.jobStatus ?? null,
+        jobCompany: source.jobCompany ?? null,
+        jobCategory: source.jobCategory ?? null,
+        jobLocation: source.jobLocation ?? null,
+        jobEmploymentType: source.jobEmploymentType ?? null,
+        jobWorkMode: source.jobWorkMode ?? null,
+        jobExperience: source.jobExperience ?? null,
+        jobSkills: Array.isArray(source.jobSkills) ? (source.jobSkills as string[]) : null,
+        jobSalaryMin: source.jobSalaryMin ?? null,
+        jobSalaryMax: source.jobSalaryMax ?? null,
+        jobApplicationDeadline: source.jobApplicationDeadline
+          ? source.jobApplicationDeadline.toISOString()
           : null,
-        jobVacancies: p.jobVacancies ?? null,
+        jobVacancies: source.jobVacancies ?? null,
         jobApplicationCount:
-          p.postType === "JOB" ? jobApplicationCountByPost[p.id] ?? 0 : undefined,
+          source.postType === "JOB" ? jobApplicationCountByPost[rootId] ?? 0 : undefined,
         jobInterestedByMe:
-          p.postType === "JOB" ? jobInterestStatusByPost.has(p.id) : undefined,
+          source.postType === "JOB" ? jobInterestStatusByPost.has(rootId) : undefined,
         jobApplicationStatus:
-          p.postType === "JOB" ? jobInterestStatusByPost.get(p.id) ?? null : undefined,
-        marketplaceStatus: p.marketplaceStatus ?? null,
-        marketplaceIntent: p.marketplaceIntent ?? null,
-        marketplaceCategory: p.marketplaceCategory ?? null,
-        marketplaceCondition: p.marketplaceCondition ?? null,
-        marketplacePrice: p.marketplacePrice ?? null,
-        marketplaceNegotiable: Boolean(p.marketplaceNegotiable),
-        marketplaceDistrict: p.marketplaceDistrict ?? null,
-        marketplaceExpiresAt: p.marketplaceExpiresAt
-          ? p.marketplaceExpiresAt.toISOString()
+          source.postType === "JOB" ? jobInterestStatusByPost.get(rootId) ?? null : undefined,
+        marketplaceStatus: source.marketplaceStatus ?? null,
+        marketplaceIntent: source.marketplaceIntent ?? null,
+        marketplaceCategory: source.marketplaceCategory ?? null,
+        marketplaceCondition: source.marketplaceCondition ?? null,
+        marketplacePrice: source.marketplacePrice ?? null,
+        marketplaceNegotiable: Boolean(source.marketplaceNegotiable),
+        marketplaceDistrict: source.marketplaceDistrict ?? null,
+        marketplaceExpiresAt: source.marketplaceExpiresAt
+          ? source.marketplaceExpiresAt.toISOString()
           : null,
-        marketplaceGallery: p.postType === "MARKETPLACE" ? gallery : [],
-        marketplaceFeatured: Boolean(p.marketplaceFeatured),
+        marketplaceGallery: source.postType === "MARKETPLACE" ? gallery : [],
+        marketplaceFeatured: Boolean(source.marketplaceFeatured),
         marketplacePhotoCount:
-          p.postType === "MARKETPLACE" ? gallery.length || (mediaUrl ? 1 : 0) : 0,
-        helpStatus: p.helpStatus ?? null,
-        helpCategory: p.helpCategory ?? null,
-        helpUrgency: p.helpUrgency ?? null,
-        helpLocation: p.helpLocation ?? null,
-        helpExpiresAt: p.helpExpiresAt ? p.helpExpiresAt.toISOString() : null,
-        helpGallery: p.postType === "HELP_REQUEST" ? gallery : [],
-        helpHelperCount: p.postType === "HELP_REQUEST" ? helpHelperMap[p.id] ?? 0 : 0
+          source.postType === "MARKETPLACE" ? gallery.length || (mediaUrl ? 1 : 0) : 0,
+        helpStatus: source.helpStatus ?? null,
+        helpCategory: source.helpCategory ?? null,
+        helpUrgency: source.helpUrgency ?? null,
+        helpLocation: source.helpLocation ?? null,
+        helpExpiresAt: source.helpExpiresAt ? source.helpExpiresAt.toISOString() : null,
+        helpGallery: source.postType === "HELP_REQUEST" ? gallery : [],
+        helpHelperCount: source.postType === "HELP_REQUEST" ? helpHelperMap[rootId] ?? 0 : 0
       };
     })
   );

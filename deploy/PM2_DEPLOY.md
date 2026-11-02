@@ -75,9 +75,12 @@ pm2 status
 
 Redis optional later: `REDIS_URL=redis://127.0.0.1:6379` → **2** API workers (not 4 — only 4 cores total).
 
-**Stories local media:** with `API_INSTANCES>1`, set `STORIES_STORAGE_DIR` to a **shared** mount,
-`STORIES_SHARED_STORAGE_ACK=true`, and the same `STORIES_MEDIA_SIGNING_SECRET` on every API process.
-Without shared storage, keep API instances at **1**.
+**Stories media:** new uploads use private R2 (`STORIES_STORAGE_BACKEND=r2`, default). Playback
+is an HMAC gateway 302 to a short-lived R2 GET — video bytes do not traverse the API origin.
+Keep `STORIES_STORAGE_DIR` for probe temp files and leftover `local/stories/` objects.
+All API nodes must share `STORIES_MEDIA_SIGNING_SECRET`. To roll back new uploads to disk,
+set `STORIES_STORAGE_BACKEND=local`; then `API_INSTANCES>1` still needs a shared mount and
+`STORIES_SHARED_STORAGE_ACK=true`.
 
 ```bash
 pm2 logs --lines 40 | grep MYSQL_POOL

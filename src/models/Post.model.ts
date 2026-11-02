@@ -276,6 +276,11 @@ Post.init(
       {
         name: "idx_posts_safety_moderation_created",
         fields: ["safetyDecision", "moderationStatus", "createdAt"]
+      },
+      {
+        name: "uniq_posts_user_original",
+        unique: true,
+        fields: ["userId", "originalPostId"]
       }
     ]
   }

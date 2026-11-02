@@ -282,7 +282,7 @@ async function handleConnection(io: Server, socket: import("socket.io").Socket):
   socket.on(
     "message:send",
     async (
-      payload: { recipientId: number; body: string; clientId?: string },
+      payload: { recipientId: number; body: string; clientId?: string; sharedPostId?: number },
       cb?: (resp: {
         ok: boolean;
         messageId?: number;
@@ -294,12 +294,15 @@ async function handleConnection(io: Server, socket: import("socket.io").Socket):
         const recipientId = Number(payload?.recipientId);
         const body = (payload?.body ?? "").trim();
         const clientId = (payload?.clientId ?? "").trim() || null;
+        const sharedPostRaw = Number(payload?.sharedPostId);
+        const sharedPostId =
+          Number.isFinite(sharedPostRaw) && sharedPostRaw > 0 ? sharedPostRaw : null;
 
         if (!recipientId || recipientId === userId) {
           cb?.({ ok: false, error: "Invalid recipient" });
           return;
         }
-        if (!body) {
+        if (!body && !sharedPostId) {
           cb?.({ ok: false, error: "Message cannot be empty" });
           return;
         }
@@ -312,7 +315,8 @@ async function handleConnection(io: Server, socket: import("socket.io").Socket):
           userId,
           recipientId,
           body,
-          clientId ?? undefined
+          clientId ?? undefined,
+          sharedPostId
         );
         chatLog("message:send ok", dto.id, "→", recipientId);
         cb?.({ ok: true, messageId: dto.id, message: dto });

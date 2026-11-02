@@ -100,6 +100,9 @@ export type FeedItemDto = {
   isRepost?: boolean;
   originalPostId?: number | null;
   originalAuthor?: FeedAuthorDto | null;
+  /** Wrapper author — only set on repost feed cards. */
+  repostedBy?: FeedAuthorDto | null;
+  repostedByMe?: boolean;
 };
 
 export type FeedResultDto = {

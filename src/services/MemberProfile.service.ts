@@ -104,6 +104,9 @@ export type MemberPostItemDto = {
   isRepost?: boolean;
   originalPostId?: number | null;
   originalAuthorName?: string | null;
+  originalAuthorUserId?: number | null;
+  originalAuthorProfileImage?: string | null;
+  repostedByMe?: boolean;
 };
 
 export type MemberPostsResultDto = {
@@ -571,40 +574,51 @@ export async function getMemberPosts(
           include: [
             {
               association: "User",
-              attributes: ["id", "fullName"],
+              attributes: ["id", "fullName", "profilePhoto"],
               required: true
             }
           ]
         })
       : [];
   const originalById = new Map(originalPosts.map((op) => [op.id, op]));
+  const displayIds = [
+    ...new Set(posts.map((p) => (p.originalPostId && originalById.has(p.originalPostId) ? p.originalPostId : p.id)))
+  ];
 
-  const [likeRows, commentRows, myLikes, mySaves] = await Promise.all([
+  const [likeRows, commentRows, myLikes, mySaves, myRepostRows] = await Promise.all([
     PostLike.findAll({
-      where: { postId: { [Op.in]: postIds } },
+      where: { postId: { [Op.in]: displayIds } },
       attributes: ["postId"],
       raw: true
     }),
     Comment.findAll({
-      where: { postId: { [Op.in]: postIds } },
+      where: { postId: { [Op.in]: displayIds } },
       attributes: ["postId"],
       raw: true
     }),
     PostLike.findAll({
-      where: { postId: { [Op.in]: postIds }, userId: viewerId },
+      where: { postId: { [Op.in]: displayIds }, userId: viewerId },
       attributes: ["postId"],
       raw: true
     }),
     SavedPost.findAll({
-      where: { postId: { [Op.in]: postIds }, userId: viewerId },
+      where: { postId: { [Op.in]: displayIds }, userId: viewerId },
       attributes: ["postId"],
       raw: true
+    }),
+    Post.findAll({
+      where: {
+        userId: viewerId,
+        originalPostId: { [Op.in]: displayIds },
+        moderationStatus: "ACTIVE"
+      },
+      attributes: ["originalPostId"]
     })
   ]);
 
   const tally = (rows: { postId: number }[]) => {
     const m: Record<number, number> = {};
-    postIds.forEach((id) => (m[id] = 0));
+    displayIds.forEach((id) => (m[id] = 0));
     rows.forEach((r) => {
       m[r.postId] = (m[r.postId] || 0) + 1;
     });
@@ -615,39 +629,50 @@ export async function getMemberPosts(
   const commentsMap = tally(commentRows as { postId: number }[]);
   const likedSet = new Set((myLikes as { postId: number }[]).map((r) => r.postId));
   const savedSet = new Set((mySaves as { postId: number }[]).map((r) => r.postId));
+  const myRepostRootIds = new Set(
+    myRepostRows.map((r) => Number(r.originalPostId)).filter((id) => id > 0)
+  );
+
+  const visiblePosts = posts.filter((p) => !p.originalPostId || originalById.has(p.originalPostId));
 
   const items: MemberPostItemDto[] = await Promise.all(
-    posts.map(async (p) => {
-      const [mediaUrl, thumbnailUrl] = await Promise.all([
-        toPublicUrlIfR2(p.mediaUrl ?? null),
-        toPublicUrlIfR2(p.thumbnailUrl ?? null)
+    visiblePosts.map(async (p) => {
+      const original = p.originalPostId ? originalById.get(p.originalPostId) : null;
+      const source = original ?? p;
+      const originalUser = original ? ((original as any).User as User) : null;
+      const [mediaUrl, thumbnailUrl, originalAuthorProfileImage] = await Promise.all([
+        toPublicUrlIfR2(source.mediaUrl ?? null),
+        toPublicUrlIfR2(source.thumbnailUrl ?? null),
+        originalUser ? toPublicUrlIfR2(originalUser.profilePhoto ?? null) : Promise.resolve(null)
       ]);
       const mediaType = resolvePostMediaType({
-        mediaUrl: p.mediaUrl,
-        mediaType: p.mediaType as PostMediaType,
-        mimeType: p.mimeType
+        mediaUrl: source.mediaUrl,
+        mediaType: source.mediaType as PostMediaType,
+        mimeType: source.mimeType
       });
-      const original = p.originalPostId ? originalById.get(p.originalPostId) : null;
-      const originalUser = original ? ((original as any).User as User) : null;
+      const rootId = source.id;
       return {
         postId: p.id,
-        postType: p.postType,
-        title: p.title,
-        description: p.description ?? null,
+        postType: source.postType,
+        title: source.title,
+        description: source.description ?? null,
         mediaUrl,
         mediaType,
         thumbnailUrl,
-        videoDuration: p.videoDuration ?? null,
-        createdAt: p.createdAt.toISOString(),
+        videoDuration: source.videoDuration ?? null,
+        createdAt: source.createdAt.toISOString(),
         counts: {
-          likes: likesMap[p.id] ?? 0,
-          comments: commentsMap[p.id] ?? 0
+          likes: likesMap[rootId] ?? 0,
+          comments: commentsMap[rootId] ?? 0
         },
-        likedByMe: likedSet.has(p.id),
-        savedByMe: savedSet.has(p.id),
+        likedByMe: likedSet.has(rootId),
+        savedByMe: savedSet.has(rootId),
         isRepost: Boolean(p.originalPostId),
         originalPostId: p.originalPostId ?? null,
-        originalAuthorName: originalUser?.fullName ?? null
+        originalAuthorName: originalUser?.fullName ?? null,
+        originalAuthorUserId: originalUser?.id ?? null,
+        originalAuthorProfileImage,
+        repostedByMe: myRepostRootIds.has(rootId)
       };
     })
   );

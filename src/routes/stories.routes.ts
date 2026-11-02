@@ -22,7 +22,7 @@ storiesRouter.use(authMiddleware);
 storiesRouter.get("/", asyncHandler(StoriesController.listTray));
 storiesRouter.post("/", asyncHandler(StoriesController.create));
 
-/** Local-disk upload (raw bytes). Must be registered before /:id mutation routes. */
+/** Story media upload (raw bytes → R2 or local). Must be registered before /:id mutation routes. */
 storiesRouter.put(
   "/upload",
   express.raw({

@@ -13,6 +13,7 @@ process.env.R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID || "test-access-key"
 process.env.R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY || "test-secret-key";
 process.env.R2_BUCKET_NAME = process.env.R2_BUCKET_NAME || "test-bucket";
 process.env.R2_CDN_PUBLIC_URL = process.env.R2_CDN_PUBLIC_URL || "https://cdn.test.local";
+process.env.STORIES_STORAGE_BACKEND = process.env.STORIES_STORAGE_BACKEND || "r2";
 
 // JWT / app secrets used by middleware when controllers are exercised
 process.env.JWT_SECRET = process.env.JWT_SECRET || "test-jwt-secret-do-not-use-in-prod";

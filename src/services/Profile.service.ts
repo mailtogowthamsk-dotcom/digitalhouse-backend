@@ -166,6 +166,10 @@ export type ProfilePostItemDto = {
   counts: { likes: number; comments: number; views: number };
   likedByMe: boolean;
   savedByMe: boolean;
+  isRepost?: boolean;
+  originalPostId?: number | null;
+  originalAuthorName?: string | null;
+  repostedByMe?: boolean;
 };
 
 export type ProfilePostsResultDto = {
@@ -656,21 +660,40 @@ export async function getProfilePosts(
     return { items: [], page, limit, total: count };
   }
 
+  const originalIds = [
+    ...new Set(
+      posts
+        .map((p) => p.originalPostId)
+        .filter((id): id is number => typeof id === "number" && id > 0)
+    )
+  ];
+  const originalPosts =
+    originalIds.length > 0
+      ? await Post.findAll({
+          where: { id: { [Op.in]: originalIds } },
+          include: [{ association: "User", attributes: ["id", "fullName"], required: false }]
+        })
+      : [];
+  const originalById = new Map(originalPosts.map((op) => [op.id, op]));
+  const displayIds = [
+    ...new Set(posts.map((p) => (p.originalPostId && originalById.has(p.originalPostId) ? p.originalPostId : p.id)))
+  ];
+
   const [likeCounts, commentCounts, viewCounts, myLikes, mySaves] = await Promise.all([
-    PostLike.findAll({ where: { postId: { [Op.in]: postIds } }, attributes: ["postId"], raw: true }),
-    Comment.findAll({ where: { postId: { [Op.in]: postIds } }, attributes: ["postId"], raw: true }),
+    PostLike.findAll({ where: { postId: { [Op.in]: displayIds } }, attributes: ["postId"], raw: true }),
+    Comment.findAll({ where: { postId: { [Op.in]: displayIds } }, attributes: ["postId"], raw: true }),
     FeedEngagementEvent.findAll({
-      where: { postId: { [Op.in]: postIds }, eventType: { [Op.in]: ["post_open", "post_impression"] } },
+      where: { postId: { [Op.in]: displayIds }, eventType: { [Op.in]: ["post_open", "post_impression"] } },
       attributes: ["postId"],
       raw: true
     }),
     PostLike.findAll({
-      where: { postId: { [Op.in]: postIds }, userId },
+      where: { postId: { [Op.in]: displayIds }, userId },
       attributes: ["postId"],
       raw: true
     }),
     SavedPost.findAll({
-      where: { postId: { [Op.in]: postIds }, userId },
+      where: { postId: { [Op.in]: displayIds }, userId },
       attributes: ["postId"],
       raw: true
     })
@@ -678,7 +701,7 @@ export async function getProfilePosts(
 
   const countMap = (rows: { postId: number }[]) => {
     const m: Record<number, number> = {};
-    postIds.forEach((id) => (m[id] = 0));
+    displayIds.forEach((id) => (m[id] = 0));
     rows.forEach((r) => (m[r.postId] = (m[r.postId] || 0) + 1));
     return m;
   };
@@ -691,25 +714,33 @@ export async function getProfilePosts(
 
   const items: ProfilePostItemDto[] = await Promise.all(
     posts.map(async (p) => {
-      const mediaUrl = isPrivateR2Object(p.mediaUrl)
-        ? await toPrivateSignedUrlIfR2(p.mediaUrl)
-        : await toPublicUrlIfR2(p.mediaUrl ?? null);
+      const original = p.originalPostId ? originalById.get(p.originalPostId) : null;
+      const source = original ?? p;
+      const originalUser = original ? ((original as any).User as { fullName?: string } | null) : null;
+      const mediaUrl = isPrivateR2Object(source.mediaUrl)
+        ? await toPrivateSignedUrlIfR2(source.mediaUrl)
+        : await toPublicUrlIfR2(source.mediaUrl ?? null);
+      const rootId = source.id;
       return {
         postId: p.id,
-        postType: POST_TYPE_LABELS[p.postType] ?? p.postType,
-        title: p.title,
-        description: p.description ?? null,
+        postType: POST_TYPE_LABELS[source.postType] ?? source.postType,
+        title: source.title,
+        description: source.description ?? null,
         mediaUrl,
-        createdAt: p.createdAt.toISOString(),
-        visibility: postVisibilityLabel(parsePostVisibility(p.visibility)),
-        status: p.postType === "JOB" && p.jobStatus === "CLOSED" ? "Closed" : "Active",
+        createdAt: source.createdAt.toISOString(),
+        visibility: postVisibilityLabel(parsePostVisibility(source.visibility)),
+        status: source.postType === "JOB" && source.jobStatus === "CLOSED" ? "Closed" : "Active",
         counts: {
-          likes: likesMap[p.id] ?? 0,
-          comments: commentsMap[p.id] ?? 0,
-          views: viewsMap[p.id] ?? 0
+          likes: likesMap[rootId] ?? 0,
+          comments: commentsMap[rootId] ?? 0,
+          views: viewsMap[rootId] ?? 0
         },
-        likedByMe: likedSet.has(p.id),
-        savedByMe: savedSet.has(p.id)
+        likedByMe: likedSet.has(rootId),
+        savedByMe: savedSet.has(rootId),
+        isRepost: Boolean(p.originalPostId),
+        originalPostId: p.originalPostId ?? null,
+        originalAuthorName: originalUser?.fullName ?? null,
+        repostedByMe: Boolean(p.originalPostId)
       };
     })
   );

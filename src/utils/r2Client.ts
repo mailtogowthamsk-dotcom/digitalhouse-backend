@@ -13,7 +13,8 @@ import {
   GetObjectCommand,
   HeadObjectCommand,
   DeleteObjectCommand,
-  CopyObjectCommand
+  CopyObjectCommand,
+  ListObjectsV2Command
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { R2_CACHE_CONTROL_IMMUTABLE } from "../config/r2Cache.config";
@@ -180,12 +181,19 @@ export function isPrivateR2Object(url: string | null | undefined): boolean {
  * Generate a pre-signed GET URL for private bucket.
  * Use when serving media so the app can load images/videos (bucket stays private).
  */
-export async function getPresignedGetUrl(key: string, expiresInSeconds = 3600): Promise<string> {
+export async function getPresignedGetUrl(
+  key: string,
+  expiresInSeconds = 3600,
+  options?: { responseCacheControl?: string }
+): Promise<string> {
   if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
   const client = getR2Client();
   const command = new GetObjectCommand({
     Bucket: bucketName,
-    Key: key
+    Key: key,
+    ...(options?.responseCacheControl
+      ? { ResponseCacheControl: options.responseCacheControl }
+      : {})
   });
   return getSignedUrl(client, command, { expiresIn: expiresInSeconds });
 }
@@ -374,7 +382,11 @@ export async function downloadR2ObjectToFile(
 /** Validate that an uploaded R2 object exists without downloading its bytes. */
 export async function getR2ObjectMetadata(
   key: string
-): Promise<{ byteSize: number; contentType: string | null }> {
+): Promise<{
+  byteSize: number;
+  contentType: string | null;
+  metadata: Record<string, string>;
+}> {
   if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
   const client = getR2Client();
   try {
@@ -383,7 +395,8 @@ export async function getR2ObjectMetadata(
     );
     return {
       byteSize: Number(response.ContentLength ?? 0),
-      contentType: response.ContentType ?? null
+      contentType: response.ContentType ?? null,
+      metadata: { ...(response.Metadata ?? {}) }
     };
   } catch (error: any) {
     const status = Number(error?.$metadata?.httpStatusCode ?? 0);
@@ -415,12 +428,17 @@ export async function getR2ObjectPrefix(key: string, maxBytes = 512): Promise<Bu
   return Buffer.concat(chunks);
 }
 
+export type PutR2ObjectOptions = {
+  cacheControl?: string;
+  metadata?: Record<string, string>;
+};
+
 /** Upload buffer to R2 with Content-Type + long Cache-Control (immutable optimized assets). */
 export async function putR2ObjectBuffer(
   key: string,
   body: Buffer,
   contentType: string,
-  options?: { cacheControl?: string }
+  options?: PutR2ObjectOptions
 ): Promise<void> {
   if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
   const client = getR2Client();
@@ -430,9 +448,78 @@ export async function putR2ObjectBuffer(
       Key: key,
       Body: body,
       ContentType: contentType,
-      CacheControl: options?.cacheControl ?? R2_CACHE_CONTROL_IMMUTABLE
+      CacheControl: options?.cacheControl ?? R2_CACHE_CONTROL_IMMUTABLE,
+      ...(options?.metadata && Object.keys(options.metadata).length
+        ? { Metadata: options.metadata }
+        : {})
     })
   );
+}
+
+/**
+ * Stream a local file to R2 without holding the whole object in Node memory.
+ * Used for Story video uploads after ffprobe on a temp file.
+ */
+export async function putR2ObjectFromFile(
+  key: string,
+  filePath: string,
+  contentType: string,
+  options?: PutR2ObjectOptions
+): Promise<void> {
+  if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
+  const stat = await fs.promises.stat(filePath);
+  const client = getR2Client();
+  const body = fs.createReadStream(filePath);
+  try {
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucketName,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+        ContentLength: stat.size,
+        CacheControl: options?.cacheControl ?? R2_CACHE_CONTROL_IMMUTABLE,
+        ...(options?.metadata && Object.keys(options.metadata).length
+          ? { Metadata: options.metadata }
+          : {})
+      })
+    );
+  } finally {
+    body.destroy();
+  }
+}
+
+export type R2ListedObject = { key: string; lastModified: Date | null };
+
+/**
+ * List object keys under a prefix (paginated). Caps at maxKeys to avoid unbounded scans.
+ */
+export async function listR2ObjectsByPrefix(
+  prefix: string,
+  maxKeys = 1000
+): Promise<R2ListedObject[]> {
+  if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
+  const client = getR2Client();
+  const out: R2ListedObject[] = [];
+  let token: string | undefined;
+  const limit = Math.max(1, Math.min(5000, maxKeys));
+  do {
+    const response = await client.send(
+      new ListObjectsV2Command({
+        Bucket: bucketName,
+        Prefix: prefix,
+        ContinuationToken: token,
+        MaxKeys: Math.min(1000, limit - out.length)
+      })
+    );
+    for (const obj of response.Contents ?? []) {
+      if (!obj.Key) continue;
+      out.push({ key: obj.Key, lastModified: obj.LastModified ?? null });
+      if (out.length >= limit) return out;
+    }
+    token = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (token);
+  return out;
 }
 
 /** Server-side copy inside the same R2 bucket (quarantine → published). */
@@ -460,6 +547,26 @@ export async function deleteR2ObjectByKey(key: string): Promise<void> {
     await client.send(new DeleteObjectCommand({ Bucket: bucketName, Key: key }));
   } catch (err) {
     console.warn("[R2] Delete key failed:", key, err instanceof Error ? err.message : err);
+  }
+}
+
+/**
+ * Delete an R2 object and throw on failure so callers can retry.
+ * Missing objects are treated as success (idempotent).
+ */
+export async function deleteR2ObjectByKeyOrThrow(key: string): Promise<void> {
+  if (!bucketName) throw new Error("R2_BUCKET_NAME not set");
+  const client = getR2Client();
+  try {
+    await client.send(
+      new DeleteObjectCommand({ Bucket: bucketName, Key: normalizeR2ObjectKey(key) })
+    );
+  } catch (error: any) {
+    const status = Number(error?.$metadata?.httpStatusCode ?? 0);
+    if (status === 404 || error?.name === "NotFound" || error?.Code === "NoSuchKey") {
+      return;
+    }
+    throw error;
   }
 }
 

@@ -1,6 +1,7 @@
 import { Op, QueryTypes } from "sequelize";
 import { sequelize } from "../config/db";
-import { Message, MessageThreadPreference, User } from "../models";
+import { Message, MessageThreadPreference, Post, User } from "../models";
+import { getPost } from "./Post.service";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
 import { isOnline } from "../realtime/presence";
 import { revealPresenceBatch } from "./LastSeen.service";
@@ -51,6 +52,22 @@ export type ThreadDto = {
   unreadCount: number;
 };
 
+export type SharedPostPreviewDto = {
+  id: number;
+  title: string;
+  postType: string;
+  jobCompany: string | null;
+  jobLocation: string | null;
+  marketplaceIntent: string | null;
+  marketplacePrice: number | null;
+  marketplaceNegotiable: boolean | null;
+  marketplaceCategory: string | null;
+  marketplaceDistrict: string | null;
+  helpCategory: string | null;
+  helpUrgency: string | null;
+  helpLocation: string | null;
+};
+
 export type MessageDto = {
   id: number;
   senderId: number;
@@ -58,6 +75,7 @@ export type MessageDto = {
   body: string;
   sharedPostId: number | null;
   sharedStoryId: number | null;
+  sharedPost?: SharedPostPreviewDto | null;
   clientId: string | null;
   deliveredAt: string | null;
   readAt: string | null;
@@ -91,6 +109,8 @@ const VISIBLE_TO_ME_SQL = `
   AND NOT (recipientId = :me AND deleted_for_recipient_at IS NOT NULL)
 `;
 
+const SHARED_POST_FALLBACK_BODY = "Shared a post with you";
+
 function toMessageDto(m: Message): MessageDto {
   return {
     id: m.id,
@@ -104,6 +124,71 @@ function toMessageDto(m: Message): MessageDto {
     readAt: m.readAt ? m.readAt.toISOString() : null,
     createdAt: m.createdAt.toISOString()
   };
+}
+
+function toSharedPostPreview(post: Post): SharedPostPreviewDto {
+  return {
+    id: post.id,
+    title: post.title,
+    postType: String(post.postType),
+    jobCompany: post.jobCompany ?? null,
+    jobLocation: post.jobLocation ?? null,
+    marketplaceIntent: post.marketplaceIntent ?? null,
+    marketplacePrice: post.marketplacePrice ?? null,
+    marketplaceNegotiable: post.marketplaceNegotiable ?? null,
+    marketplaceCategory: post.marketplaceCategory ?? null,
+    marketplaceDistrict: post.marketplaceDistrict ?? null,
+    helpCategory: post.helpCategory ?? null,
+    helpUrgency: post.helpUrgency ?? null,
+    helpLocation: post.helpLocation ?? null
+  };
+}
+
+async function resolveShareablePostId(viewerId: number, postId: number): Promise<number> {
+  try {
+    await getPost(viewerId, postId);
+  } catch {
+    throw httpErr("You cannot share this post", 403, "POST_NOT_SHAREABLE");
+  }
+  const post = await Post.findByPk(postId, { attributes: ["id", "originalPostId"] });
+  if (!post) throw httpErr("Post not found", 404, "POST_NOT_FOUND");
+  return post.originalPostId ?? post.id;
+}
+
+async function withSharedPostPreviews(messages: MessageDto[]): Promise<MessageDto[]> {
+  const ids = [
+    ...new Set(
+      messages
+        .map((m) => (m.sharedPostId != null ? Number(m.sharedPostId) : 0))
+        .filter((id) => id > 0)
+    )
+  ];
+  if (ids.length === 0) return messages;
+  const posts = await Post.findAll({
+    where: { id: ids },
+    attributes: [
+      "id",
+      "title",
+      "postType",
+      "jobCompany",
+      "jobLocation",
+      "marketplaceIntent",
+      "marketplacePrice",
+      "marketplaceNegotiable",
+      "marketplaceCategory",
+      "marketplaceDistrict",
+      "helpCategory",
+      "helpUrgency",
+      "helpLocation"
+    ]
+  });
+  const byId = new Map(posts.map((p) => [p.id, p]));
+  return messages.map((m) => {
+    if (m.sharedPostId == null) return m;
+    const post = byId.get(Number(m.sharedPostId));
+    if (!post) return m;
+    return { ...m, sharedPost: toSharedPostPreview(post) };
+  });
 }
 
 export async function listThreads(
@@ -302,10 +387,9 @@ export async function getHistory(
 
   // Capture oldest id BEFORE reverse — that is the cursor for the next older page.
   const nextCursorId = rows.length === limit ? Number(rows[rows.length - 1]!.id) : null;
-  const messages = rows
-    .slice()
-    .reverse()
-    .map(toMessageDto);
+  const messages = await withSharedPostPreviews(
+    rows.slice().reverse().map(toMessageDto)
+  );
   return { messages, nextCursorId };
 }
 
@@ -396,7 +480,8 @@ export async function sendMessage(
   senderId: number,
   recipientId: number,
   body: string,
-  clientId?: string
+  clientId?: string,
+  sharedPostId?: number | null
 ): Promise<MessageDto> {
   const recipient = await User.findByPk(recipientId, { attributes: ["id", "status"] });
   if (!recipient || recipient.status !== "APPROVED") throw new Error("Recipient not found");
@@ -404,23 +489,40 @@ export async function sendMessage(
 
   await assertCanSendMessage(senderId, recipientId);
 
-  const trimmed = body.trim();
+  const requestedShareId =
+    sharedPostId != null && Number.isFinite(Number(sharedPostId)) && Number(sharedPostId) > 0
+      ? Number(sharedPostId)
+      : null;
+  const resolvedShareId = requestedShareId
+    ? await resolveShareablePostId(senderId, requestedShareId)
+    : null;
+
+  const trimmed = (body ?? "").trim();
+  const persistedBody = trimmed || (resolvedShareId ? SHARED_POST_FALLBACK_BODY : "");
+  if (!persistedBody) throw httpErr("Message cannot be empty", 400);
+
   // deliveredAt stays null until the recipient device acks `message:new`.
   // Stamping it from `isOnline` reported "delivered" for sockets that were
   // already dead, which is exactly when the message needed a push instead.
   const msg = await Message.create({
     senderId,
     recipientId,
-    body: trimmed,
+    body: persistedBody,
+    sharedPostId: resolvedShareId,
     clientId: (clientId ?? "").trim() || null,
     deliveredAt: null,
     readAt: null
   } as any);
 
-  const dto = toMessageDto(msg);
+  const [dto] = await withSharedPostPreviews([toMessageDto(msg)]);
   emitMessageEvents(dto);
 
-  scheduleMessagePush({ messageId: msg.id, recipientId, senderId, body: trimmed });
+  scheduleMessagePush({
+    messageId: msg.id,
+    recipientId,
+    senderId,
+    body: persistedBody
+  });
 
   return dto;
 }

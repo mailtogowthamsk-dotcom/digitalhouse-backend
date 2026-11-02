@@ -16,13 +16,14 @@ import {
 import { detectMediaMimeFromBytes, isExecutableOrScriptMagic } from "../utils/mediaMagic.util";
 import {
   STORY_UPLOAD_ORPHAN_MAX_AGE_HOURS,
+  STORY_UPLOAD_TMP_PREFIX,
   STORY_VIDEO_MAX_DURATION_SEC,
   STORY_VIDEO_MIN_DURATION_SEC
 } from "../constants/stories.constants";
 
+export { STORY_UPLOAD_TMP_PREFIX };
+
 export const LOCAL_STORY_KEY_PREFIX = "local/stories/";
-/** Upload files use this basename prefix until POST /stories promotes them. */
-export const STORY_UPLOAD_TMP_PREFIX = "tmp_";
 
 const ALLOWED_IMAGE = new Set(["image/jpeg", "image/jpg", "image/png", "image/webp"]);
 const ALLOWED_VIDEO = new Set(["video/mp4"]);

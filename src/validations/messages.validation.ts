@@ -11,11 +11,16 @@ export function validateMessagesHistoryQuery(query: unknown): MessagesHistoryQue
   return paginationSchema.parse(query);
 }
 
-export const sendMessageSchema = z.object({
-  recipientId: z.coerce.number().int().min(1),
-  body: z.string().trim().min(1).max(5000),
-  clientId: z.string().trim().min(1).max(64).optional()
-});
+export const sendMessageSchema = z
+  .object({
+    recipientId: z.coerce.number().int().min(1),
+    body: z.string().trim().max(5000).optional().default(""),
+    clientId: z.string().trim().min(1).max(64).optional(),
+    sharedPostId: z.coerce.number().int().min(1).optional()
+  })
+  .refine((v) => Boolean(v.body) || v.sharedPostId != null, {
+    message: "Message cannot be empty"
+  });
 
 export type SendMessageBody = z.infer<typeof sendMessageSchema>;
 

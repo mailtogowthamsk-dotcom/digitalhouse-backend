@@ -12,14 +12,17 @@ import {
   toAuthorDto
 } from "./mappers";
 import type { CommentDto, CommentsResultDto, PostLikerDto, PostLikesResultDto } from "./types";
+import { resolveCanonicalPost } from "./canonicalPost";
 
 export async function likePost(userId: number, postId: number): Promise<{ liked: boolean; like_count: number }> {
-  const post = await Post.findByPk(postId);
-  if (!post) {
+  const row = await Post.findByPk(postId);
+  if (!row) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
   }
+  const post = await resolveCanonicalPost(row);
+  postId = post.id;
   await ensureCommunityVisible(post, userId);
   if (isHiddenFromPublic(post) && post.userId !== userId) {
     const err = new Error("Post not found");
@@ -59,12 +62,14 @@ export async function addComment(
   body: string,
   parentId?: number | null
 ): Promise<CommentDto> {
-  const post = await Post.findByPk(postId);
-  if (!post) {
+  const row = await Post.findByPk(postId);
+  if (!row) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
   }
+  const post = await resolveCanonicalPost(row);
+  postId = post.id;
   await ensureCommunityVisible(post, userId);
   if (isHiddenFromPublic(post) && post.userId !== userId) {
     const err = new Error("Post not found");
@@ -125,12 +130,14 @@ export async function getComments(
   currentUserId: number,
   sort: "newest" | "top" = "newest"
 ): Promise<CommentsResultDto> {
-  const post = await Post.findByPk(postId);
-  if (!post) {
+  const row = await Post.findByPk(postId);
+  if (!row) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
   }
+  const post = await resolveCanonicalPost(row);
+  postId = post.id;
   await ensureCommunityVisible(post, currentUserId);
   if (isHiddenFromPublic(post) && post.userId !== currentUserId) {
     const err = new Error("Post not found");
@@ -198,12 +205,14 @@ export async function updateComment(
   commentId: number,
   body: string
 ): Promise<CommentDto> {
-  const post = await Post.findByPk(postId);
-  if (!post) {
+  const row = await Post.findByPk(postId);
+  if (!row) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
   }
+  const post = await resolveCanonicalPost(row);
+  postId = post.id;
   await ensureCommunityVisible(post, userId);
   if (isHiddenFromPublic(post) && post.userId !== userId) {
     const err = new Error("Post not found");
@@ -229,12 +238,14 @@ export async function updateComment(
 }
 
 export async function deleteComment(userId: number, postId: number, commentId: number): Promise<void> {
-  const post = await Post.findByPk(postId);
-  if (!post) {
+  const row = await Post.findByPk(postId);
+  if (!row) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
   }
+  const post = await resolveCanonicalPost(row);
+  postId = post.id;
   await ensureCommunityVisible(post, userId);
   if (isHiddenFromPublic(post) && post.userId !== userId) {
     const err = new Error("Post not found");
@@ -261,12 +272,14 @@ export async function deleteComment(userId: number, postId: number, commentId: n
 }
 
 export async function savePost(userId: number, postId: number): Promise<{ saved: boolean }> {
-  const post = await Post.findByPk(postId);
-  if (!post) {
+  const row = await Post.findByPk(postId);
+  if (!row) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
   }
+  const post = await resolveCanonicalPost(row);
+  postId = post.id;
   await ensureCommunityVisible(post, userId);
 
   const existing = await SavedPost.findOne({ where: { postId, userId } });
@@ -280,12 +293,14 @@ export async function savePost(userId: number, postId: number): Promise<{ saved:
 }
 
 export async function unsavePost(userId: number, postId: number): Promise<{ saved: boolean }> {
-  const post = await Post.findByPk(postId);
-  if (!post) {
+  const row = await Post.findByPk(postId);
+  if (!row) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
   }
+  const post = await resolveCanonicalPost(row);
+  postId = post.id;
   await ensureCommunityVisible(post, userId);
 
   await SavedPost.destroy({ where: { postId, userId } });
@@ -305,12 +320,14 @@ export async function getPostLikes(
   limit: number,
   offset: number
 ): Promise<PostLikesResultDto> {
-  const post = await Post.findByPk(postId, { attributes: ["id", "userId"] });
-  if (!post) {
+  const row = await Post.findByPk(postId, { attributes: ["id", "userId", "originalPostId"] });
+  if (!row) {
     const err = new Error("Post not found");
     (err as any).status = 404;
     throw err;
   }
+  const post = await resolveCanonicalPost(row);
+  postId = post.id;
   await ensureCommunityVisible(post, currentUserId);
 
   const safeUserId = Number(currentUserId);

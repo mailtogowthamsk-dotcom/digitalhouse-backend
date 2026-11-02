@@ -41,6 +41,7 @@ postRouter.delete(
 );
 postRouter.post("/:postId/share", authMiddleware, asyncHandler(PostController.sharePost));
 postRouter.post("/:postId/repost", authMiddleware, asyncHandler(PostController.repostPost));
+postRouter.delete("/:postId/repost", authMiddleware, asyncHandler(PostController.undoRepost));
 postRouter.post("/:postId/report", authMiddleware, asyncHandler(PostController.reportPost));
 postRouter.post(
   "/:postId/job-interest",

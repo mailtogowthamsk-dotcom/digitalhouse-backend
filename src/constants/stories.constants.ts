@@ -17,6 +17,19 @@ export const STORY_VIDEO_MAX_DURATION_SEC = 60;
 export const STORY_CAPTION_MAX_LENGTH = 200;
 /** Placeholder mediaUrl for text stories (no disk file). */
 export const STORY_TEXT_MEDIA_KEY = "text://";
+/**
+ * Marker written after R2 objects are successfully deleted so expiry retry
+ * does not keep calling DeleteObject forever. Not a playable key.
+ */
+export const STORY_PURGED_MEDIA_KEY = "purged://";
+/**
+ * Private R2 prefix for new Stories. Nested under digital-house/private/ so
+ * the public CDN / media-guard path never serves Story objects anonymously.
+ * Logical layout: stories/{userId}/{yyyy}/{mm}/{uniqueId}.{ext}
+ */
+export const STORY_R2_KEY_PREFIX = "digital-house/private/stories/";
+/** Upload objects use this basename prefix until POST /stories promotes them. */
+export const STORY_UPLOAD_TMP_PREFIX = "tmp_";
 /** Max length for a story reply that becomes a chat message. */
 export const STORY_REPLY_MAX_LENGTH = 500;
 /**

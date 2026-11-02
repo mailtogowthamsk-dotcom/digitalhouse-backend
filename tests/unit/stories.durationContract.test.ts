@@ -24,7 +24,9 @@ describe("stories mobile/backend duration contract", () => {
     const src = fs.readFileSync(mobilePath, "utf8");
     expect(src).toMatch(/STORY_VIDEO_MIN_DURATION_SEC\s*=\s*3/);
     expect(src).toMatch(/STORY_VIDEO_MAX_DURATION_SEC\s*=\s*60/);
-    expect(src).toMatch(/STORY_PREFETCH_MAX_ITEMS\s*=\s*3/);
+    expect(src).toMatch(/STORY_PREFETCH_MAX_ITEMS\s*=\s*0/);
     expect(src).toMatch(/STORY_PREFETCH_CONCURRENCY\s*=\s*2/);
+    expect(src).toMatch(/STORY_MEDIA_CACHE_MAX_AGE_MS\s*=\s*26\s*\*\s*60\s*\*\s*60\s*\*\s*1000/);
+    expect(src).toMatch(/STORY_MEDIA_CACHE_MAX_BYTES\s*=\s*256\s*\*\s*1024\s*\*\s*1024/);
   });
 });

@@ -60,6 +60,30 @@ describe("stories media signing secret", () => {
     expect(errors).toEqual([]);
   });
 
+  it("multi-node with R2 backend does not require shared-disk ack", () => {
+    process.env.STORIES_MEDIA_SIGNING_SECRET = "x".repeat(32);
+    process.env.STORIES_STORAGE_DIR = "/var/stories";
+    process.env.STORIES_CONTENT_SAFETY_MODE = "disabled";
+    process.env.STORIES_STORAGE_BACKEND = "r2";
+    process.env.API_INSTANCES = "2";
+    delete process.env.STORIES_SHARED_STORAGE_ACK;
+    const errors: string[] = [];
+    collectStoriesProductionEnvErrors(errors);
+    expect(errors).toEqual([]);
+  });
+
+  it("multi-node with local backend requires shared-disk ack", () => {
+    process.env.STORIES_MEDIA_SIGNING_SECRET = "x".repeat(32);
+    process.env.STORIES_STORAGE_DIR = "/var/stories";
+    process.env.STORIES_CONTENT_SAFETY_MODE = "disabled";
+    process.env.STORIES_STORAGE_BACKEND = "local";
+    process.env.API_INSTANCES = "2";
+    delete process.env.STORIES_SHARED_STORAGE_ACK;
+    const errors: string[] = [];
+    collectStoriesProductionEnvErrors(errors);
+    expect(errors.some((e) => e.includes("STORIES_SHARED_STORAGE_ACK"))).toBe(true);
+  });
+
   it("signs and verifies media URLs; rejects bad/expired signatures", () => {
     process.env.STORIES_MEDIA_SIGNING_SECRET = "unit-test-stories-secret-32chars!!";
     const path = buildSignedStoryMediaPath(42, 7, "file");

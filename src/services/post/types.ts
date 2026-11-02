@@ -88,6 +88,9 @@ export type PostDetailDto = {
   is_repost?: boolean;
   original_post_id?: number | null;
   original_author?: PostAuthorDto | null;
+  /** Wrapper author — only set on repost cards. */
+  reposted_by?: PostAuthorDto | null;
+  reposted_by_me?: boolean;
 };
 
 export type CommentDto = {

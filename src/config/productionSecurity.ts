@@ -186,7 +186,7 @@ export function assertProductionSecurityEnv(): void {
     const storage = (process.env.STORIES_STORAGE_DIR || "").trim();
     if (!storage) {
       errors.push(
-        "STORIES_STORAGE_DIR is required in production (absolute path on shared or single-node disk)."
+        "STORIES_STORAGE_DIR is required in production (absolute path for probe temp files and leftover local stories)."
       );
     } else if (!path.isAbsolute(storage)) {
       errors.push("STORIES_STORAGE_DIR must be an absolute path in production.");
@@ -199,12 +199,16 @@ export function assertProductionSecurityEnv(): void {
     } else if (mode !== "disabled" && mode !== "enabled") {
       errors.push('STORIES_CONTENT_SAFETY_MODE must be "disabled" or "enabled".');
     }
+    const backend = (process.env.STORIES_STORAGE_BACKEND || "r2").trim().toLowerCase();
+    if (backend && backend !== "r2" && backend !== "local") {
+      errors.push('STORIES_STORAGE_BACKEND must be "r2" or "local".');
+    }
     const apiInstances = Number(process.env.API_INSTANCES || 1);
-    if (Number.isFinite(apiInstances) && apiInstances > 1) {
+    if (Number.isFinite(apiInstances) && apiInstances > 1 && backend === "local") {
       const ack = (process.env.STORIES_SHARED_STORAGE_ACK || "").trim().toLowerCase();
       if (ack !== "true" && ack !== "1" && ack !== "yes") {
         errors.push(
-          "API_INSTANCES>1 requires STORIES_SHARED_STORAGE_ACK=true and a shared STORIES_STORAGE_DIR (or object-storage migration)."
+          "API_INSTANCES>1 with STORIES_STORAGE_BACKEND=local requires STORIES_SHARED_STORAGE_ACK=true and a shared STORIES_STORAGE_DIR."
         );
       }
     }

@@ -1,5 +1,21 @@
 import { getIo } from "./io";
 
+export type SharedPostPreviewDto = {
+  id: number;
+  title: string;
+  postType: string;
+  jobCompany: string | null;
+  jobLocation: string | null;
+  marketplaceIntent?: string | null;
+  marketplacePrice?: number | null;
+  marketplaceNegotiable?: boolean | null;
+  marketplaceCategory?: string | null;
+  marketplaceDistrict?: string | null;
+  helpCategory?: string | null;
+  helpUrgency?: string | null;
+  helpLocation?: string | null;
+};
+
 export type MessageEventDto = {
   id: number;
   senderId: number;
@@ -7,6 +23,7 @@ export type MessageEventDto = {
   body: string;
   sharedPostId?: number | null;
   sharedStoryId?: number | null;
+  sharedPost?: SharedPostPreviewDto | null;
   clientId: string | null;
   deliveredAt: string | null;
   readAt: string | null;

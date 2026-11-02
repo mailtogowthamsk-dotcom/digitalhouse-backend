@@ -8,6 +8,8 @@ import { emitMessageEvents } from "../realtime/messageEvents";
 import { scheduleMessagePush } from "../realtime/messagePushQueue";
 import {
   STORY_IMAGE_DURATION_MS,
+  STORY_PURGED_MEDIA_KEY,
+  STORY_R2_KEY_PREFIX,
   STORY_REPLY_MAX_LENGTH,
   STORY_TEXT_DURATION_MS,
   STORY_TEXT_MEDIA_KEY,
@@ -16,6 +18,7 @@ import {
   normalizeStoryCaption,
   storyExpiresAt
 } from "../constants/stories.constants";
+import { isStoriesR2Backend } from "../config/storiesRuntime";
 import {
   isPrivateR2Object,
   toPrivateSignedUrlIfR2,
@@ -37,6 +40,16 @@ import {
   verifySignedStoryMediaQuery,
   type StoryMediaKind
 } from "./StoryLocalStorage.service";
+import {
+  assertOwnedStoryR2Key,
+  assertStoryR2ObjectReady,
+  cleanupOrphanStoryR2Uploads,
+  deleteStoryR2Object,
+  isStoryR2Key,
+  promoteStoryR2UploadKey,
+  saveStoryR2File,
+  signStoryR2PlaybackUrl
+} from "./StoryR2Storage.service";
 import { sequelize } from "../config/db";
 
 function serviceError(message: string, status = 400, code?: string): never {
@@ -48,10 +61,23 @@ function isActiveStory(story: Story, now = new Date()): boolean {
   return story.expiresAt.getTime() > now.getTime();
 }
 
-/** Legacy R2 keys only — new stories use local/stories/ keys. */
+function isPlaceholderStoryKey(key: string | null | undefined): boolean {
+  if (!key) return true;
+  return (
+    key === STORY_TEXT_MEDIA_KEY ||
+    key === STORY_PURGED_MEDIA_KEY ||
+    key.startsWith("text:") ||
+    key.startsWith("purged:")
+  );
+}
+
+function usesGatewayPlayback(key: string | null | undefined): boolean {
+  return Boolean(key && (isLocalStoryKey(key) || isStoryR2Key(key)));
+}
+
+/** Pre-migration R2 objects only — new stories use HMAC gateway URLs, not 6h private GET cache. */
 async function signLegacyR2MediaUrl(url: string | null | undefined): Promise<string | null> {
-  if (!url) return null;
-  if (isLocalStoryKey(url)) return null;
+  if (!url || isPlaceholderStoryKey(url) || usesGatewayPlayback(url)) return null;
   if (isPrivateR2Object(url)) {
     return (await toPrivateSignedUrlIfR2(url)) ?? null;
   }
@@ -62,13 +88,13 @@ async function resolvePlayableUrls(
   story: Story,
   viewerId: number
 ): Promise<{ media: string | null; thumb: string | null }> {
-  if (story.mediaType === "text" || story.mediaUrl === STORY_TEXT_MEDIA_KEY) {
+  if (story.mediaType === "text" || isPlaceholderStoryKey(story.mediaUrl)) {
     return { media: null, thumb: null };
   }
-  if (isLocalStoryKey(story.mediaUrl)) {
+  if (usesGatewayPlayback(story.mediaUrl)) {
     return {
       media: buildSignedStoryMediaPath(story.id, viewerId, "file"),
-      thumb: story.thumbnailUrl
+      thumb: story.thumbnailUrl && usesGatewayPlayback(story.thumbnailUrl)
         ? buildSignedStoryMediaPath(story.id, viewerId, "thumbnail")
         : null
     };
@@ -80,18 +106,61 @@ async function resolvePlayableUrls(
   return { media, thumb };
 }
 
-async function purgeStoryMedia(story: Story): Promise<void> {
-  const keys = [story.mediaUrl, story.thumbnailUrl].filter(Boolean) as string[];
-  await Promise.all(
-    keys.map(async (k) => {
-      if (k === STORY_TEXT_MEDIA_KEY || k.startsWith("text:")) return;
-      if (isLocalStoryKey(k)) {
-        await deleteStoryFile(k);
-        return;
-      }
-      await deleteR2ImageVariants(k).catch(() => undefined);
-    })
-  );
+function assertOwnedStoryUploadKey(userId: number, key: string): void {
+  if (isLocalStoryKey(key)) {
+    assertOwnedLocalStoryKey(userId, key);
+    return;
+  }
+  if (isStoryR2Key(key)) {
+    assertOwnedStoryR2Key(userId, key);
+    return;
+  }
+  serviceError("Invalid story media reference", 400, "INVALID_STORY_MEDIA");
+}
+
+async function promoteOwnedStoryUploadKey(key: string): Promise<string> {
+  if (isLocalStoryKey(key)) return promoteStoryUploadKey(key);
+  if (isStoryR2Key(key)) return promoteStoryR2UploadKey(key);
+  return key;
+}
+
+type PurgeStoryMediaResult = { mediaPurged: boolean; thumbPurged: boolean };
+
+async function purgeOneStoryObject(key: string | null | undefined): Promise<boolean> {
+  if (!key || isPlaceholderStoryKey(key)) return true;
+  if (isLocalStoryKey(key)) {
+    await deleteStoryFile(key);
+    return true;
+  }
+  if (isStoryR2Key(key)) {
+    return deleteStoryR2Object(key);
+  }
+  await deleteR2ImageVariants(key).catch(() => undefined);
+  return true;
+}
+
+async function purgeStoryMedia(story: Story): Promise<PurgeStoryMediaResult> {
+  const [mediaPurged, thumbPurged] = await Promise.all([
+    purgeOneStoryObject(story.mediaUrl),
+    purgeOneStoryObject(story.thumbnailUrl)
+  ]);
+  return { mediaPurged, thumbPurged };
+}
+
+async function markPurgedKeys(
+  story: Story,
+  result: PurgeStoryMediaResult
+): Promise<void> {
+  const patch: { mediaUrl?: string; thumbnailUrl?: string | null } = {};
+  if (result.mediaPurged && isStoryR2Key(story.mediaUrl)) {
+    patch.mediaUrl = STORY_PURGED_MEDIA_KEY;
+  }
+  if (result.thumbPurged && story.thumbnailUrl && isStoryR2Key(story.thumbnailUrl)) {
+    patch.thumbnailUrl = STORY_PURGED_MEDIA_KEY;
+  }
+  if (Object.keys(patch).length) {
+    await story.update(patch);
+  }
 }
 
 async function assertCanViewStory(viewerId: number, story: Story): Promise<void> {
@@ -189,7 +258,7 @@ export async function createStory(userId: number, input: CreateStoryInput) {
 
   const mediaUrlRaw = input.media_url?.trim();
   if (!mediaUrlRaw) serviceError("Media is required", 400, "MEDIA_REQUIRED");
-  assertOwnedLocalStoryKey(userId, mediaUrlRaw);
+  assertOwnedStoryUploadKey(userId, mediaUrlRaw);
   if (input.media_type !== "image" && input.media_type !== "video") {
     serviceError("Invalid media type", 400, "INVALID_MEDIA_TYPE");
   }
@@ -197,13 +266,35 @@ export async function createStory(userId: number, input: CreateStoryInput) {
   let mediaUrl = mediaUrlRaw;
   let thumbnailUrl: string | null = null;
   if (input.thumbnail_url?.trim()) {
-    assertOwnedLocalStoryKey(userId, input.thumbnail_url.trim());
+    assertOwnedStoryUploadKey(userId, input.thumbnail_url.trim());
     thumbnailUrl = input.thumbnail_url.trim();
   }
 
-  /** Authority: probe actual video bytes; client duration_seconds is UI-only. */
+  /** Authority: probe actual video bytes (local) or R2 metadata written at upload. */
   let durationSeconds: number | null = null;
-  if (input.media_type === "video") {
+  let mimeType = input.mime_type ?? null;
+  let fileSize = input.file_size ?? null;
+  if (isStoryR2Key(mediaUrl)) {
+    const ready = await assertStoryR2ObjectReady(userId, mediaUrl);
+    fileSize = ready.byteSize || fileSize;
+    mimeType = ready.contentType ?? mimeType;
+    if (input.media_type === "video") {
+      durationSeconds =
+        ready.durationSeconds != null && Number.isFinite(ready.durationSeconds)
+          ? Math.floor(ready.durationSeconds)
+          : null;
+      if (
+        durationSeconds == null ||
+        durationSeconds < STORY_VIDEO_MIN_DURATION_SEC ||
+        durationSeconds > STORY_VIDEO_MAX_DURATION_SEC
+      ) {
+        serviceError("Invalid or corrupt video", 400, "INVALID_VIDEO");
+      }
+    }
+    if (thumbnailUrl && isStoryR2Key(thumbnailUrl)) {
+      await assertStoryR2ObjectReady(userId, thumbnailUrl);
+    }
+  } else if (input.media_type === "video") {
     try {
       durationSeconds = await assertStoryVideoDuration(absolutePathForStoryKey(mediaUrl));
     } catch (e: any) {
@@ -212,32 +303,78 @@ export async function createStory(userId: number, input: CreateStoryInput) {
     }
   }
 
-  try {
-    mediaUrl = await promoteStoryUploadKey(mediaUrl);
-    if (thumbnailUrl) {
-      thumbnailUrl = await promoteStoryUploadKey(thumbnailUrl);
+  const now = new Date();
+  const r2Upload = isStoryR2Key(mediaUrl);
+  if (!r2Upload) {
+    try {
+      mediaUrl = await promoteOwnedStoryUploadKey(mediaUrl);
+      if (thumbnailUrl) thumbnailUrl = await promoteOwnedStoryUploadKey(thumbnailUrl);
+    } catch (e: any) {
+      if (e?.status) throw e;
+      serviceError("Invalid story media reference", 400, "INVALID_STORY_MEDIA");
     }
-  } catch (e: any) {
-    if (e?.status) throw e;
-    serviceError("Invalid story media reference", 400, "INVALID_STORY_MEDIA");
   }
 
-  const now = new Date();
-  const story = await Story.create({
-    userId,
-    mediaType: input.media_type,
-    mediaUrl,
-    caption: normalizeStoryCaption(input.caption),
-    thumbnailUrl,
-    durationSeconds,
-    mimeType: input.mime_type ?? null,
-    fileSize: input.file_size ?? null,
-    likeCount: 0,
-    createdAt: now,
-    expiresAt: storyExpiresAt(now),
-    deletedAt: null
-  });
+  let story: Story;
+  try {
+    story = await Story.create({
+      userId,
+      mediaType: input.media_type,
+      mediaUrl,
+      caption: normalizeStoryCaption(input.caption),
+      thumbnailUrl,
+      durationSeconds,
+      mimeType,
+      fileSize,
+      likeCount: 0,
+      createdAt: now,
+      expiresAt: storyExpiresAt(now),
+      deletedAt: null
+    });
+  } catch (e) {
+    if (isStoryR2Key(mediaUrl)) await deleteStoryR2Object(mediaUrl);
+    if (thumbnailUrl && isStoryR2Key(thumbnailUrl)) await deleteStoryR2Object(thumbnailUrl);
+    throw e;
+  }
 
+  if (r2Upload) {
+    const originalMedia = mediaUrl;
+    const originalThumb = thumbnailUrl;
+    let promotedMedia = mediaUrl;
+    let promotedThumb = thumbnailUrl;
+    try {
+      promotedMedia = await promoteOwnedStoryUploadKey(mediaUrl);
+      if (thumbnailUrl) {
+        promotedThumb = await promoteOwnedStoryUploadKey(thumbnailUrl);
+      }
+      if (promotedMedia !== originalMedia || promotedThumb !== originalThumb) {
+        await story.update({ mediaUrl: promotedMedia, thumbnailUrl: promotedThumb });
+      }
+      if (promotedMedia !== originalMedia) {
+        await deleteStoryR2Object(originalMedia);
+      }
+      if (originalThumb && promotedThumb && promotedThumb !== originalThumb) {
+        await deleteStoryR2Object(originalThumb);
+      }
+    } catch (e: any) {
+      if (story.mediaUrl === originalMedia && promotedMedia !== originalMedia) {
+        await deleteStoryR2Object(promotedMedia);
+      }
+      if (
+        originalThumb &&
+        story.thumbnailUrl === originalThumb &&
+        promotedThumb &&
+        promotedThumb !== originalThumb
+      ) {
+        await deleteStoryR2Object(promotedThumb);
+      }
+      console.warn("[stories] promote after create failed — tmp key remains referenced", {
+        storyId: story.id,
+        code: e?.code ?? "PROMOTE_FAILED"
+      });
+    }
+    await story.reload();
+  }
   const { media, thumb } = await resolvePlayableUrls(story, userId);
   return toStoryDto(story, media, thumb, {
     viewed_by_me: true,
@@ -247,7 +384,7 @@ export async function createStory(userId: number, input: CreateStoryInput) {
   });
 }
 
-/** PUT /api/stories/upload — local disk; videos ffprobe-validated. */
+/** PUT /api/stories/upload — R2 by default; local disk when STORIES_STORAGE_BACKEND=local. */
 export async function uploadStoryMediaBytes(
   userId: number,
   buffer: Buffer,
@@ -259,7 +396,9 @@ export async function uploadStoryMediaBytes(
   duration_seconds: number | null;
   media_kind: "image" | "video";
 }> {
-  const saved = await saveStoryFile(userId, buffer, mimeType);
+  const saved = isStoriesR2Backend()
+    ? await saveStoryR2File(userId, buffer, mimeType)
+    : await saveStoryFile(userId, buffer, mimeType);
   return {
     key: saved.key,
     byte_size: saved.byteSize,
@@ -535,13 +674,14 @@ export async function deleteStory(ownerId: number, storyId: number) {
   await story.update({ deletedAt: new Date() });
   await StoryView.destroy({ where: { storyId: story.id } });
   await StoryLike.destroy({ where: { storyId: story.id } });
-  await purgeStoryMedia(story);
+  const purged = await purgeStoryMedia(story);
+  await markPurgedKeys(story, purged);
   return { deleted: true };
 }
 
 /**
- * Soft-delete expired rows and permanently delete media files from local disk
- * (or legacy R2). Expiry auth still uses expires_at — this is cleanup only.
+ * Soft-delete expired rows and permanently delete media (local, Story R2, or legacy R2).
+ * Expiry auth still uses expires_at — this is cleanup only.
  */
 export async function cleanupExpiredStories(limit = 100): Promise<number> {
   const now = new Date();
@@ -558,8 +698,34 @@ export async function cleanupExpiredStories(limit = 100): Promise<number> {
     await story.update({ deletedAt: now });
     await StoryView.destroy({ where: { storyId: story.id } });
     await StoryLike.destroy({ where: { storyId: story.id } });
-    await purgeStoryMedia(story);
+    const purged = await purgeStoryMedia(story);
+    await markPurgedKeys(story, purged);
     n += 1;
+  }
+  return n;
+}
+
+/**
+ * Retry R2 deletes for soft-deleted stories whose object keys were kept after a
+ * transient DeleteObject failure. Idempotent; successful deletes are marked purged://.
+ */
+export async function retryFailedStoryMediaPurges(limit = 100): Promise<number> {
+  const rows = await Story.findAll({
+    where: {
+      deletedAt: { [Op.ne]: null },
+      [Op.or]: [
+        { mediaUrl: { [Op.like]: `${STORY_R2_KEY_PREFIX}%` } },
+        { thumbnailUrl: { [Op.like]: `${STORY_R2_KEY_PREFIX}%` } }
+      ]
+    },
+    limit,
+    order: [["deletedAt", "ASC"]]
+  });
+  let n = 0;
+  for (const story of rows) {
+    const purged = await purgeStoryMedia(story);
+    await markPurgedKeys(story, purged);
+    if (purged.mediaPurged && purged.thumbPurged) n += 1;
   }
   return n;
 }
@@ -608,19 +774,38 @@ export async function toggleStoryLike(viewerId: number, storyId: number) {
   });
 }
 
-/** Remove abandoned tmp_* uploads not referenced by any Story row. */
+/** Remove abandoned tmp_* uploads not referenced by any Story row (local + R2). */
 export async function cleanupOrphanStoryMediaUploads(maxAgeHours?: number) {
   const rows = await Story.findAll({
     attributes: ["mediaUrl", "thumbnailUrl"]
   });
-  const referencedKeys = new Set<string>();
+  const referencedLocal = new Set<string>();
+  const referencedR2 = new Set<string>();
   for (const row of rows) {
-    if (row.mediaUrl && isLocalStoryKey(row.mediaUrl)) referencedKeys.add(row.mediaUrl);
+    if (row.mediaUrl && isLocalStoryKey(row.mediaUrl)) referencedLocal.add(row.mediaUrl);
     if (row.thumbnailUrl && isLocalStoryKey(row.thumbnailUrl)) {
-      referencedKeys.add(row.thumbnailUrl);
+      referencedLocal.add(row.thumbnailUrl);
+    }
+    if (row.mediaUrl && isStoryR2Key(row.mediaUrl)) referencedR2.add(row.mediaUrl);
+    if (row.thumbnailUrl && isStoryR2Key(row.thumbnailUrl)) {
+      referencedR2.add(row.thumbnailUrl);
     }
   }
-  return cleanupOrphanStoryUploads({ referencedKeys, maxAgeHours });
+  const local = await cleanupOrphanStoryUploads({
+    referencedKeys: referencedLocal,
+    maxAgeHours
+  });
+  let r2 = { scanned: 0, deleted: 0, failures: 0 };
+  if (isStoriesR2Backend() || referencedR2.size > 0) {
+    r2 = await cleanupOrphanStoryR2Uploads({ referencedKeys: referencedR2, maxAgeHours });
+  }
+  return {
+    scanned: local.scanned + r2.scanned,
+    deleted: local.deleted + r2.deleted,
+    failures: local.failures + r2.failures,
+    local,
+    r2
+  };
 }
 
 /**
@@ -686,13 +871,30 @@ export async function replyToStory(viewerId: number, storyId: number, bodyRaw: s
   };
 }
 
-/** Stream local story media after signature + connection checks. */
+export type OpenStoryMediaResult =
+  | {
+      delivery: "local";
+      absolutePath: string;
+      byteSize: number;
+      mimeType: string;
+    }
+  | {
+      delivery: "r2-redirect";
+      redirectUrl: string;
+      mimeType: string;
+    };
+
+/**
+ * Authorize Story media after HMAC + live connection/expiry checks.
+ * Local keys stream from disk. R2 keys 302 to a short-lived presigned GET
+ * so the API origin never transfers the object bytes.
+ */
 export async function openStoryMediaFile(
   viewerId: number,
   storyId: number,
   kind: StoryMediaKind,
   query: { v?: string; e?: string; s?: string }
-) {
+): Promise<OpenStoryMediaResult> {
   const qViewer = Number(query.v);
   if (!Number.isInteger(qViewer) || qViewer !== viewerId) {
     serviceError("Story not found", 404, "STORY_NOT_FOUND");
@@ -716,12 +918,26 @@ export async function openStoryMediaFile(
   await assertCanViewStory(viewerId, story);
 
   const key = kind === "thumbnail" ? story.thumbnailUrl : story.mediaUrl;
-  if (!key || !isLocalStoryKey(key)) {
+  if (!key || isPlaceholderStoryKey(key)) {
+    serviceError("Story not found", 404, "STORY_NOT_FOUND");
+  }
+
+  if (isStoryR2Key(key)) {
+    const redirectUrl = await signStoryR2PlaybackUrl(key);
+    return {
+      delivery: "r2-redirect",
+      redirectUrl,
+      mimeType: mimeFromStoryKey(key, story.mimeType ?? "application/octet-stream")
+    };
+  }
+
+  if (!isLocalStoryKey(key)) {
     serviceError("Story not found", 404, "STORY_NOT_FOUND");
   }
 
   const { absolutePath, stat } = await readStoryFileStream(key);
   return {
+    delivery: "local",
     absolutePath,
     byteSize: stat.size,
     mimeType: mimeFromStoryKey(key, story.mimeType ?? "application/octet-stream")
@@ -737,6 +953,7 @@ export const storiesService = {
   listStoryViewers,
   deleteStory,
   cleanupExpiredStories,
+  retryFailedStoryMediaPurges,
   cleanupOrphanStoryMediaUploads,
   toggleStoryLike,
   replyToStory,
