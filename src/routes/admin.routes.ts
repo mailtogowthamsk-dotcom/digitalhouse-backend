@@ -14,13 +14,18 @@ import * as AdminSupportController from "../controllers/AdminSupport.controller"
 import * as AdminSettingsController from "../controllers/AdminSettings.controller";
 import * as AdminLegalController from "../controllers/AdminLegal.controller";
 import * as AdminPostsController from "../controllers/AdminPosts.controller";
-import { requireAdminAction, requireAdminModule } from "../middlewares/adminPermission.middleware";
+import {
+  requireAdminAction,
+  requireAdminModule,
+  requireReportsOrMatrimonyProfile
+} from "../middlewares/adminPermission.middleware";
 import * as PlatformController from "../controllers/Platform.controller";
 import * as ProminentPeopleController from "../controllers/ProminentPeople.controller";
 import * as SystemSchedulerController from "../controllers/SystemScheduler.controller";
 import * as AdvertisementAdminController from "../controllers/AdvertisementAdmin.controller";
 import * as AdminInvoiceController from "../controllers/AdminInvoice.controller";
 import * as AdminBusinessBenefitController from "../controllers/AdminBusinessBenefit.controller";
+import * as RegistrationDeskController from "../controllers/RegistrationDesk.controller";
 
 export const adminRouter = Router();
 
@@ -71,6 +76,65 @@ adminRouter.patch(
   requireAdminAction("users.edit"),
   asyncHandler(AdminController.updateUser)
 );
+adminRouter.get(
+  "/registration-requests/summary",
+  requireAdminModule("registration_requests"),
+  asyncHandler(RegistrationDeskController.summary)
+);
+adminRouter.get(
+  "/registration-requests",
+  requireAdminModule("registration_requests"),
+  asyncHandler(RegistrationDeskController.listRequests)
+);
+adminRouter.get(
+  "/registration-requests/:userId",
+  requireAdminModule("registration_requests"),
+  asyncHandler(RegistrationDeskController.getRequest)
+);
+adminRouter.post(
+  "/registration-requests/:userId/claim",
+  requireAdminModule("registration_requests"),
+  asyncHandler(RegistrationDeskController.claimRequest)
+);
+adminRouter.post(
+  "/registration-requests/:userId/reassign",
+  requireAdminModule("registration_requests"),
+  asyncHandler(RegistrationDeskController.reassignRequest)
+);
+adminRouter.post(
+  "/registration-requests/:userId/start",
+  requireAdminModule("registration_requests"),
+  asyncHandler(RegistrationDeskController.startRequest)
+);
+adminRouter.post(
+  "/registration-requests/:userId/notes",
+  requireAdminModule("registration_requests"),
+  asyncHandler(RegistrationDeskController.addNote)
+);
+adminRouter.get(
+  "/support-team",
+  requireAdminModule("registration_requests"),
+  asyncHandler(RegistrationDeskController.listMembers)
+);
+adminRouter.post(
+  "/support-team",
+  requireAdminModule("registration_requests"),
+  requireAdminAction("registration_requests.manage_team"),
+  asyncHandler(RegistrationDeskController.createMember)
+);
+adminRouter.patch(
+  "/support-team/:id",
+  requireAdminModule("registration_requests"),
+  requireAdminAction("registration_requests.manage_team"),
+  asyncHandler(RegistrationDeskController.patchMember)
+);
+adminRouter.post(
+  "/support-team/:id/remove",
+  requireAdminModule("registration_requests"),
+  requireAdminAction("registration_requests.manage_team"),
+  asyncHandler(RegistrationDeskController.removeMember)
+);
+
 adminRouter.post(
   "/users/:id/approve",
   requireAdminModule("users"),
@@ -760,41 +824,41 @@ adminRouter.get(
 // ── Reports & Complaints ───────────────────────────────────
 adminRouter.get(
   "/reports",
-  requireAdminModule("reports"),
+  requireReportsOrMatrimonyProfile(),
   asyncHandler(AdminReportsController.listReports)
 );
 adminRouter.get(
   "/reports/:kind/:id",
-  requireAdminModule("reports"),
+  requireReportsOrMatrimonyProfile(),
   asyncHandler(AdminReportsController.getReport)
 );
 adminRouter.post(
   "/reports/:kind/:id/resolve",
-  requireAdminModule("reports"),
+  requireReportsOrMatrimonyProfile(),
   requireAdminAction("reports.manage"),
   asyncHandler(AdminReportsController.resolveReport)
 );
 adminRouter.post(
   "/reports/:kind/:id/dismiss",
-  requireAdminModule("reports"),
+  requireReportsOrMatrimonyProfile(),
   requireAdminAction("reports.manage"),
   asyncHandler(AdminReportsController.dismissReport)
 );
 adminRouter.post(
   "/reports/:kind/:id/escalate",
-  requireAdminModule("reports"),
+  requireReportsOrMatrimonyProfile(),
   requireAdminAction("reports.escalate"),
   asyncHandler(AdminReportsController.escalateReport)
 );
 adminRouter.post(
   "/reports/:kind/:id/warn",
-  requireAdminModule("reports"),
+  requireReportsOrMatrimonyProfile(),
   requireAdminAction("reports.warn"),
   asyncHandler(AdminReportsController.warnFromReport)
 );
 adminRouter.post(
   "/reports/:kind/:id/suspend",
-  requireAdminModule("reports"),
+  requireReportsOrMatrimonyProfile(),
   requireAdminAction("reports.suspend"),
   asyncHandler(AdminReportsController.suspendFromReport)
 );

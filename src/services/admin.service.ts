@@ -18,6 +18,7 @@ import { getPendingReportCount } from "./AdminReports.service";
 import { resolveAdminRole } from "./AdminRoles.service";
 import { ADMIN_ROLE_LABELS } from "../constants/adminRoles.constants";
 import { registrationStatusService } from "./RegistrationStatus.service";
+import { assignedUsersWhere } from "./registrationDesk/moderatorUserAccess";
 import { dummyPasswordVerify, safeEqualString } from "../utils/adminPassword.util";
 import { logSecurityEvent } from "../utils/securityLog";
 
@@ -151,12 +152,16 @@ export async function adminLogin(
 export async function listPendingUsers(opts?: {
   limit?: number;
   offset?: number;
+  assignedToEmail?: string;
 }): Promise<{ users: User[]; total: number }> {
   const limit = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
   const offset = Math.max(opts?.offset ?? 0, 0);
-  const where = {
+  const where: WhereOptions = {
     status: { [Op.in]: ["PENDING", "PENDING_REVIEW", "CHANGES_REQUESTED"] }
   };
+  if (opts?.assignedToEmail !== undefined) {
+    Object.assign(where, assignedUsersWhere(opts.assignedToEmail));
+  }
   const [users, total] = await Promise.all([
     User.findAll({
       where,
@@ -190,6 +195,7 @@ export async function listUsers(
     gender?: string;
     sortBy?: string;
     sortDir?: "asc" | "desc";
+    assignedToEmail?: string;
   }
 ) {
   const safeLimit = Math.min(Math.max(1, limit), 100);
@@ -218,6 +224,9 @@ export async function listUsers(
   }
   if (filters?.gender?.trim()) {
     Object.assign(where, { gender: filters.gender.trim() });
+  }
+  if (filters?.assignedToEmail !== undefined) {
+    Object.assign(where, assignedUsersWhere(filters.assignedToEmail));
   }
   if (loginSource === "google") {
     Object.assign(where, {

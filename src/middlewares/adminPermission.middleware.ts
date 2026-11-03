@@ -86,3 +86,17 @@ export function requireAdminModule(module: AdminModule) {
     return next();
   };
 }
+
+/**
+ * Complaints desk uses the reports module.
+ * Moderators do not have that menu, but Matrimony Reports still reads PROFILE reports.
+ */
+export function requireReportsOrMatrimonyProfile() {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const role = getAdminRole(req);
+    if (roleHasModule(role, "reports")) return next();
+    const kind = String(req.params.kind || req.query.kind || "").toUpperCase();
+    if (roleHasModule(role, "matrimony_reports") && kind === "PROFILE") return next();
+    return error(res, "Insufficient permissions for this module.", 403);
+  };
+}

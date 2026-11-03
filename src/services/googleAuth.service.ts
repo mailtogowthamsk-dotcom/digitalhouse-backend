@@ -313,6 +313,14 @@ export async function completeGoogleProfile(
   }
 
   await user.reload();
+  void import("./registrationDesk/RegistrationNotify.service")
+    .then((m) => m.enqueueRegistrationReceived(user.id))
+    .catch((err) => {
+      console.error(
+        "[registration-notify] enqueue failed:",
+        err instanceof Error ? err.message : err
+      );
+    });
   return toAuthUser(user);
 }
 

@@ -19,9 +19,18 @@ import {
 } from "../validations/admin.validation";
 import { adminBroadcastSchema } from "../validations/notifications.validation";
 import { adminBroadcast, getNotificationAudienceStats } from "../services/Notification.service";
+import { getAdminEmail, getAdminRole } from "../middlewares/adminPermission.middleware";
+import { moderatorBlockedFromUser } from "../services/registrationDesk/moderatorUserAccess";
 
 /** Attribution for API-key requests — never embed the raw key in audit fields. */
 const ADMIN_API_KEY_ACTOR = "api_key";
+
+/** Moderators may change only members assigned to their support-team email. */
+async function rejectIfModeratorUnassigned(req: Request, res: Response, userId: number): Promise<boolean> {
+  if (!(await moderatorBlockedFromUser(getAdminRole(req), getAdminEmail(req), userId))) return false;
+  error(res, "This member is not assigned to you.", 403);
+  return true;
+}
 
 /** POST /api/admin/login – email + password; returns JWT. No auth middleware. */
 export async function login(req: Request, res: Response) {
@@ -51,11 +60,14 @@ export async function listUsers(req: Request, res: Response) {
     req.query.sortDir === "asc" || req.query.sortDir === "desc"
       ? req.query.sortDir
       : undefined;
+  const role = getAdminRole(req);
+  const assignedToEmail = role === "MODERATOR" ? getAdminEmail(req) ?? "" : undefined;
   const result = await adminService.listUsers(page, limit, status, q, loginSource, {
     community,
     gender,
     sortBy,
-    sortDir
+    sortDir,
+    assignedToEmail
   });
   return success(res, result);
 }
@@ -71,7 +83,12 @@ export async function listPending(req: Request, res: Response) {
   const page = Math.max(1, Number(req.query.page) || 1);
   const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
   const offset = (page - 1) * limit;
-  const { users, total } = await adminService.listPendingUsers({ limit, offset });
+  const role = getAdminRole(req);
+  const { users, total } = await adminService.listPendingUsers({
+    limit,
+    offset,
+    assignedToEmail: role === "MODERATOR" ? getAdminEmail(req) ?? "" : undefined
+  });
   const list = await Promise.all(users.map((u) => userService.toAdminUser(u)));
   return success(res, { users: list, page, limit, total });
 }
@@ -80,6 +97,9 @@ export async function listPending(req: Request, res: Response) {
 export async function getUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (await moderatorBlockedFromUser(getAdminRole(req), getAdminEmail(req), id)) {
+    return error(res, "User not found", 404);
+  }
   const detail = await adminUserManagement.getAdminUserDetail(id);
   if (!detail) return error(res, "User not found", 404);
   return success(res, detail);
@@ -89,6 +109,7 @@ export async function getUser(req: Request, res: Response) {
 export async function updateUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (await rejectIfModeratorUnassigned(req, res, id)) return;
   try {
     const body = updateAdminUserSchema.parse(req.body || {});
     const user = await adminUserManagement.updateAdminUser(id, body);
@@ -103,6 +124,7 @@ export async function updateUser(req: Request, res: Response) {
 export async function softDeleteUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (await rejectIfModeratorUnassigned(req, res, id)) return;
   const body = softDeleteUserSchema.parse(req.body || {});
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
@@ -117,6 +139,7 @@ export async function softDeleteUser(req: Request, res: Response) {
 export async function logoutUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (await rejectIfModeratorUnassigned(req, res, id)) return;
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
     await adminUserManagement.logoutUser(id, adminId);
@@ -130,6 +153,9 @@ export async function logoutUser(req: Request, res: Response) {
 export async function restoreUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (getAdminRole(req) === "MODERATOR") {
+    return error(res, "Insufficient permissions for this action.", 403);
+  }
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
     const user = await adminUserManagement.restoreSoftDeletedUser(id, adminId);
@@ -143,6 +169,9 @@ export async function restoreUser(req: Request, res: Response) {
 export async function hardDeleteUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (getAdminRole(req) === "MODERATOR") {
+    return error(res, "Insufficient permissions for this action.", 403);
+  }
   const body = hardDeleteUserSchema.parse(req.body || {});
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
@@ -161,6 +190,7 @@ export async function hardDeleteUser(req: Request, res: Response) {
 export async function approveUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (await rejectIfModeratorUnassigned(req, res, id)) return;
   const body = approveUserSchema.parse(req.body || {});
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
@@ -175,6 +205,7 @@ export async function approveUser(req: Request, res: Response) {
 export async function rejectUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (await rejectIfModeratorUnassigned(req, res, id)) return;
   const body = rejectUserSchema.parse(req.body);
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
@@ -189,6 +220,7 @@ export async function rejectUser(req: Request, res: Response) {
 export async function requestRegistrationChanges(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (await rejectIfModeratorUnassigned(req, res, id)) return;
   const body = requestRegistrationChangesSchema.parse(req.body);
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
@@ -202,6 +234,7 @@ export async function requestRegistrationChanges(req: Request, res: Response) {
 export async function requestUserReferral(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (await rejectIfModeratorUnassigned(req, res, id)) return;
   const body = referralAdminNoteSchema.parse(req.body || {});
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
@@ -220,6 +253,7 @@ export async function requestUserReferral(req: Request, res: Response) {
 export async function confirmUserReferral(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (await rejectIfModeratorUnassigned(req, res, id)) return;
   const body = referralAdminNoteSchema.parse(req.body || {});
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
@@ -238,6 +272,7 @@ export async function confirmUserReferral(req: Request, res: Response) {
 export async function rejectUserReferral(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid user id", 400);
+  if (await rejectIfModeratorUnassigned(req, res, id)) return;
   const body = referralAdminNoteSchema.parse(req.body || {});
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
@@ -255,6 +290,9 @@ export async function rejectUserReferral(req: Request, res: Response) {
 
 /** List pending media (awaiting admin approval) */
 export async function listPendingMedia(req: Request, res: Response) {
+  if (getAdminRole(req) === "MODERATOR") {
+    return error(res, "Insufficient permissions for this action.", 403);
+  }
   const list = await mediaService.listPendingMedia();
   return success(res, { media: list });
 }
@@ -263,6 +301,9 @@ export async function listPendingMedia(req: Request, res: Response) {
 export async function approveMedia(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid media id", 400);
+  if (getAdminRole(req) === "MODERATOR") {
+    return error(res, "Insufficient permissions for this action.", 403);
+  }
   try {
     await mediaService.approveMedia(id);
     return success(res, { message: "Media approved." });
@@ -277,6 +318,9 @@ export async function approveMedia(req: Request, res: Response) {
 export async function rejectMedia(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!id) return error(res, "Invalid media id", 400);
+  if (getAdminRole(req) === "MODERATOR") {
+    return error(res, "Insufficient permissions for this action.", 403);
+  }
   try {
     await mediaService.rejectMedia(id);
     return success(res, { message: "Media rejected." });
@@ -299,6 +343,9 @@ export async function getStats(req: Request, res: Response) {
 
 /** GET /admin/pending-updates – list pending Matrimony & Business profile updates */
 export async function listPendingUpdates(req: Request, res: Response) {
+  if (getAdminRole(req) === "MODERATOR") {
+    return error(res, "Insufficient permissions for this action.", 403);
+  }
   const sectionRaw = typeof req.query.section === "string" ? req.query.section.toUpperCase() : undefined;
   const section =
     sectionRaw === "MATRIMONY" || sectionRaw === "BUSINESS" ? sectionRaw : undefined;
@@ -321,6 +368,9 @@ export async function listPendingUpdates(req: Request, res: Response) {
 
 /** POST /admin/approve-update – approve pending profile update; move data to main profile */
 export async function approveUpdate(req: Request, res: Response) {
+  if (getAdminRole(req) === "MODERATOR") {
+    return error(res, "Insufficient permissions for this action.", 403);
+  }
   const body = approveProfileUpdateSchema.parse(req.body || {});
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {
@@ -360,6 +410,9 @@ export async function broadcastNotifications(req: Request, res: Response) {
 
 /** POST /admin/reject-update – reject pending profile update; store remarks */
 export async function rejectUpdate(req: Request, res: Response) {
+  if (getAdminRole(req) === "MODERATOR") {
+    return error(res, "Insufficient permissions for this action.", 403);
+  }
   const body = rejectProfileUpdateSchema.parse(req.body);
   const adminId = (req as any).adminEmail ?? ADMIN_API_KEY_ACTOR;
   try {

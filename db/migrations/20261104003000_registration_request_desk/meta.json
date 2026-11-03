@@ -1,0 +1,6 @@
+{
+  "description": "Registration request desk: support team, assignment, notes, notification log",
+  "idempotent": true,
+  "rollback": true,
+  "destructive": false
+}

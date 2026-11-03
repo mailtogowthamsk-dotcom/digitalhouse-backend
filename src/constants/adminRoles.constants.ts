@@ -31,7 +31,8 @@ export const ADMIN_MODULES = [
   "advertisements",
   "invoices",
   "system_scheduler",
-  "settings"
+  "settings",
+  "registration_requests"
 ] as const;
 
 export type AdminModule = (typeof ADMIN_MODULES)[number];
@@ -57,7 +58,8 @@ export const ADMIN_MODULE_LABELS: Record<AdminModule, string> = {
   advertisements: "Advertisements",
   invoices: "Invoices",
   system_scheduler: "System Scheduler",
-  settings: "Settings & Roles"
+  settings: "Settings & Roles",
+  registration_requests: "Registration Requests"
 };
 
 /**
@@ -101,7 +103,8 @@ export const ADMIN_ACTIONS = [
   "advertisements.refund",
   "advertisements.pricing",
   "invoices.download",
-  "invoices.resend"
+  "invoices.resend",
+  "registration_requests.manage_team"
 ] as const;
 
 export type AdminAction = (typeof ADMIN_ACTIONS)[number];
@@ -143,23 +146,18 @@ export const ADMIN_ACTION_LABELS: Record<AdminAction, string> = {
   "advertisements.refund": "Refund advertisement payments",
   "advertisements.pricing": "Manage advertisement pricing and durations",
   "invoices.download": "Download invoice PDFs",
-  "invoices.resend": "Resend invoice emails"
+  "invoices.resend": "Resend invoice emails",
+  "registration_requests.manage_team": "Manage registration support team"
 };
 
 const ALL_MODULES = [...ADMIN_MODULES];
 
 const MODERATOR_MODULES: AdminModule[] = [
-  "dashboard",
-  "posts",
-  "jobs",
-  "marketplace",
-  "helping_hands",
-  "reports",
-  "support",
+  "users",
+  "registration_requests",
   "matrimony_reports",
-  "community_content",
-  "advertisements",
-  "settings"
+  "helping_hands",
+  "support"
 ];
 
 export const ROLE_MODULE_ACCESS: Record<AdminRole, readonly AdminModule[]> = {
@@ -202,18 +200,19 @@ const ADMIN_ROLE_ACTIONS: AdminAction[] = [
   "advertisements.refund",
   "advertisements.pricing",
   "invoices.download",
-  "invoices.resend"
+  "invoices.resend",
+  "registration_requests.manage_team"
 ];
 
 const MODERATOR_ROLE_ACTIONS: AdminAction[] = [
+  "users.approve",
+  "users.edit",
+  "users.suspend",
+  "users.delete",
   "reports.warn",
   "reports.manage",
-  "jobs.manage",
-  "marketplace.manage",
-  "posts.manage",
   "helping_hands.manage",
-  "support.write",
-  "advertisements.manage"
+  "support.write"
 ];
 
 export const ROLE_ACTION_ACCESS: Record<AdminRole, readonly AdminAction[]> = {

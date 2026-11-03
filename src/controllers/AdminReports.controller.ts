@@ -3,6 +3,8 @@ import { z } from "zod";
 import { error, success } from "../utils/response";
 import * as AdminReports from "../services/AdminReports.service";
 import { ADMIN_REPORT_STATUSES, REPORT_KINDS } from "../constants/reports.constants";
+import { getAdminEmail, getAdminRole } from "../middlewares/adminPermission.middleware";
+import { moderatorBlockedFromUser } from "../services/registrationDesk/moderatorUserAccess";
 
 function adminEmail(req: Request): string {
   return String((req as any).adminEmail || "admin");
@@ -154,6 +156,9 @@ export async function suspendFromReport(req: Request, res: Response) {
 export async function warnUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) return error(res, "Invalid user id", 400);
+  if (await moderatorBlockedFromUser(getAdminRole(req), getAdminEmail(req), id)) {
+    return error(res, "User not found", 404);
+  }
   const body = remarksSchema.parse(req.body ?? {});
   try {
     await AdminReports.warnUser(
@@ -175,6 +180,9 @@ export async function warnUser(req: Request, res: Response) {
 export async function suspendUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) return error(res, "Invalid user id", 400);
+  if (await moderatorBlockedFromUser(getAdminRole(req), getAdminEmail(req), id)) {
+    return error(res, "This member is not assigned to you.", 403);
+  }
   const body = remarksSchema.parse(req.body ?? {});
   try {
     await AdminReports.suspendUser(
@@ -195,6 +203,9 @@ export async function suspendUser(req: Request, res: Response) {
 export async function reactivateUser(req: Request, res: Response) {
   const id = Number(req.params.id);
   if (!Number.isFinite(id) || id <= 0) return error(res, "Invalid user id", 400);
+  if (getAdminRole(req) === "MODERATOR") {
+    return error(res, "Insufficient permissions for this action.", 403);
+  }
   const body = remarksSchema.parse(req.body ?? {});
   try {
     await AdminReports.reactivateUser(id, adminEmail(req), body.remarks, body.postId ?? null);

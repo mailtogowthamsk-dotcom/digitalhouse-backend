@@ -126,6 +126,15 @@ export async function register(data: RegisterInput): Promise<User> {
       await referralService.attachReferralCodeAtRegistration(user.id, referralCode);
     }
 
+    void import("./registrationDesk/RegistrationNotify.service")
+      .then((m) => m.enqueueRegistrationReceived(user.id))
+      .catch((err) => {
+        console.error(
+          "[registration-notify] enqueue failed:",
+          err instanceof Error ? err.message : err
+        );
+      });
+
     return user;
   } catch (e: any) {
     const isDup =

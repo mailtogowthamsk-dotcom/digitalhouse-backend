@@ -221,7 +221,14 @@ export async function submitRegistrationCorrection(
     }
   }
 
-  return user.reload();
+  const saved = await user.reload();
+  const resubmittedAtMs = saved.registrationResubmittedAt
+    ? new Date(saved.registrationResubmittedAt).getTime()
+    : Date.now();
+  void import("./registrationDesk/RegistrationNotify.service")
+    .then((m) => m.enqueueRegistrationResubmitted(saved.id, resubmittedAtMs))
+    .catch(() => undefined);
+  return saved;
 }
 
 /**
@@ -322,6 +329,9 @@ export async function approveRegistration(
     console.error("Failed to send approval email to", user.email, e);
   }
   void notifyAccountApproved(user.id).catch(() => undefined);
+  void import("./registrationDesk/RegistrationNotify.service")
+    .then((m) => m.enqueueRegistrationDecision(user.id, "APPROVED"))
+    .catch(() => undefined);
 
   return user;
 }
@@ -371,6 +381,9 @@ export async function rejectRegistration(
     console.error("Failed to send rejection email to", user.email, e);
   }
   void notifyAccountRejected(user.id, note).catch(() => undefined);
+  void import("./registrationDesk/RegistrationNotify.service")
+    .then((m) => m.enqueueRegistrationDecision(user.id, "REJECTED"))
+    .catch(() => undefined);
 
   return user;
 }
