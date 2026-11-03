@@ -51,6 +51,8 @@ export const updateAdminUserSchema = z.object({
   city: z.string().trim().max(80).nullable().optional(),
   district: z.string().trim().max(80).nullable().optional(),
   communityRole: z.string().trim().max(80).nullable().optional(),
+  fatherName: z.string().trim().max(120).nullable().optional(),
+  address: z.string().trim().max(1000).nullable().optional(),
   profileVisibility: z.enum(["PUBLIC", "PRIVATE"]).optional(),
   allowConnectionRequests: z.boolean().optional()
 });

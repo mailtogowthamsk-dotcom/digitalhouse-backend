@@ -48,7 +48,8 @@ import {
   SupportTicketMessage,
   PlatformPopupAck
 } from "../models";
-import type { MatrimonySection } from "../models/UserProfile.model";
+import type { MatrimonySection, PersonalSection } from "../models/UserProfile.model";
+import { ensureUserProfile } from "./ensureUserProfile";
 import { userService } from "./user.service";
 import { registrationStatusService } from "./RegistrationStatus.service";
 import {
@@ -139,6 +140,8 @@ export type AdminUserUpdateInput = {
   city?: string | null;
   district?: string | null;
   communityRole?: string | null;
+  fatherName?: string | null;
+  address?: string | null;
   profileVisibility?: "PUBLIC" | "PRIVATE";
   allowConnectionRequests?: boolean;
 };
@@ -586,6 +589,8 @@ export async function updateAdminUser(userId: number, input: AdminUserUpdateInpu
   assign("profileVisibility");
   assign("allowConnectionRequests");
 
+  const personalTouched = input.fatherName !== undefined || input.address !== undefined;
+
   if (Object.prototype.hasOwnProperty.call(updates, "username")) {
     const cleared =
       updates.username === null ||
@@ -634,7 +639,7 @@ export async function updateAdminUser(userId: number, input: AdminUserUpdateInpu
     }
   }
 
-  if (Object.keys(updates).length === 0) return user;
+  if (Object.keys(updates).length === 0 && !personalTouched) return user;
 
   if (input.email && input.email !== user.email) {
     const existing = await User.findOne({ where: { email: input.email } });
@@ -649,8 +654,31 @@ export async function updateAdminUser(userId: number, input: AdminUserUpdateInpu
     }
   }
 
-  await user.update(updates);
+  if (Object.keys(updates).length > 0) {
+    await user.update(updates);
+  }
+  if (personalTouched) {
+    await saveAdminPersonalFields(userId, input);
+  }
   return user.reload();
+}
+
+function blankToNull(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+/** Father's name and address live on the personal JSON section, not the users row. */
+async function saveAdminPersonalFields(userId: number, input: AdminUserUpdateInput): Promise<void> {
+  const profile = await ensureUserProfile(userId);
+  const current: PersonalSection =
+    profile.personal && typeof profile.personal === "object" && !Array.isArray(profile.personal)
+      ? { ...profile.personal }
+      : {};
+  if (input.fatherName !== undefined) current.fatherName = blankToNull(input.fatherName);
+  if (input.address !== undefined) current.address = blankToNull(input.address);
+  await profile.update({ personal: current });
 }
 
 /** Soft delete — retain data, block login (status DELETED). */
