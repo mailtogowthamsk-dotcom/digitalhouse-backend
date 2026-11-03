@@ -160,6 +160,7 @@ export type ProfilePostItemDto = {
   title: string;
   description: string | null;
   mediaUrl: string | null;
+  thumbnailUrl: string | null;
   createdAt: string;
   visibility: string;
   status: string;
@@ -717,9 +718,14 @@ export async function getProfilePosts(
       const original = p.originalPostId ? originalById.get(p.originalPostId) : null;
       const source = original ?? p;
       const originalUser = original ? ((original as any).User as { fullName?: string } | null) : null;
-      const mediaUrl = isPrivateR2Object(source.mediaUrl)
-        ? await toPrivateSignedUrlIfR2(source.mediaUrl)
-        : await toPublicUrlIfR2(source.mediaUrl ?? null);
+      const resolveMedia = (ref: string | null | undefined) =>
+        isPrivateR2Object(ref)
+          ? toPrivateSignedUrlIfR2(ref)
+          : toPublicUrlIfR2(ref ?? null);
+      const [mediaUrl, thumbnailUrl] = await Promise.all([
+        resolveMedia(source.mediaUrl),
+        resolveMedia(source.thumbnailUrl)
+      ]);
       const rootId = source.id;
       return {
         postId: p.id,
@@ -727,6 +733,7 @@ export async function getProfilePosts(
         title: source.title,
         description: source.description ?? null,
         mediaUrl,
+        thumbnailUrl,
         createdAt: source.createdAt.toISOString(),
         visibility: postVisibilityLabel(parsePostVisibility(source.visibility)),
         status: source.postType === "JOB" && source.jobStatus === "CLOSED" ? "Closed" : "Active",
