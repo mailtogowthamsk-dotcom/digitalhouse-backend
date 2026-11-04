@@ -9,6 +9,13 @@ import {
   type RegistrationWorkflow
 } from "./registrationDesk.logic";
 import { enqueueAssignmentMail, kickRegistrationMailDrain } from "./RegistrationNotify.service";
+import { isPrivateR2Object, toPrivateSignedUrlIfR2, toPublicUrlIfR2 } from "../../utils/r2Client";
+
+async function viewableProfilePhoto(url: string | null | undefined): Promise<string | null> {
+  if (!url || typeof url !== "string" || !url.trim()) return null;
+  if (isPrivateR2Object(url)) return toPrivateSignedUrlIfR2(url);
+  return toPublicUrlIfR2(url);
+}
 
 export type QueueFilter =
   | "all"
@@ -223,6 +230,8 @@ async function loadUserForDesk(userId: number): Promise<{
   district: string | null;
   kulam: string | null;
   occupation: string | null;
+  profilePhoto: string | null;
+  pendingProfilePhoto: string | null;
   createdAt: Date;
   updatedAt: Date;
 } | null> {
@@ -239,10 +248,13 @@ async function loadUserForDesk(userId: number): Promise<{
     district: string | null;
     kulam: string | null;
     occupation: string | null;
+    profilePhoto: string | null;
+    pendingProfilePhoto: string | null;
     createdAt: Date;
     updatedAt: Date;
   }>(
-    `SELECT id, fullName, email, mobile, status, username, gender, dob, location, district, kulam, occupation, createdAt, updatedAt
+    `SELECT id, fullName, email, mobile, status, username, gender, dob, location, district, kulam, occupation,
+            profilePhoto, pending_profile_photo AS pendingProfilePhoto, createdAt, updatedAt
      FROM users WHERE id = :userId AND profile_complete = 1 AND status <> 'DELETED' LIMIT 1`,
     { replacements: { userId }, type: QueryTypes.SELECT }
   );
@@ -300,6 +312,10 @@ export async function getRegistrationRequest(userId: number, actor: Actor) {
   );
 
   const reviewable = isReviewableUserStatus(user.status);
+  const [profilePhoto, pendingProfilePhoto] = await Promise.all([
+    viewableProfilePhoto(user.profilePhoto),
+    viewableProfilePhoto(user.pendingProfilePhoto)
+  ]);
   return {
     request: {
       ...mapRow({
@@ -324,6 +340,8 @@ export async function getRegistrationRequest(userId: number, actor: Actor) {
       district: user.district,
       kulam: user.kulam,
       occupation: user.occupation,
+      profilePhoto,
+      pendingProfilePhoto,
       assignedBy: current?.assignedBy ?? null
     },
     events,

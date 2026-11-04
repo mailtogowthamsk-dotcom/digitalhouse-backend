@@ -268,6 +268,7 @@ export async function listUsers(
     "status",
     "emailVerified",
     "profilePhoto",
+    "pendingProfilePhoto",
     "communityRole",
     "lastLoginProvider",
     "googleId",
@@ -303,7 +304,10 @@ export async function listUsers(
     users: await Promise.all(
       rows.map(async (u) => {
         const sub = subByUser.get(u.id);
-        const photo = await adminProfilePhotoUrl(u.profilePhoto);
+        const [photo, pendingPhoto] = await Promise.all([
+          adminProfilePhotoUrl(u.profilePhoto),
+          adminProfilePhotoUrl(u.pendingProfilePhoto)
+        ]);
         return {
           id: u.id,
           fullName: u.fullName,
@@ -319,6 +323,7 @@ export async function listUsers(
           emailVerified: !!u.emailVerified,
           loginSource: resolveLoginSource(u),
           profilePhoto: photo,
+          pendingProfilePhoto: pendingPhoto,
           subscriptionPlan: sub?.plan ?? null,
           subscriptionStatus: sub?.status ?? null,
           communityRole: u.communityRole ?? null,
