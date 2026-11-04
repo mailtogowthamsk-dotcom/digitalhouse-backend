@@ -198,8 +198,8 @@ export type CompleteGoogleProfileInput = {
   mobile: string;
   location?: string | null;
   occupation?: string | null;
-  fatherName?: string | null;
-  address?: string | null;
+  fatherName: string;
+  address: string;
   workStudyDetails?: string | null;
   profilePhoto?: string | null;
   referralCode?: string | null;
@@ -245,6 +245,14 @@ export async function completeGoogleProfile(
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(input.dob ?? "").trim())) {
     throw Object.assign(new Error("Please select a valid date of birth."), { status: 400 });
+  }
+  const fatherName = input.fatherName.trim();
+  const address = input.address.trim();
+  if (!fatherName) {
+    throw Object.assign(new Error("Please enter your father's name."), { status: 400 });
+  }
+  if (!address) {
+    throw Object.assign(new Error("Please enter your address."), { status: 400 });
   }
 
   const referralCode = input.referralCode?.trim() || "";
@@ -294,12 +302,10 @@ export async function completeGoogleProfile(
     personalCurrent = { ...(rawPersonal as Record<string, unknown>) };
   }
   const occupation = input.occupation?.trim() || null;
-  const fatherName = input.fatherName?.trim() || null;
-  const address = input.address?.trim() || null;
   const workStudyDetails = input.workStudyDetails?.trim() || null;
+  personalCurrent.fatherName = fatherName;
+  personalCurrent.address = address;
   if (occupation) personalCurrent.occupation = occupation;
-  if (fatherName) personalCurrent.fatherName = fatherName;
-  if (address) personalCurrent.address = address;
   if (workStudyDetails) personalCurrent.workStudyDetails = workStudyDetails;
 
   await profile.update({

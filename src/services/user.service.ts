@@ -16,10 +16,10 @@ export type RegisterInput = {
   gender?: string | null;
   dob?: string | null;
   email: string;
-  mobile?: string | null;
+  mobile: string;
   occupation?: string | null;
-  fatherName?: string | null;
-  address?: string | null;
+  fatherName: string;
+  address: string;
   workStudyDetails?: string | null;
   location?: string | null;
   kulam?: string | null;
@@ -76,6 +76,17 @@ export async function register(data: RegisterInput): Promise<User> {
   if (!location) {
     throw Object.assign(new Error("Please select your location."), { status: 400 });
   }
+  const fatherName = data.fatherName?.trim() || "";
+  const address = data.address?.trim() || "";
+  if (!data.mobile?.trim()) {
+    throw Object.assign(new Error("Please enter your mobile number."), { status: 400 });
+  }
+  if (!fatherName) {
+    throw Object.assign(new Error("Please enter your father's name."), { status: 400 });
+  }
+  if (!address) {
+    throw Object.assign(new Error("Please enter your address."), { status: 400 });
+  }
 
   const referralCode = data.referralCode?.trim() || "";
   if (referralCode) {
@@ -108,13 +119,9 @@ export async function register(data: RegisterInput): Promise<User> {
     // Seed community + personal so Edit Profile / signup extras are available immediately.
     const profile = await ensureUserProfile(user.id);
     const occupation = data.occupation?.trim() || null;
-    const fatherName = data.fatherName?.trim() || null;
-    const address = data.address?.trim() || null;
     const workStudyDetails = data.workStudyDetails?.trim() || null;
-    const personal: Record<string, string> = {};
+    const personal: Record<string, string> = { fatherName, address };
     if (occupation) personal.occupation = occupation;
-    if (fatherName) personal.fatherName = fatherName;
-    if (address) personal.address = address;
     if (workStudyDetails) personal.workStudyDetails = workStudyDetails;
     await profile.update({
       community: { kulam },
