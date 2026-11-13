@@ -48,7 +48,7 @@ import {
   SupportTicketMessage,
   PlatformPopupAck
 } from "../models";
-import type { MatrimonySection, PersonalSection } from "../models/UserProfile.model";
+import type { CommunitySection, MatrimonySection, PersonalSection } from "../models/UserProfile.model";
 import { ensureUserProfile } from "./ensureUserProfile";
 import { userService } from "./user.service";
 import { registrationStatusService } from "./RegistrationStatus.service";
@@ -142,6 +142,16 @@ export type AdminUserUpdateInput = {
   communityRole?: string | null;
   fatherName?: string | null;
   address?: string | null;
+  maritalStatus?: string | null;
+  workStudyDetails?: string | null;
+  currentLocation?: string | null;
+  nativeVillage?: string | null;
+  nativeTaluk?: string | null;
+  kulaDeivam?: string | null;
+  instagram?: string | null;
+  facebook?: string | null;
+  linkedin?: string | null;
+  hobbies?: string | null;
   profileVisibility?: "PUBLIC" | "PRIVATE";
   allowConnectionRequests?: boolean;
 };
@@ -292,7 +302,8 @@ export async function getAdminUserDetail(userId: number) {
   if (matrimonySigned) {
     const m = { ...matrimonySigned };
     if (m.candidatePhotoUrl) {
-      m.candidatePhotoUrl = toPublicUrlIfR2(m.candidatePhotoUrl) ?? m.candidatePhotoUrl;
+      m.candidatePhotoUrl =
+        (await adminProfilePhotoUrl(m.candidatePhotoUrl)) ?? m.candidatePhotoUrl;
     }
     if (m.horoscopeDocumentUrl) {
       m.horoscopeDocumentUrl = await toPrivateSignedUrlIfR2(m.horoscopeDocumentUrl);
@@ -301,7 +312,7 @@ export async function getAdminUserDetail(userId: number) {
       m.candidatePhotos = await Promise.all(
         m.candidatePhotos.map(async (p) => ({
           ...p,
-          url: p.url ? (toPublicUrlIfR2(p.url) ?? p.url) : p.url
+          url: p.url ? (await adminProfilePhotoUrl(p.url)) ?? p.url : p.url
         }))
       );
     }
@@ -589,7 +600,21 @@ export async function updateAdminUser(userId: number, input: AdminUserUpdateInpu
   assign("profileVisibility");
   assign("allowConnectionRequests");
 
-  const personalTouched = input.fatherName !== undefined || input.address !== undefined;
+  const personalTouched =
+    input.fatherName !== undefined ||
+    input.address !== undefined ||
+    input.maritalStatus !== undefined ||
+    input.workStudyDetails !== undefined ||
+    input.currentLocation !== undefined ||
+    input.instagram !== undefined ||
+    input.facebook !== undefined ||
+    input.linkedin !== undefined ||
+    input.hobbies !== undefined;
+  const communityTouched =
+    input.nativeVillage !== undefined ||
+    input.nativeTaluk !== undefined ||
+    input.kulaDeivam !== undefined ||
+    input.kulam !== undefined;
 
   if (Object.prototype.hasOwnProperty.call(updates, "username")) {
     const cleared =
@@ -639,7 +664,7 @@ export async function updateAdminUser(userId: number, input: AdminUserUpdateInpu
     }
   }
 
-  if (Object.keys(updates).length === 0 && !personalTouched) return user;
+  if (Object.keys(updates).length === 0 && !personalTouched && !communityTouched) return user;
 
   if (input.email && input.email !== user.email) {
     const existing = await User.findOne({ where: { email: input.email } });
@@ -660,6 +685,9 @@ export async function updateAdminUser(userId: number, input: AdminUserUpdateInpu
   if (personalTouched) {
     await saveAdminPersonalFields(userId, input);
   }
+  if (communityTouched) {
+    await saveAdminCommunityFields(userId, input);
+  }
   return user.reload();
 }
 
@@ -669,16 +697,42 @@ function blankToNull(value: string | null | undefined): string | null {
   return trimmed ? trimmed : null;
 }
 
-/** Father's name and address live on the personal JSON section, not the users row. */
+/** Father's name, address, and the rest of the personal JSON section. */
 async function saveAdminPersonalFields(userId: number, input: AdminUserUpdateInput): Promise<void> {
   const profile = await ensureUserProfile(userId);
   const current: PersonalSection =
     profile.personal && typeof profile.personal === "object" && !Array.isArray(profile.personal)
       ? { ...profile.personal }
       : {};
-  if (input.fatherName !== undefined) current.fatherName = blankToNull(input.fatherName);
-  if (input.address !== undefined) current.address = blankToNull(input.address);
+  const keys = [
+    "fatherName",
+    "address",
+    "maritalStatus",
+    "workStudyDetails",
+    "currentLocation",
+    "instagram",
+    "facebook",
+    "linkedin",
+    "hobbies"
+  ] as const;
+  for (const key of keys) {
+    if (input[key] !== undefined) current[key] = blankToNull(input[key]);
+  }
   await profile.update({ personal: current });
+}
+
+/** Village, taluk, kula deivam, and kulam live on the community JSON section. */
+async function saveAdminCommunityFields(userId: number, input: AdminUserUpdateInput): Promise<void> {
+  const profile = await ensureUserProfile(userId);
+  const current: CommunitySection =
+    profile.community && typeof profile.community === "object" && !Array.isArray(profile.community)
+      ? { ...profile.community }
+      : {};
+  if (input.nativeVillage !== undefined) current.nativeVillage = blankToNull(input.nativeVillage);
+  if (input.nativeTaluk !== undefined) current.nativeTaluk = blankToNull(input.nativeTaluk);
+  if (input.kulaDeivam !== undefined) current.kulaDeivam = blankToNull(input.kulaDeivam);
+  if (input.kulam !== undefined) current.kulam = blankToNull(input.kulam);
+  await profile.update({ community: current });
 }
 
 /** Soft delete — retain data, block login (status DELETED). */

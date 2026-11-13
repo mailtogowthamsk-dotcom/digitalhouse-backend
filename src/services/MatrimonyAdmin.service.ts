@@ -20,7 +20,7 @@ import { normalizeJsonColumn, SECTION_ALLOWED_KEYS } from "./Profile.service";
 import { computeMatrimonyCompletion } from "./MatrimonyCompletion.service";
 import { writeAudit } from "./MatrimonyAudit.service";
 import { approveProfileUpdate, rejectProfileUpdate } from "./admin.service";
-import { toPublicUrlIfR2, toPrivateSignedUrlIfR2 } from "../utils/r2Client";
+import { isPrivateR2Object, toPublicUrlIfR2, toPrivateSignedUrlIfR2 } from "../utils/r2Client";
 import {
   MATRIMONY_REJECTION_REASONS,
   MATRIMONY_VERIFICATION_KEYS,
@@ -292,9 +292,21 @@ async function ensureMeta(
 
 const MATRIMONY_MEDIA_KEYS = ["candidatePhotoUrl", "profilePhotoUrl", "horoscopeDocumentUrl"] as const;
 
-function publicMediaUrl(value: unknown): unknown {
+/** CDN for published photos. Quarantine matrimony uploads stay private until SAFE, so admin must get a signed GET. */
+async function viewableMediaUrl(value: string | null | undefined): Promise<string | null> {
+  if (!value || typeof value !== "string" || !value.trim()) return null;
+  const trimmed = value.trim();
+  if (isPrivateR2Object(trimmed)) {
+    return (await toPrivateSignedUrlIfR2(trimmed)) ?? null;
+  }
+  const pub = toPublicUrlIfR2(trimmed);
+  if (pub) return pub;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : null;
+}
+
+async function publicMediaUrl(value: unknown): Promise<unknown> {
   if (typeof value !== "string" || !value.trim()) return value;
-  return toPublicUrlIfR2(value) ?? value;
+  return (await viewableMediaUrl(value)) ?? null;
 }
 
 async function signMatrimonyMedia(data: Record<string, unknown> | null): Promise<Record<string, unknown> | null> {
@@ -306,7 +318,15 @@ async function signMatrimonyMedia(data: Record<string, unknown> | null): Promise
         ? await toPrivateSignedUrlIfR2(
             typeof out[key] === "string" ? (out[key] as string) : null
           )
-        : publicMediaUrl(out[key]);
+        : await publicMediaUrl(out[key]);
+  }
+  if (Array.isArray(out.candidatePhotos)) {
+    out.candidatePhotos = await Promise.all(
+      (out.candidatePhotos as Array<{ url?: string }>).map(async (photo) => ({
+        ...photo,
+        url: photo?.url ? (await viewableMediaUrl(photo.url)) ?? photo.url : photo?.url
+      }))
+    );
   }
   return out;
 }
@@ -326,21 +346,21 @@ async function signFieldChangesMedia(
             ? await toPrivateSignedUrlIfR2(
                 typeof c.oldValue === "string" ? c.oldValue : null
               )
-            : publicMediaUrl(c.oldValue),
+            : await publicMediaUrl(c.oldValue),
         newValue:
           c.field === "horoscopeDocumentUrl"
             ? await toPrivateSignedUrlIfR2(
                 typeof c.newValue === "string" ? c.newValue : null
               )
-            : publicMediaUrl(c.newValue)
+            : await publicMediaUrl(c.newValue)
       };
     })
   );
 }
 
-function publicUserPhoto(url: string | null): string | null {
+async function publicUserPhoto(url: string | null): Promise<string | null> {
   if (!url) return null;
-  return toPublicUrlIfR2(url) ?? url;
+  return viewableMediaUrl(url);
 }
 
 export async function getMatrimonyAdminStats(): Promise<{
@@ -783,8 +803,8 @@ export async function listMatrimonyRequests(query: MatrimonyRequestListQuery) {
     pageItems.map(async (item) => {
       const url = item._candidateUrl;
       const applicant = item._applicantUrl;
-      item.candidatePhotoUrl = url ? publicUserPhoto(url) : null;
-      item.applicantPhotoUrl = applicant ? publicUserPhoto(applicant) : null;
+      item.candidatePhotoUrl = url ? await publicUserPhoto(url) : null;
+      item.applicantPhotoUrl = applicant ? await publicUserPhoto(applicant) : null;
       // Keep profilePhotoUrl as candidate thumb for backward-compatible list UIs
       item.profilePhotoUrl = item.candidatePhotoUrl;
       const baseline = item._changeBaseline ?? null;
@@ -823,9 +843,9 @@ export async function getMatrimonyRequestDetail(updateId: number) {
 
   const pendingSigned = await signMatrimonyMedia(data);
   const approvedSigned = await signMatrimonyMedia(currentApproved as Record<string, unknown>);
-  const accountOwnerPhoto = publicUserPhoto(user.profilePhoto ?? null);
+  const accountOwnerPhoto = await publicUserPhoto(user.profilePhoto ?? null);
   const candidateRaw = resolveCandidatePhotoUrl(data as Record<string, unknown>);
-  const matrimonyCandidatePhoto = candidateRaw ? publicUserPhoto(candidateRaw) : null;
+  const matrimonyCandidatePhoto = candidateRaw ? await publicUserPhoto(candidateRaw) : null;
   const profileFor = String(data.lookingFor ?? "").toUpperCase();
 
   const { percentage, missing } = computeMatrimonyCompletion(

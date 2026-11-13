@@ -48,7 +48,7 @@ async function signMatrimonyMediaUrls(
       const v = out[key];
       if (typeof v === "string" && v.trim()) {
         out[key] =
-          key === "horoscopeDocumentUrl"
+          key === "horoscopeDocumentUrl" || isPrivateR2Object(v)
             ? await toPrivateSignedUrlIfR2(v)
             : toPublicUrlIfR2(v) ?? v;
       }

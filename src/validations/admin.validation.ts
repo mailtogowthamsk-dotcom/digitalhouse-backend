@@ -53,6 +53,16 @@ export const updateAdminUserSchema = z.object({
   communityRole: z.string().trim().max(80).nullable().optional(),
   fatherName: z.string().trim().max(120).nullable().optional(),
   address: z.string().trim().max(1000).nullable().optional(),
+  maritalStatus: z.string().trim().max(40).nullable().optional(),
+  workStudyDetails: z.string().trim().max(1000).nullable().optional(),
+  currentLocation: z.string().trim().max(120).nullable().optional(),
+  nativeVillage: z.string().trim().max(120).nullable().optional(),
+  nativeTaluk: z.string().trim().max(120).nullable().optional(),
+  kulaDeivam: z.string().trim().max(120).nullable().optional(),
+  instagram: z.string().trim().max(200).nullable().optional(),
+  facebook: z.string().trim().max(200).nullable().optional(),
+  linkedin: z.string().trim().max(200).nullable().optional(),
+  hobbies: z.string().trim().max(500).nullable().optional(),
   profileVisibility: z.enum(["PUBLIC", "PRIVATE"]).optional(),
   allowConnectionRequests: z.boolean().optional()
 });
