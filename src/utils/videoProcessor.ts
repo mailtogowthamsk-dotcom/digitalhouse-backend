@@ -1,6 +1,8 @@
 /**
- * Video probe + optional FFmpeg optimize (H.264/AAC/faststart @ ≤720p).
- * Designed for low-RAM hosts: single job, -threads 1, veryfast preset.
+ * Video probe + optional FFmpeg optimize (H.264/AAC/faststart @ ≤1080p).
+ * Designed for low-RAM hosts: single job, -threads 1, faster preset.
+ * Remuxes (-c copy) when the upload is already H.264/AAC ≤1080 and under target bitrate
+ * to avoid a second lossy encode (main cause of muddy feed videos).
  * If ffmpeg/ffprobe are missing, validation falls back to container/MIME checks only.
  */
 
@@ -35,7 +37,7 @@ export type OptimizeVideoResult = {
   audioCodec: string;
 };
 
-const MAX_EDGE = 720;
+const MAX_EDGE = 1080;
 /** Soft reject above this before re-encode (bits/sec). */
 const MAX_INPUT_BITRATE = 12_000_000;
 const processingLocks = new Set<string>();
@@ -138,7 +140,7 @@ export async function probeVideoFile(filePath: string): Promise<VideoProbeInfo> 
 
 /**
  * Validate probed media against product rules (MP4/H.264/AAC, duration, size).
- * When requireCompliantCodecs is false the caller will FFmpeg-re-encode to 720p,
+ * When requireCompliantCodecs is false the caller will FFmpeg-re-encode to ≤1080p,
  * so typical phone-camera bitrates must not be rejected before that encode.
  * Bitrate is enforced only when the original file would be stored as-is.
  */
@@ -177,7 +179,7 @@ export function assertVideoAllowed(
   // Reject absurd resolutions before encode (above 4K).
   const longEdge = Math.max(probe.width || 0, probe.height || 0);
   if (longEdge > 4096) {
-    throw Object.assign(new Error("Video resolution is too high. Use ≤4K source; we output 720p."), {
+    throw Object.assign(new Error("Video resolution is too high. Use ≤4K source; we output 1080p."), {
       status: 400,
       code: "VIDEO_RESOLUTION_HIGH"
     });
@@ -195,15 +197,24 @@ export function assertVideoAllowed(
   }
 }
 
-/** Target video bitrate (bps) from resolution + duration — keeps quality, caps size. */
+/** Target video bitrate (bps) from resolution + duration — keeps clarity, caps size. */
 export function chooseTargetBitrate(width: number, height: number, durationSec: number): number {
   const pixels = Math.max(1, width * height);
-  const p720 = 720 * 1280;
-  const scale = Math.min(1, pixels / p720);
-  let bps = Math.round(2_000_000 * scale);
-  if (durationSec > 45) bps = Math.round(bps * 0.85);
+  const p1080 = 1080 * 1920;
+  const scale = Math.min(1, pixels / p1080);
+  let bps = Math.round(4_000_000 * scale);
+  if (durationSec > 45) bps = Math.round(bps * 0.9);
   if (durationSec < 10) bps = Math.round(bps * 1.1);
-  return Math.max(800_000, Math.min(2_500_000, bps));
+  return Math.max(1_500_000, Math.min(5_000_000, bps));
+}
+
+function isAlreadyOptimized(probe: VideoProbeInfo, targetBitrate: number): boolean {
+  const longEdge = Math.max(probe.width || 0, probe.height || 0);
+  const okVideo = probe.videoCodec === "h264" || probe.videoCodec === "avc1";
+  const okAudio = !probe.audioCodec || probe.audioCodec === "aac";
+  const okFmt = /mp4|mov|m4a|ismv/i.test(probe.formatName);
+  const bitrateOk = !probe.bitrate || probe.bitrate <= targetBitrate * 1.25;
+  return okVideo && okAudio && okFmt && longEdge > 0 && longEdge <= MAX_EDGE && bitrateOk;
 }
 
 function scaleFilter(width: number, height: number): string {
@@ -216,7 +227,7 @@ function scaleFilter(width: number, height: number): string {
 }
 
 /**
- * Transcode to H.264/AAC MP4 with faststart. Low-RAM: 1 thread, veryfast.
+ * Transcode (or remux) to H.264/AAC MP4 with faststart. Low-RAM: 1 thread, faster preset.
  */
 export async function optimizeVideoBuffer(
   input: Buffer,
@@ -254,48 +265,66 @@ export async function optimizeVideoBuffer(
             ((probe.height || 1) / (probe.width || 1)) * Math.min(MAX_EDGE, probe.width || MAX_EDGE)
           );
     const bitrate = chooseTargetBitrate(outW || MAX_EDGE, outH || MAX_EDGE, probe.durationSec);
-    const vf = scaleFilter(probe.width || MAX_EDGE, probe.height || MAX_EDGE);
 
-    const args = [
-      "-y",
-      "-i",
-      inPath,
-      "-threads",
-      "1",
-      "-map_metadata",
-      "0",
-      "-vf",
-      vf,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-profile:v",
-      "main",
-      "-level",
-      "3.1",
-      "-pix_fmt",
-      "yuv420p",
-      "-b:v",
-      String(bitrate),
-      "-maxrate",
-      String(Math.round(bitrate * 1.3)),
-      "-bufsize",
-      String(Math.round(bitrate * 2)),
-      "-c:a",
-      "aac",
-      "-b:a",
-      "128k",
-      "-ac",
-      "2",
-      "-ar",
-      "44100",
-      "-movflags",
-      "+faststart",
-      "-f",
-      "mp4",
-      outPath
-    ];
+    // Already mobile-friendly: remux only (faststart) — no second generation loss.
+    const remuxOnly = isAlreadyOptimized(probe, bitrate);
+    const args = remuxOnly
+      ? [
+          "-y",
+          "-i",
+          inPath,
+          "-map",
+          "0:v:0",
+          "-map",
+          "0:a:0?",
+          "-c",
+          "copy",
+          "-movflags",
+          "+faststart",
+          "-f",
+          "mp4",
+          outPath
+        ]
+      : [
+          "-y",
+          "-i",
+          inPath,
+          "-threads",
+          "1",
+          "-map_metadata",
+          "0",
+          "-vf",
+          scaleFilter(probe.width || MAX_EDGE, probe.height || MAX_EDGE),
+          "-c:v",
+          "libx264",
+          "-preset",
+          "faster",
+          "-profile:v",
+          "main",
+          "-level",
+          "4.0",
+          "-pix_fmt",
+          "yuv420p",
+          "-b:v",
+          String(bitrate),
+          "-maxrate",
+          String(Math.round(bitrate * 1.35)),
+          "-bufsize",
+          String(Math.round(bitrate * 2)),
+          "-c:a",
+          "aac",
+          "-b:a",
+          "160k",
+          "-ac",
+          "2",
+          "-ar",
+          "44100",
+          "-movflags",
+          "+faststart",
+          "-f",
+          "mp4",
+          outPath
+        ];
     const { code, stderr } = await runCmd("ffmpeg", args, 180_000);
     if (code !== 0) {
       throw Object.assign(new Error(`ffmpeg failed: ${stderr.slice(-300)}`), { status: 500 });

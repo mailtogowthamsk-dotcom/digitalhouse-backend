@@ -1,4 +1,13 @@
-/** Stories / status — 24h ephemeral media for owner + accepted connections only. */
+/**
+ * Stories / status — 24h ephemeral media.
+ * Member stories: owner + accepted connections.
+ * Official (admin) stories: all authenticated members (isOfficial=1).
+ */
+
+/** Display name for the official VettuvaGounder story tray group. */
+export const OFFICIAL_STORY_DISPLAY_NAME = "VettuvaGounder";
+/** Max official stories hydrated into a single tray group. */
+export const OFFICIAL_STORY_TRAY_LIMIT = 50;
 
 export const STORY_TTL_MS = 24 * 60 * 60 * 1000;
 /** Fixed display time for image / text stories (ms). */

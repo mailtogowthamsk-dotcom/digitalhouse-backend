@@ -102,6 +102,10 @@ export const FEED_POST_ATTRIBUTES = [
   "helpResolvedAt",
   "likeCount",
   "commentCount",
+  // Required for canSignPrivate — without this, SAFE private media_files keys
+  // resolve via toPublicUrlIfR2 → null, so feed shows video chrome with no URL
+  // while member profile (raw posts.mediaUrl) still plays.
+  "safetyDecision",
   "createdAt",
   "updatedAt"
 ] as const;
@@ -639,15 +643,20 @@ export async function buildFeedItemsFromPosts(
       const rawScore = Number((p as any).get?.("engagementScore") ?? 0);
       const engagementScore = Number.isFinite(rawScore) ? rawScore : 0;
       const mediaOwnerId = source.userId;
-      // posts.media_url may still point at deleted staging; media_files.objectKey is canonical.
-      let storedMediaKey = source.mediaUrl;
-      let storedThumbKey = source.thumbnailUrl;
-      if (storedMediaKey) {
-        storedMediaKey = resolveFromMap(mediaOwnerId, storedMediaKey) ?? storedMediaKey;
-      }
-      if (storedThumbKey) {
-        storedThumbKey = resolveFromMap(mediaOwnerId, storedThumbKey) ?? storedThumbKey;
-      }
+      // Prefer playable public CDN keys (same as member profile). Live remap to
+      // media_files can still point at un-promoted private quarantine objects;
+      // signing those makes the feed show a poster but RN/Expo often cannot
+      // play query-signed progressive MP4s — keep the public posts.mediaUrl.
+      const preferPlayableFeedKey = (original: string | null | undefined): string | null => {
+        if (!original) return null;
+        const live = resolveFromMap(mediaOwnerId, original);
+        if (!live || live === original) return live ?? original;
+        if (!isPrivateR2Object(live)) return live;
+        if (isPrivateR2Object(original) || !toPublicUrlIfR2(original)) return live;
+        return original;
+      };
+      let storedMediaKey = preferPlayableFeedKey(source.mediaUrl);
+      let storedThumbKey = preferPlayableFeedKey(source.thumbnailUrl);
       const galleryParsed = galleryByPostId.get(p.id) ?? [];
       const gallerySeen = new Set<string>();
       const galleryRaw: string[] = [];

@@ -31,6 +31,8 @@ import {
   stopStoriesExpiryJobs
 } from "../services/StoriesExpiry.service";
 
+import { startPublicationJobs, stopPublicationJobs } from "../services/ProminentPublication.service";
+
 export function startAllScheduledJobs(): void {
   startMatrimonySubscriptionJobs();
   startMarketplaceExpiryJobs();
@@ -39,9 +41,10 @@ export function startAllScheduledJobs(): void {
   startOrphanMediaCleanupJobs();
   startAdvertisementLifecycleJobs();
   startStoriesExpiryJobs();
+  startPublicationJobs();
 }
 
-export function stopAllScheduledJobs(): void {
+export async function stopAllScheduledJobs(): Promise<void> {
   try {
     stopMatrimonySubscriptionJobs();
     stopMarketplaceExpiryJobs();
@@ -50,6 +53,7 @@ export function stopAllScheduledJobs(): void {
     stopOrphanMediaCleanupJobs();
     stopAdvertisementLifecycleJobs();
     stopStoriesExpiryJobs();
+    await stopPublicationJobs();
   } catch (e) {
     console.warn("[scheduler] stop jobs:", e);
   }

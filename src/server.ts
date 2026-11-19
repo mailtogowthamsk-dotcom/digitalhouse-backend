@@ -238,7 +238,7 @@ async function gracefulShutdown(signal: string) {
   shuttingDown = true;
   console.log(`[shutdown] ${signal} — closing HTTP + DB pool…`);
   if (schedulerInApiProcess()) {
-    stopAllScheduledJobs();
+    await stopAllScheduledJobs();
   }
   await shutdownRealtime().catch((e) =>
     console.warn("[shutdown] realtime:", e)

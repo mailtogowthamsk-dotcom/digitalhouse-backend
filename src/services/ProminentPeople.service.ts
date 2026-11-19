@@ -2,7 +2,7 @@
  * Prominent People — Hall of Fame (admin CMS + member read).
  */
 
-import { Op, type Order, type WhereOptions } from "sequelize";
+import { Op, type Transaction, type Order, type WhereOptions } from "sequelize";
 import {
   ProminentCategory,
   ProminentPerson,
@@ -26,6 +26,8 @@ import {
   putR2ObjectBuffer,
   toPublicUrlIfR2
 } from "../utils/r2Client";
+import { sequelize } from "../config/db";
+import { enqueueFirstPublication } from "./ProminentPublication.service";
 import { randomUUID } from "crypto";
 import path from "path";
 
@@ -354,9 +356,9 @@ export async function adminListPeople(input: {
   return { items, page, limit, total: count, hasMore: page * limit < count };
 }
 
-async function replaceTimeline(personId: number, entries: TimelineInput[] | undefined) {
+async function replaceTimeline(personId: number, entries: TimelineInput[] | undefined, transaction: Transaction) {
   if (entries === undefined) return;
-  await ProminentTimelineEntry.destroy({ where: { personId } });
+  await ProminentTimelineEntry.destroy({ where: { personId }, transaction });
   if (!entries.length) return;
   const now = new Date();
   await ProminentTimelineEntry.bulkCreate(
@@ -368,13 +370,14 @@ async function replaceTimeline(personId: number, entries: TimelineInput[] | unde
       sortOrder: e.sortOrder ?? i,
       createdAt: now,
       updatedAt: now
-    })) as any
+    })) as any,
+    { transaction }
   );
 }
 
-async function replaceGallery(personId: number, items: GalleryInput[] | undefined) {
+async function replaceGallery(personId: number, items: GalleryInput[] | undefined, transaction: Transaction) {
   if (items === undefined) return;
-  await ProminentGalleryItem.destroy({ where: { personId } });
+  await ProminentGalleryItem.destroy({ where: { personId }, transaction });
   if (!items.length) return;
   const now = new Date();
   await ProminentGalleryItem.bulkCreate(
@@ -385,7 +388,8 @@ async function replaceGallery(personId: number, items: GalleryInput[] | undefine
       sortOrder: g.sortOrder ?? i,
       createdAt: now,
       updatedAt: now
-    })) as any
+    })) as any,
+    { transaction }
   );
 }
 
@@ -393,78 +397,86 @@ export async function createPerson(input: PersonWriteInput, adminEmail: string) 
   const category = await ProminentCategory.findByPk(input.categoryId);
   if (!category || !category.isActive) throw httpError("Invalid category.", 400);
 
-  const now = new Date();
-  const isPublished = !!input.isPublished;
-  const person = await ProminentPerson.create({
-    fullName: input.fullName.trim(),
-    categoryId: input.categoryId,
-    occupation: input.occupation?.trim() || null,
-    currentDesignation: input.currentDesignation?.trim() || null,
-    shortDescription: input.shortDescription?.trim() || null,
-    biography: input.biography?.trim() || null,
-    education: input.education?.trim() || null,
-    achievements: input.achievements?.trim() || null,
-    awards: input.awards?.trim() || null,
-    communityContribution: input.communityContribution?.trim() || null,
-    profileImageKey: normalizeKey(input.profileImageKey),
-    heroImageKey: normalizeKey(input.heroImageKey),
-    isFeatured: !!input.isFeatured,
-    isPublished,
-    featuredSortOrder: input.featuredSortOrder ?? 0,
-    sortOrder: input.sortOrder ?? 0,
-    createdBy: adminEmail,
-    updatedBy: adminEmail,
-    publishedAt: isPublished ? now : null,
-    createdAt: now,
-    updatedAt: now
-  } as any);
+  const personId = await sequelize.transaction(async (transaction) => {
+    const now = new Date();
+    const isPublished = !!input.isPublished;
+    const person = await ProminentPerson.create({
+      fullName: input.fullName.trim(),
+      categoryId: input.categoryId,
+      occupation: input.occupation?.trim() || null,
+      currentDesignation: input.currentDesignation?.trim() || null,
+      shortDescription: input.shortDescription?.trim() || null,
+      biography: input.biography?.trim() || null,
+      education: input.education?.trim() || null,
+      achievements: input.achievements?.trim() || null,
+      awards: input.awards?.trim() || null,
+      communityContribution: input.communityContribution?.trim() || null,
+      profileImageKey: normalizeKey(input.profileImageKey),
+      heroImageKey: normalizeKey(input.heroImageKey),
+      isFeatured: !!input.isFeatured,
+      isPublished,
+      featuredSortOrder: input.featuredSortOrder ?? 0,
+      sortOrder: input.sortOrder ?? 0,
+      createdBy: adminEmail,
+      updatedBy: adminEmail,
+      publishedAt: isPublished ? now : null,
+      createdAt: now,
+      updatedAt: now
+    } as any, { transaction });
 
-  await replaceTimeline(person.id, input.timeline);
-  await replaceGallery(person.id, input.gallery);
+    await replaceTimeline(person.id, input.timeline, transaction);
+    await replaceGallery(person.id, input.gallery, transaction);
+    if (isPublished) await enqueueFirstPublication(person.id, transaction);
+    return person.id;
+  });
   mdmCacheInvalidateAll();
-  return getPersonById(person.id, { publishedOnly: false });
+  return getPersonById(personId, { publishedOnly: false });
 }
 
 export async function updatePerson(id: number, input: Partial<PersonWriteInput>, adminEmail: string) {
-  const person = await ProminentPerson.findByPk(id);
-  if (!person) throw httpError("Person not found.", 404);
+  await sequelize.transaction(async (transaction) => {
+    const person = await ProminentPerson.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!person) throw httpError("Person not found.", 404);
 
-  if (input.categoryId != null) {
-    const category = await ProminentCategory.findByPk(input.categoryId);
-    if (!category || !category.isActive) throw httpError("Invalid category.", 400);
-  }
+    if (input.categoryId != null) {
+      const category = await ProminentCategory.findByPk(input.categoryId, { transaction });
+      if (!category || !category.isActive) throw httpError("Invalid category.", 400);
+    }
 
-  const updates: Record<string, unknown> = { updatedBy: adminEmail };
-  if (input.fullName !== undefined) updates.fullName = input.fullName.trim();
-  if (input.categoryId !== undefined) updates.categoryId = input.categoryId;
-  if (input.occupation !== undefined) updates.occupation = input.occupation?.trim() || null;
-  if (input.currentDesignation !== undefined)
-    updates.currentDesignation = input.currentDesignation?.trim() || null;
-  if (input.shortDescription !== undefined)
-    updates.shortDescription = input.shortDescription?.trim() || null;
-  if (input.biography !== undefined) updates.biography = input.biography?.trim() || null;
-  if (input.education !== undefined) updates.education = input.education?.trim() || null;
-  if (input.achievements !== undefined) updates.achievements = input.achievements?.trim() || null;
-  if (input.awards !== undefined) updates.awards = input.awards?.trim() || null;
-  if (input.communityContribution !== undefined)
-    updates.communityContribution = input.communityContribution?.trim() || null;
-  if (input.profileImageKey !== undefined)
-    updates.profileImageKey = normalizeKey(input.profileImageKey);
-  if (input.heroImageKey !== undefined) updates.heroImageKey = normalizeKey(input.heroImageKey);
-  if (input.isFeatured !== undefined) updates.isFeatured = !!input.isFeatured;
-  if (input.featuredSortOrder !== undefined) updates.featuredSortOrder = input.featuredSortOrder;
-  if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
-  if (input.isPublished !== undefined) {
-    updates.isPublished = !!input.isPublished;
-    if (input.isPublished && !person.publishedAt) updates.publishedAt = new Date();
-    if (!input.isPublished) updates.publishedAt = null;
-  }
+    const updates: Record<string, unknown> = { updatedBy: adminEmail };
+    if (input.fullName !== undefined) updates.fullName = input.fullName.trim();
+    if (input.categoryId !== undefined) updates.categoryId = input.categoryId;
+    if (input.occupation !== undefined) updates.occupation = input.occupation?.trim() || null;
+    if (input.currentDesignation !== undefined)
+      updates.currentDesignation = input.currentDesignation?.trim() || null;
+    if (input.shortDescription !== undefined)
+      updates.shortDescription = input.shortDescription?.trim() || null;
+    if (input.biography !== undefined) updates.biography = input.biography?.trim() || null;
+    if (input.education !== undefined) updates.education = input.education?.trim() || null;
+    if (input.achievements !== undefined) updates.achievements = input.achievements?.trim() || null;
+    if (input.awards !== undefined) updates.awards = input.awards?.trim() || null;
+    if (input.communityContribution !== undefined)
+      updates.communityContribution = input.communityContribution?.trim() || null;
+    if (input.profileImageKey !== undefined)
+      updates.profileImageKey = normalizeKey(input.profileImageKey);
+    if (input.heroImageKey !== undefined) updates.heroImageKey = normalizeKey(input.heroImageKey);
+    if (input.isFeatured !== undefined) updates.isFeatured = !!input.isFeatured;
+    if (input.featuredSortOrder !== undefined) updates.featuredSortOrder = input.featuredSortOrder;
+    if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
+    if (input.isPublished !== undefined) {
+      updates.isPublished = !!input.isPublished;
+      if (input.isPublished && !person.publishedAt) updates.publishedAt = new Date();
+      if (!input.isPublished) updates.publishedAt = null;
+    }
 
-  await person.update(updates as any);
-  await replaceTimeline(person.id, input.timeline);
-  await replaceGallery(person.id, input.gallery);
+    const publishing = !!input.isPublished && !person.isPublished;
+    await person.update(updates as any, { transaction });
+    await replaceTimeline(person.id, input.timeline, transaction);
+    await replaceGallery(person.id, input.gallery, transaction);
+    if (publishing) await enqueueFirstPublication(id, transaction);
+  });
   mdmCacheInvalidateAll();
-  return getPersonById(person.id, { publishedOnly: false });
+  return getPersonById(id, { publishedOnly: false });
 }
 
 export async function deletePerson(id: number) {

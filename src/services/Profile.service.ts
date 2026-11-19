@@ -351,6 +351,19 @@ function buildSectionsAndCompletion(
   };
 }
 
+/** Reject a present-but-empty value. Absent keys stay optional for partial updates. */
+function requireProfileText(
+  payload: Record<string, unknown>,
+  key: string,
+  message: string
+): void {
+  if (!Object.prototype.hasOwnProperty.call(payload, key)) return;
+  const value = payload[key];
+  if (value == null || String(value).trim() === "") {
+    throw Object.assign(new Error(message), { status: 400 });
+  }
+}
+
 /** Sections that require admin approval before going live. Others apply immediately. */
 export const RESTRICTED_PROFILE_SECTIONS = ["matrimony", "business"] as const;
 
@@ -483,9 +496,9 @@ export async function getProfile(userId: number): Promise<ProfileMeResponse> {
     },
     professional_info: {
       education: user.education ?? null,
-      job_title: user.jobTitle ?? user.occupation ?? null,
+      job_title: user.jobTitle ?? null,
       company_name: user.company ?? null,
-      work_location: user.workLocation ?? user.location ?? null,
+      work_location: user.workLocation ?? null,
       skills: user.skills ?? null
     },
     stats: {
@@ -843,9 +856,10 @@ export async function updateProfileSection(
     if (payload.native_district !== undefined) {
       const district =
         payload.native_district != null ? String(payload.native_district).trim() || null : null;
+      if (!district) {
+        throw Object.assign(new Error("Native district is required."), { status: 400 });
+      }
       updates.district = district;
-      // Keep location in sync for registration-era consumers of users.location
-      if (district) updates.location = district;
     }
     if (Object.keys(updates).length > 0) {
       await user.update(updates as any);
@@ -873,6 +887,12 @@ export async function updateProfileSection(
     }
     cleaned.kulam = await assertValidKulam(String(cleaned.kulam));
     await user.update({ kulam: cleaned.kulam } as any);
+  }
+
+  if (section === "personal") {
+    requireProfileText(payload, "occupation", "Occupation is required.");
+    requireProfileText(payload, "maritalStatus", "Marital status is required.");
+    requireProfileText(payload, "currentLocation", "Current location is required.");
   }
 
   if (section === "personal" && cleaned.occupation !== undefined) {

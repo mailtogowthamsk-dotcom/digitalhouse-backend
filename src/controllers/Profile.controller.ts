@@ -29,8 +29,8 @@ export async function getProfile(req: AuthRequest, res: Response) {
 
 /**
  * PUT /api/profile/me
- * Update editable fields only (profile_image, address, professional info, skills).
- * On update sets status to PENDING_REVIEW; admin must re-approve.
+ * Update photo and professional columns immediately. Does not change account status.
+ * Business and matrimony section edits stay on the pending-review queue.
  */
 export async function updateProfile(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);

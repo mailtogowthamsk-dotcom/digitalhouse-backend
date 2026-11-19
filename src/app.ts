@@ -127,7 +127,9 @@ function registerApiMounts(application: Express, mount: string) {
 
   application.use(mount, (req, res, next) => {
     if (req.method === "OPTIONS") return next();
-    if (req.path === "/health" || req.path === "/landing") return next();
+    if (req.path === "/health" || req.path === "/landing" || req.path.startsWith("/landing/")) {
+      return next();
+    }
     if (!dbReady) {
       return res.status(503).json({
         ok: false,

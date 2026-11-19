@@ -7,6 +7,8 @@ import { assertCanSendMessage } from "./MessagePermission.service";
 import { emitMessageEvents } from "../realtime/messageEvents";
 import { scheduleMessagePush } from "../realtime/messagePushQueue";
 import {
+  OFFICIAL_STORY_DISPLAY_NAME,
+  OFFICIAL_STORY_TRAY_LIMIT,
   STORY_IMAGE_DURATION_MS,
   STORY_PURGED_MEDIA_KEY,
   STORY_R2_KEY_PREFIX,
@@ -167,6 +169,8 @@ async function assertCanViewStory(viewerId: number, story: Story): Promise<void>
   if (!isActiveStory(story)) {
     serviceError("Story not found", 404, "STORY_NOT_FOUND");
   }
+  /** Official admin stories are global for any authenticated member. */
+  if (story.isOfficial) return;
   if (story.userId === viewerId) return;
 
   const blocked = await getBlockedUserIds(viewerId).catch(() => new Set<number>());
@@ -178,6 +182,19 @@ async function assertCanViewStory(viewerId: number, story: Story): Promise<void>
   if (!connected) {
     serviceError("Story not found", 404, "STORY_NOT_FOUND");
   }
+}
+
+/** Env-backed users.id used only as FK + storage owner for official stories. */
+export function getOfficialStoryOwnerUserId(): number {
+  const n = Number(process.env.OFFICIAL_STORY_OWNER_USER_ID || "");
+  if (!Number.isInteger(n) || n <= 0) {
+    serviceError(
+      "Official story owner is not configured (OFFICIAL_STORY_OWNER_USER_ID)",
+      503,
+      "OFFICIAL_OWNER_UNCONFIGURED"
+    );
+  }
+  return n;
 }
 
 function toStoryDto(
@@ -228,7 +245,22 @@ export type CreateStoryInput = {
   file_size?: number | null;
 };
 
-export async function createStory(userId: number, input: CreateStoryInput) {
+export type CreateStoryOptions = {
+  /** Only AdminStories service may set this. Member POST /stories never passes it. */
+  isOfficial?: boolean;
+  createdByAdminEmail?: string | null;
+};
+
+export async function createStory(
+  userId: number,
+  input: CreateStoryInput,
+  opts: CreateStoryOptions = {}
+) {
+  const isOfficial = opts.isOfficial === true;
+  const createdByAdminEmail = isOfficial
+    ? opts.createdByAdminEmail?.trim()?.slice(0, 191) || null
+    : null;
+
   if (input.media_type === "text") {
     const caption = normalizeStoryCaption(input.caption);
     if (!caption) serviceError("Text is required", 400, "TEXT_REQUIRED");
@@ -243,6 +275,8 @@ export async function createStory(userId: number, input: CreateStoryInput) {
       mimeType: "text/plain",
       fileSize: null,
       likeCount: 0,
+      isOfficial,
+      createdByAdminEmail,
       createdAt: now,
       expiresAt: storyExpiresAt(now),
       deletedAt: null
@@ -327,6 +361,8 @@ export async function createStory(userId: number, input: CreateStoryInput) {
       mimeType,
       fileSize,
       likeCount: 0,
+      isOfficial,
+      createdByAdminEmail,
       createdAt: now,
       expiresAt: storyExpiresAt(now),
       deletedAt: null
@@ -427,22 +463,37 @@ export async function listStoryTray(viewerId: number) {
   const authorIds = [viewerId, ...peerIds];
 
   const storiesTimed = await timedMs(() =>
-    Story.findAll({
-      where: {
-        userId: { [Op.in]: authorIds },
-        deletedAt: null,
-        expiresAt: { [Op.gt]: now }
-      },
-      order: [
-        ["userId", "ASC"],
-        ["createdAt", "ASC"]
-      ],
-      limit: 500
-    })
+    Promise.all([
+      Story.findAll({
+        where: {
+          userId: { [Op.in]: authorIds },
+          isOfficial: false,
+          deletedAt: null,
+          expiresAt: { [Op.gt]: now }
+        },
+        order: [
+          ["userId", "ASC"],
+          ["createdAt", "ASC"]
+        ],
+        limit: 500
+      }),
+      Story.findAll({
+        where: {
+          isOfficial: true,
+          deletedAt: null,
+          expiresAt: { [Op.gt]: now }
+        },
+        order: [["createdAt", "ASC"]],
+        limit: OFFICIAL_STORY_TRAY_LIMIT
+      })
+    ])
   );
-  const stories = storiesTimed.value;
+  const [stories, officialStories] = storiesTimed.value;
 
-  const storyIds = stories.map((s) => s.id);
+  const storyIds = [
+    ...stories.map((s) => s.id),
+    ...officialStories.map((s) => s.id)
+  ];
   const byUser = new Map<number, Story[]>();
   for (const s of stories) {
     const list = byUser.get(s.userId) ?? [];
@@ -504,11 +555,12 @@ export async function listStoryTray(viewerId: number) {
     has_unseen: boolean;
     latest_at: string;
     is_own: boolean;
+    is_official?: boolean;
     stories: ReturnType<typeof toStoryDto>[];
   };
 
   const dtoStarted = Date.now();
-  const groups: Group[] = [];
+  const memberGroups: Group[] = [];
   for (const [uid, list] of byUser) {
     const u = userMap.get(uid);
     if (!u) continue;
@@ -526,7 +578,7 @@ export async function listStoryTray(viewerId: number) {
     const hasUnseen =
       uid === viewerId ? false : signedStories.some((s) => s.viewed_by_me === false);
     const latest = list[list.length - 1]!;
-    groups.push({
+    memberGroups.push({
       user: {
         id: u.id,
         name: u.fullName,
@@ -536,15 +588,45 @@ export async function listStoryTray(viewerId: number) {
       has_unseen: hasUnseen,
       latest_at: latest.createdAt.toISOString(),
       is_own: uid === viewerId,
+      is_official: false,
       stories: signedStories
     });
   }
 
-  groups.sort((a, b) => {
+  memberGroups.sort((a, b) => {
     if (a.is_own !== b.is_own) return a.is_own ? -1 : 1;
     if (a.has_unseen !== b.has_unseen) return a.has_unseen ? -1 : 1;
     return new Date(b.latest_at).getTime() - new Date(a.latest_at).getTime();
   });
+
+  const groups: Group[] = [];
+  if (officialStories.length > 0) {
+    const signedOfficial = await Promise.all(
+      officialStories.map(async (s) => {
+        const { media, thumb } = await resolvePlayableUrls(s, viewerId);
+        return toStoryDto(s, media, thumb, {
+          viewed_by_me: viewedSet.has(s.id),
+          liked_by_me: likedSet.has(s.id),
+          like_count: s.likeCount ?? 0
+        });
+      })
+    );
+    const latestOfficial = officialStories[officialStories.length - 1]!;
+    groups.push({
+      user: {
+        id: 0,
+        name: OFFICIAL_STORY_DISPLAY_NAME,
+        username: null,
+        profile_image: null
+      },
+      has_unseen: signedOfficial.some((s) => s.viewed_by_me === false),
+      latest_at: latestOfficial.createdAt.toISOString(),
+      is_own: false,
+      is_official: true,
+      stories: signedOfficial
+    });
+  }
+  groups.push(...memberGroups);
   const dtoMs = Date.now() - dtoStarted;
 
   if (metricsOn) {
@@ -559,7 +641,8 @@ export async function listStoryTray(viewerId: number) {
         trayMs: storiesTimed.ms,
         hydrateMs: hydrateTimed.ms,
         dtoMs,
-        storyCount: stories.length,
+        storyCount: stories.length + officialStories.length,
+        officialCount: officialStories.length,
         groupCount: groups.length,
         peerCount: peerIds.length
       })
@@ -668,8 +751,28 @@ export async function deleteStory(ownerId: number, storyId: number) {
   if (!story || story.deletedAt) {
     serviceError("Story not found", 404, "STORY_NOT_FOUND");
   }
+  if (story.isOfficial) {
+    serviceError("Official stories can only be deleted by admins", 403, "OFFICIAL_STORY");
+  }
   if (story.userId !== ownerId) {
     serviceError("Forbidden", 403, "FORBIDDEN");
+  }
+  await story.update({ deletedAt: new Date() });
+  await StoryView.destroy({ where: { storyId: story.id } });
+  await StoryLike.destroy({ where: { storyId: story.id } });
+  const purged = await purgeStoryMedia(story);
+  await markPurgedKeys(story, purged);
+  return { deleted: true };
+}
+
+/** Admin-only soft-delete + media purge for official stories. */
+export async function deleteOfficialStory(storyId: number) {
+  const story = await Story.findByPk(storyId);
+  if (!story || story.deletedAt) {
+    serviceError("Story not found", 404, "STORY_NOT_FOUND");
+  }
+  if (!story.isOfficial) {
+    serviceError("Not an official story", 400, "NOT_OFFICIAL");
   }
   await story.update({ deletedAt: new Date() });
   await StoryView.destroy({ where: { storyId: story.id } });
@@ -736,6 +839,9 @@ export async function toggleStoryLike(viewerId: number, storyId: number) {
     serviceError("Story not found", 404, "STORY_NOT_FOUND");
   }
   await assertCanViewStory(viewerId, story);
+  if (story.isOfficial) {
+    serviceError("Official stories cannot be liked", 403, "OFFICIAL_STORY_READONLY");
+  }
 
   return sequelize.transaction(async (t) => {
     const existing = await StoryLike.findOne({
@@ -817,6 +923,9 @@ export async function replyToStory(viewerId: number, storyId: number, bodyRaw: s
     serviceError("Story not found", 404, "STORY_NOT_FOUND");
   }
   await assertCanViewStory(viewerId, story);
+  if (story.isOfficial) {
+    serviceError("Official stories cannot be replied to", 403, "OFFICIAL_STORY_READONLY");
+  }
   if (story.userId === viewerId) {
     serviceError("Cannot reply to your own story", 400, "OWN_STORY");
   }
@@ -952,6 +1061,8 @@ export const storiesService = {
   markStoryViewed,
   listStoryViewers,
   deleteStory,
+  deleteOfficialStory,
+  getOfficialStoryOwnerUserId,
   cleanupExpiredStories,
   retryFailedStoryMediaPurges,
   cleanupOrphanStoryMediaUploads,

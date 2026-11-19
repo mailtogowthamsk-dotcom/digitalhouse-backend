@@ -1,4 +1,5 @@
 import { Router } from "express";
+import express from "express";
 import { adminMiddleware } from "../middlewares/admin.middleware";
 import { asyncHandler } from "../middlewares/asyncHandler";
 import { adminLoginLimiter } from "../middlewares/rateLimit.middleware";
@@ -14,6 +15,7 @@ import * as AdminSupportController from "../controllers/AdminSupport.controller"
 import * as AdminSettingsController from "../controllers/AdminSettings.controller";
 import * as AdminLegalController from "../controllers/AdminLegal.controller";
 import * as AdminPostsController from "../controllers/AdminPosts.controller";
+import * as AdminStoriesController from "../controllers/AdminStories.controller";
 import {
   requireAdminAction,
   requireAdminModule,
@@ -26,6 +28,7 @@ import * as AdvertisementAdminController from "../controllers/AdvertisementAdmin
 import * as AdminInvoiceController from "../controllers/AdminInvoice.controller";
 import * as AdminBusinessBenefitController from "../controllers/AdminBusinessBenefit.controller";
 import * as RegistrationDeskController from "../controllers/RegistrationDesk.controller";
+import { VIDEO_MAX_BYTES } from "../validations/media.validation";
 
 export const adminRouter = Router();
 
@@ -1173,6 +1176,35 @@ adminRouter.post(
   requireAdminModule("system_scheduler"),
   requireAdminAction("system_scheduler.manage"),
   asyncHandler(SystemSchedulerController.retryJob)
+);
+
+// ── Official Stories (VettuvaGounder) ──────────────────────
+adminRouter.get(
+  "/stories",
+  requireAdminModule("stories"),
+  asyncHandler(AdminStoriesController.list)
+);
+adminRouter.put(
+  "/stories/upload",
+  requireAdminModule("stories"),
+  requireAdminAction("stories.manage"),
+  express.raw({
+    type: () => true,
+    limit: VIDEO_MAX_BYTES
+  }),
+  asyncHandler(AdminStoriesController.upload)
+);
+adminRouter.post(
+  "/stories",
+  requireAdminModule("stories"),
+  requireAdminAction("stories.manage"),
+  asyncHandler(AdminStoriesController.publish)
+);
+adminRouter.delete(
+  "/stories/:id",
+  requireAdminModule("stories"),
+  requireAdminAction("stories.manage"),
+  asyncHandler(AdminStoriesController.remove)
 );
 
 // ── Prominent People CMS ───────────────────────────────────

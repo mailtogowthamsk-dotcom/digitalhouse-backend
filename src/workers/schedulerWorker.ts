@@ -55,7 +55,7 @@ async function main(): Promise<void> {
 
   // Keep process alive until signal
   await new Promise<void>((resolve) => {
-    const onStop = (signal: string) => {
+    const onStop = async (signal: string) => {
       if (shuttingDown) return;
       shuttingDown = true;
       console.log(`[scheduler-worker] ${signal} — stopping timers`);
@@ -63,7 +63,7 @@ async function main(): Promise<void> {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
       }
-      stopAllScheduledJobs();
+      await stopAllScheduledJobs();
       resolve();
     };
     process.on("SIGINT", () => onStop("SIGINT"));
@@ -79,7 +79,7 @@ main()
   })
   .catch(async (error) => {
     console.error("[scheduler-worker] fatal:", error);
-    stopAllScheduledJobs();
+    await stopAllScheduledJobs();
     await sequelize.close().catch(() => undefined);
     process.exit(1);
   });

@@ -35,6 +35,7 @@ export type NotificationDto = {
   image: string | null;
   actionType: string | null;
   actionTargetId: string | null;
+  prominentPersonId?: string;
   actorUserId: number | null;
   actorName: string | null;
   groupCount: number;
@@ -138,7 +139,11 @@ export async function toNotificationDto(row: Notification): Promise<Notification
     body: row.body,
     image: row.imageUrl ?? actor.image,
     actionType: row.actionType,
-    actionTargetId: row.actionTargetId,
+    // Older clients treat any unknown action with a target as a feed post.
+    actionTargetId: row.actionType === NOTIFICATION_ACTIONS.OPEN_PROMINENT_PERSON ? null : row.actionTargetId,
+    ...(row.actionType === NOTIFICATION_ACTIONS.OPEN_PROMINENT_PERSON && row.actionTargetId
+      ? { prominentPersonId: row.actionTargetId }
+      : {}),
     actorUserId: row.actorUserId,
     actorName: actor.name,
     groupCount: row.groupCount ?? 1,
@@ -427,12 +432,12 @@ type PushPayloadInput = {
 
 async function deliverPushToTokenRows(
   userId: number,
-  rows: PushDeviceToken[],
+  rows: Pick<PushDeviceToken, "platform" | "token">[],
   payload: PushPayloadInput
-): Promise<void> {
+): Promise<number> {
   if (!rows.length) {
     console.info(`[Push] userId=${userId} skip: no device tokens`);
-    return;
+    return 0;
   }
 
   const isHighPriority = payload.priority > 0 || payload.category === "MATRIMONY";
@@ -494,6 +499,31 @@ async function deliverPushToTokenRows(
   }
 
   console.info(`[Push] userId=${userId} done expoSent=${expoSent} fcmSent=${fcmSent}`);
+  return expoSent + fcmSent + invalidTokens.length;
+}
+
+/** One durable publication delivery per device. Old clients open Activity for id 0. */
+export type PublicationPush = Pick<Notification, "id" | "userId" | "title" | "body" | "actionTargetId"> &
+  Pick<PushDeviceToken, "token" | "platform">;
+
+export async function sendPublicationPush(delivery: PublicationPush) {
+  const handled = await deliverPushToTokenRows(delivery.userId, [delivery], {
+    title: delivery.title,
+    body: delivery.body,
+    category: "COMMUNITY",
+    priority: 0,
+    data: {
+      notificationId: "0",
+      publicationNotificationId: String(delivery.id),
+      type: NOTIFICATION_TYPES.PROMINENT_PERSON_PUBLISHED,
+      category: "COMMUNITY",
+      actionType: NOTIFICATION_ACTIONS.OPEN_PROMINENT_PERSON,
+      prominentPersonId: String(delivery.actionTargetId)
+    }
+  });
+  if (!handled && (isExpoPushToken(delivery.token) || isFcmPushToken(delivery.token))) {
+    throw new Error("Push provider did not accept the announcement");
+  }
 }
 
 /** Expo + FCM push. Respects push + category preferences. */

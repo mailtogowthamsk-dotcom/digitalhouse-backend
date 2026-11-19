@@ -21,6 +21,9 @@ export class Story extends Model<InferAttributes<Story>, InferCreationAttributes
   declare mimeType: CreationOptional<string | null>;
   declare fileSize: CreationOptional<number | null>;
   declare likeCount: CreationOptional<number>;
+  /** Admin-published global stories visible to all authenticated members. */
+  declare isOfficial: CreationOptional<boolean>;
+  declare createdByAdminEmail: CreationOptional<string | null>;
   declare createdAt: CreationOptional<Date>;
   declare expiresAt: Date;
   declare deletedAt: CreationOptional<Date | null>;
@@ -38,6 +41,15 @@ Story.init(
     mimeType: { type: DataTypes.STRING(128), allowNull: true },
     fileSize: { type: DataTypes.INTEGER.UNSIGNED, allowNull: true },
     likeCount: { type: DataTypes.INTEGER.UNSIGNED, allowNull: false, defaultValue: 0 },
+    isOfficial: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false
+    },
+    createdByAdminEmail: {
+      type: DataTypes.STRING(191),
+      allowNull: true
+    },
     createdAt: { type: DataTypes.DATE(3), allowNull: false },
     expiresAt: { type: DataTypes.DATE(3), allowNull: false },
     deletedAt: { type: DataTypes.DATE(3), allowNull: true }

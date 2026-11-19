@@ -1,0 +1,5 @@
+{
+  "description": "Queue first-publication announcements and retry outstanding device pushes",
+  "idempotent": true,
+  "rollback": false
+}
