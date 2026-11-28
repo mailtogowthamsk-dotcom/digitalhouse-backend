@@ -154,7 +154,8 @@ export async function initSocket(httpServer: HttpServer): Promise<Server> {
       const token = extractSocketToken(socket);
 
       if (!token) return next(new Error("Unauthorized"));
-      const payload = verifyAccessToken(token) as { userId: number; iat?: number };
+      const payload = verifyAccessToken(token);
+      if (payload.purpose != null) return next(new Error("Unauthorized"));
       const { isAccessTokenActive } = await import("../utils/tokenRevocation");
       if (!(await isAccessTokenActive(payload.userId, payload.iat))) {
         return next(new Error("Unauthorized"));

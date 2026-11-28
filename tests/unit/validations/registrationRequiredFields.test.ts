@@ -4,6 +4,7 @@ import { completeGoogleProfileSchema, registerSchema } from "../../../src/valida
 const manual = {
   fullName: "Test User",
   username: "testuser",
+  gender: "Male",
   email: "test@example.com",
   mobile: "9876543210",
   fatherName: "Rajan",
@@ -24,6 +25,12 @@ const google = {
 };
 
 describe("registration required fields", () => {
+  it("requires a valid gender for manual and Google-assisted registration", () => {
+    expect(registerSchema.safeParse({ ...manual, gender: undefined }).success).toBe(false);
+    expect(registerSchema.safeParse({ ...manual, gender: "  " }).success).toBe(false);
+    expect(registerSchema.safeParse({ ...manual, gender: "Invalid" }).success).toBe(false);
+    expect(registerSchema.parse({ ...manual, gender: "Female", googleIdToken: "a".repeat(20) }).gender).toBe("Female");
+  });
   it("accepts manual registration when mobile, father name, and address are present", () => {
     const parsed = registerSchema.parse(manual);
     expect(parsed.mobile).toBe("9876543210");

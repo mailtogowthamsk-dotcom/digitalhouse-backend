@@ -1,5 +1,6 @@
+import { attachmentKeys, publicPostAttachments } from "./attachments";
 import { Post, PostLike, Comment, SavedPost, User } from "../../models";
-import { toPublicUrlIfR2, toPrivateSignedUrlIfR2, isPrivateR2Object, deleteR2ImageVariants } from "../../utils/r2Client";
+import { toPublicUrlIfR2, toPrivateSignedUrlIfR2, isPrivateR2Object, deleteR2ImageVariants, extractR2KeyFromUrl } from "../../utils/r2Client";
 import { parseMarketplaceGallery, publicMarketplaceGallery } from "../../utils/marketplaceGallery";
 import { parseHelpGallery, publicHelpGallery } from "../../utils/helpGallery";
 import {
@@ -39,6 +40,7 @@ export async function deletePost(userId: number, postId: number): Promise<void> 
           ? [mediaUrl]
           : [];
   if (post.thumbnailUrl) gallery.push(post.thumbnailUrl);
+  gallery.push(...attachmentKeys(post.mediaAttachments));
   if (!isRepost && post.postType === "JOB") {
     const { JobInterest } = await import("../../models");
     await JobInterest.destroy({ where: { postId } });
@@ -51,7 +53,17 @@ export async function deletePost(userId: number, postId: number): Promise<void> 
   await post.destroy();
   // Repost rows only reference the original's media keys — never delete R2 objects.
   if (!isRepost) {
-    await Promise.all([...new Set(gallery)].map((u) => deleteR2ImageVariants(u)));
+    const mediaUrls = [...new Set(gallery)];
+    if (!post.mediaAttachments?.length) {
+      await Promise.all(mediaUrls.map((url) => deleteR2ImageVariants(url)));
+      return;
+    }
+    const { userReferencesMediaKey } = await import("../Media.service");
+    await Promise.all(mediaUrls.map(async (url) => {
+      const key = extractR2KeyFromUrl(url);
+      if (key && await userReferencesMediaKey(userId, key)) return;
+      await deleteR2ImageVariants(url);
+    }));
   }
 }
 
@@ -231,6 +243,8 @@ export async function getPost(userId: number, postId: number): Promise<PostDetai
     title: display.title,
     description: display.description ?? null,
     ...mediaMetaFromPost(display, mediaUrl, thumbnailUrl),
+    caption_only: Boolean(display.createRequestId),
+    media_attachments: await publicPostAttachments(display.mediaAttachments, canSignPrivate),
     pinned: display.pinned,
     urgent: display.urgent,
     meetup_at: display.meetupAt ? display.meetupAt.toISOString() : null,

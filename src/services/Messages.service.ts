@@ -206,7 +206,18 @@ export async function listThreads(
   const includeArchived = opts?.includeArchived === true;
   const archivedOnly = opts?.archivedOnly === true;
 
-  const blockedIds = await getBlockedUserIds(userId);
+  const [blockedIds, leftIds, archivedIds] = await Promise.all([
+    getBlockedUserIds(userId),
+    getLeftThreadUserIds(userId),
+    getArchivedThreadUserIds(userId)
+  ]);
+  const excludedIds = new Set([userId, ...blockedIds]);
+  if (!archivedOnly && !includeArchived) {
+    for (const id of [...leftIds, ...archivedIds]) excludedIds.add(id);
+  }
+  const archivedFilter = archivedOnly
+    ? "AND IF(senderId = :me, recipientId, senderId) IN (:archivedIds)"
+    : "";
   const out: ThreadDto[] = [];
   let cursorId =
     opts?.cursorId != null && Number.isFinite(opts.cursorId) && opts.cursorId > 0
@@ -215,12 +226,12 @@ export async function listThreads(
   let nextCursorId: number | null = null;
   let guard = 0;
 
-  // Over-fetch + loop because archived/left filters run after the SQL group query.
+  // Filter hidden peers before paging so the cursor covers all visible chats.
   while (out.length < pageSize && guard < 4) {
     guard += 1;
-    const fetchSize = Math.min((pageSize - out.length) * 3 + 5, 80);
+    const fetchSize = pageSize - out.length + 1;
     const rows = await sequelize.query<
-      { otherUserId: number; lastMessageId: number; unreadCount: number }[]
+      { otherUserId: number; lastMessageId: number; unreadCount: number }
     >(
       `
       SELECT
@@ -234,6 +245,8 @@ export async function listThreads(
       FROM messages
       WHERE (senderId = :me OR recipientId = :me)
         AND (${VISIBLE_TO_ME_SQL.replace(/\n/g, " ")})
+        AND IF(senderId = :me, recipientId, senderId) NOT IN (:excludedIds)
+        ${archivedFilter}
       GROUP BY otherUserId
       HAVING (:cursorId IS NULL OR MAX(id) < :cursorId)
       ORDER BY MAX(id) DESC
@@ -241,7 +254,12 @@ export async function listThreads(
       `,
       {
         type: QueryTypes.SELECT,
-        replacements: { me: userId, cursorId }
+        replacements: {
+          me: userId,
+          cursorId,
+          excludedIds: [...excludedIds],
+          ...(archivedOnly ? { archivedIds: [0, ...archivedIds] } : {})
+        }
       }
     );
 
@@ -250,19 +268,9 @@ export async function listThreads(
       break;
     }
 
-    const batchLastId = Number((rows[rows.length - 1] as any).lastMessageId);
-    const filteredRows = rows.filter((r) => !blockedIds.has(Number((r as any).otherUserId)));
-    if (filteredRows.length === 0) {
-      cursorId = batchLastId;
-      if (rows.length < fetchSize) {
-        nextCursorId = null;
-        break;
-      }
-      continue;
-    }
-
-    const otherUserIds = filteredRows.map((r) => Number((r as any).otherUserId));
-    const lastMessageIds = filteredRows.map((r) => Number((r as any).lastMessageId));
+    const batchLastId = Number(rows[rows.length - 1].lastMessageId);
+    const otherUserIds = rows.map((row) => Number(row.otherUserId));
+    const lastMessageIds = rows.map((row) => Number(row.lastMessageId));
 
     const [users, lastMessages] = await Promise.all([
       User.findAll({
@@ -275,8 +283,6 @@ export async function listThreads(
     const usersById = new Map<number, User>(users.map((u) => [u.id, u]));
     const lastById = new Map<number, Message>(lastMessages.map((m) => [m.id, m]));
     const accessMap = await getMessageAccessMap(userId, otherUserIds);
-    const leftIds = await getLeftThreadUserIds(userId);
-    const archivedIds = await getArchivedThreadUserIds(userId);
     const prefMap = await getThreadPreferencesMap(userId, otherUserIds);
 
     const publicProfilePhotos = new Map<number, string | null>();
@@ -290,9 +296,9 @@ export async function listThreads(
       })
     );
 
-    for (const r of filteredRows) {
+    for (const r of rows) {
       if (out.length >= pageSize) break;
-      const otherUserId = Number((r as any).otherUserId);
+      const otherUserId = Number(r.otherUserId);
       if (leftIds.has(otherUserId) && !archivedOnly && !includeArchived) continue;
       const pref = prefMap.get(otherUserId);
       const isArchived = pref?.archived ?? archivedIds.has(otherUserId);
@@ -301,9 +307,9 @@ export async function listThreads(
       } else if (isArchived && !includeArchived) {
         continue;
       }
-      const unreadCount = Number((r as any).unreadCount ?? 0);
+      const unreadCount = Number(r.unreadCount ?? 0);
       const u = usersById.get(otherUserId);
-      const lm = lastById.get(Number((r as any).lastMessageId)) ?? null;
+      const lm = lastById.get(Number(r.lastMessageId)) ?? null;
       const access = accessMap.get(otherUserId);
       const profileImage = publicProfilePhotos.get(otherUserId) ?? null;
 
@@ -337,7 +343,8 @@ export async function listThreads(
 
     if (out.length >= pageSize) {
       const last = out[out.length - 1]!;
-      nextCursorId = last.lastMessage?.id ?? batchLastId;
+      const lastId = last.lastMessage?.id ?? batchLastId;
+      nextCursorId = rows.length < fetchSize && lastId === batchLastId ? null : lastId;
       break;
     }
 
@@ -346,6 +353,7 @@ export async function listThreads(
       break;
     }
     cursorId = batchLastId;
+    nextCursorId = cursorId;
   }
 
   if (out.length > 0) {

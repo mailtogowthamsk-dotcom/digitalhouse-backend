@@ -36,13 +36,20 @@ const genderSchema = z
     message: "Please select a valid gender."
   });
 
-/** Full registration payload: fullName, email, mobile, location, kulam required */
+export const registrationContactSchema = z.object({
+  email: z.string().trim().email().max(191),
+  mobile: mobileSchema
+});
+
+/** Full registration payload. */
 export const registerSchema = z.object({
   fullName: z.string().min(1).max(120).trim(),
   username: usernameSchema,
-  gender: z.string().max(20).trim().optional().nullable(),
+  gender: genderSchema,
   dob: z.string().max(20).trim().optional().nullable(),
   email: z.string().email().max(191),
+  googleIdToken: z.string().min(20).max(8192).optional(),
+  emailVerificationProof: z.string().regex(/^[a-f0-9]{64}$/).optional(),
   mobile: mobileSchema,
   occupation: z.string().max(80).trim().optional().nullable(),
   fatherName: z.string().trim().min(1, "Please enter your father's name.").max(120),

@@ -453,6 +453,8 @@ export const createPostSchema = z
     /** Optional explicit hashtags; also parsed from title/description. */
     hashtags: z.array(z.string().trim().min(1).max(65)).max(20).optional(),
     media_url: optionalMediaRef,
+    attachment_ids: z.array(z.number().int().positive()).max(5).optional(),
+    create_request_id: z.string().uuid().optional(),
     ...optionalMediaFieldsSchema,
     pinned: z.boolean().optional().default(false),
     urgent: z.boolean().optional().default(false),
@@ -469,6 +471,15 @@ export const createPostSchema = z
     refineJobCreate(data, ctx);
     refineMarketplaceCreate(data, ctx);
     refineHelpCreate(data, ctx);
+    if (data.create_request_id && data.attachment_ids === undefined) {
+      ctx.addIssue({ code: "custom", path: ["create_request_id"], message: "This request ID is for the Feed composer." });
+    }
+    if (data.attachment_ids !== undefined && (
+      data.post_type !== "ENTERTAINMENT" || data.media_url || data.thumbnail_url ||
+      new Set(data.attachment_ids).size !== data.attachment_ids.length
+    )) {
+      ctx.addIssue({ code: "custom", path: ["attachment_ids"], message: "Choose distinct uploads in the Feed composer." });
+    }
     refineMediaMeta(data, ctx);
   });
 

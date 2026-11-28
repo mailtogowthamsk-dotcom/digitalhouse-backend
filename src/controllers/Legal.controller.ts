@@ -10,6 +10,7 @@ function statusOf(e: unknown): number {
 
 /** GET /legal — published catalog for settings menus. */
 export async function listCatalog(_req: Request, res: Response) {
+  res.set("Cache-Control", "no-store");
   const documents = await legalService.listPublishedCatalog();
   return success(res, { documents });
 }

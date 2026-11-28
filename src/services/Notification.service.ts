@@ -80,7 +80,7 @@ export async function notifyAccountApproved(userId: number): Promise<void> {
     userId,
     type: NOTIFICATION_TYPES.ACCOUNT_VERIFIED,
     title: "Registration approved",
-    body: "Your Digital House account is approved. Please sign in with OTP or Google to continue.",
+    body: "Your Digital House account is approved. Open the app and check your registration status to continue.",
     actionType: NOTIFICATION_ACTIONS.OPEN_NOTIFICATIONS,
     force: true
   });

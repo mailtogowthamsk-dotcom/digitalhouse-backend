@@ -78,31 +78,35 @@ function buildSignOpts(expiresIn: string): jwt.SignOptions {
 }
 
 /** Member access token. `tv` reserved for future DB-backed versioning (defaults 0). */
-export function signAccessToken(payload: { userId: number; tv?: number }) {
+export type MemberTokenPurpose = "registration" | "google_registration";
+
+export type AccessTokenClaims = {
+  userId: number;
+  tv?: number;
+  iat?: number;
+  exp?: number;
+  purpose?: MemberTokenPurpose;
+  googleSub?: string;
+  registrationUpgrade?: true;
+};
+
+export function signAccessToken(payload: Pick<AccessTokenClaims,
+  "userId" | "tv" | "purpose" | "googleSub" | "registrationUpgrade"
+>) {
   return jwt.sign(
-    { userId: payload.userId, tv: payload.tv ?? 0 },
+    { tv: 0, ...payload },
     memberSecret as jwt.Secret,
     buildSignOpts(process.env.JWT_ACCESS_EXPIRES_IN || "7d")
   );
 }
 
-export function verifyAccessToken(token: string): {
-  userId: number;
-  tv?: number;
-  iat?: number;
-  exp?: number;
-} {
+export function verifyAccessToken(token: string): AccessTokenClaims {
   if (!token || typeof token !== "string" || token.split(".").length !== 3) {
     logSecurityEvent("jwt_invalid", { kind: "member", reason: "malformed" });
     throw new Error("Malformed token");
   }
   try {
-    return jwt.verify(token, memberSecret as jwt.Secret, VERIFY_OPTS) as {
-      userId: number;
-      tv?: number;
-      iat?: number;
-      exp?: number;
-    };
+    return jwt.verify(token, memberSecret as jwt.Secret, VERIFY_OPTS) as AccessTokenClaims;
   } catch (err) {
     logSecurityEvent("jwt_invalid", {
       kind: "member",

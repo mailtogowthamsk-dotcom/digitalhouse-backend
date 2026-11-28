@@ -1,3 +1,5 @@
+import { attachmentKeys } from "./post/attachments";
+import type { StoredPostAttachment } from "../models/Post.model";
 /**
  * Media upload URL generation and metadata.
  * Backend NEVER handles file bytes; client uploads directly to R2 via pre-signed URL.
@@ -275,7 +277,7 @@ async function findOwnedMediaFile(userId: number, key: string): Promise<MediaFil
   });
 }
 
-async function userReferencesMediaKey(userId: number, key: string): Promise<boolean> {
+export async function userReferencesMediaKey(userId: number, key: string): Promise<boolean> {
   const baseName = path.basename(key).split(".")[0];
   if (!baseName) return false;
 
@@ -320,7 +322,7 @@ async function userReferencesMediaKey(userId: number, key: string): Promise<bool
   for (let offset = 0; ; offset += pageSize) {
     const posts = await Post.findAll({
       where: { userId },
-      attributes: ["mediaUrl", "thumbnailUrl", "marketplaceGallery", "helpGallery"],
+      attributes: ["mediaUrl", "thumbnailUrl", "marketplaceGallery", "helpGallery", "mediaAttachments"],
       order: [["id", "ASC"]],
       limit: pageSize,
       offset
@@ -331,6 +333,7 @@ async function userReferencesMediaKey(userId: number, key: string): Promise<bool
       const urls: string[] = [];
       if (post.mediaUrl) urls.push(post.mediaUrl);
       if (post.thumbnailUrl) urls.push(post.thumbnailUrl);
+      urls.push(...attachmentKeys(post.mediaAttachments));
       urls.push(...parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl ?? null));
       const help = post.helpGallery;
       if (Array.isArray(help)) {
@@ -661,8 +664,9 @@ export async function buildPostMediaPublishMapping(post: {
   postType?: string | null;
   marketplaceGallery?: unknown;
   helpGallery?: unknown;
+  mediaAttachments?: StoredPostAttachment[] | null;
 }): Promise<Map<string, string>> {
-  const seeds = [post.mediaUrl, post.thumbnailUrl].filter(Boolean) as string[];
+  const seeds = [post.mediaUrl, post.thumbnailUrl, ...attachmentKeys(post.mediaAttachments)].filter(Boolean) as string[];
   if (post.postType === "MARKETPLACE") {
     seeds.push(...parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl));
   } else if (post.postType === "HELP_REQUEST") {

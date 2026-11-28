@@ -66,6 +66,16 @@ export async function list(req: AdminRequest, res: Response) {
   return success(res, data);
 }
 
+export async function viewers(req: AdminRequest, res: Response) {
+  const id = Number(req.params.id);
+  const rawPage = req.query.page ?? "1";
+  const page = typeof rawPage === "string" ? Number(rawPage) : NaN;
+  if (!Number.isSafeInteger(id) || id < 1 || !Number.isSafeInteger(page) || page < 1 || page > 10000) {
+    return error(res, "Invalid story ID or page", 400);
+  }
+  return success(res, await AdminStoriesService.listAdminStoryViewers(id, page));
+}
+
 export async function upload(req: AdminRequest, res: Response) {
   const buf = req.body;
   if (!Buffer.isBuffer(buf) || buf.length === 0) {

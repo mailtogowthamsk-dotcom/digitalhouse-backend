@@ -1,3 +1,4 @@
+import type { Transaction } from "sequelize";
 import { Op, literal } from "sequelize";
 import { Hashtag, PostHashtag } from "../models";
 import { mergeHashtags, extractHashtagsFromText, normalizeHashtagList } from "../utils/hashtagParser";
@@ -11,6 +12,7 @@ export async function syncPostHashtags(params: {
   title?: string | null;
   description?: string | null;
   explicitHashtags?: string[] | null;
+  transaction?: Transaction;
 }): Promise<string[]> {
   const tags = mergeHashtags(
     extractHashtagsFromText(params.title),
@@ -20,15 +22,15 @@ export async function syncPostHashtags(params: {
 
   const existing = await PostHashtag.findAll({
     where: { postId: params.postId },
-    attributes: ["id", "hashtagId"]
+    attributes: ["id", "hashtagId"], transaction: params.transaction
   });
   const existingHashtagIds = existing.map((r) => r.hashtagId);
 
   if (existingHashtagIds.length > 0) {
-    await PostHashtag.destroy({ where: { postId: params.postId } });
+    await PostHashtag.destroy({ where: { postId: params.postId }, transaction: params.transaction });
     await Hashtag.update(
       { usageCount: literal("GREATEST(CAST(usageCount AS SIGNED) - 1, 0)") as any },
-      { where: { id: { [Op.in]: existingHashtagIds } } }
+      { where: { id: { [Op.in]: existingHashtagIds } }, transaction: params.transaction }
     );
   }
 
@@ -38,7 +40,7 @@ export async function syncPostHashtags(params: {
   for (const tag of tags) {
     const [row] = await Hashtag.findOrCreate({
       where: { tag },
-      defaults: { tag, usageCount: 0 } as any
+      defaults: { tag, usageCount: 0 } as any, transaction: params.transaction
     });
     hashtagIds.push(row.id);
   }
@@ -48,12 +50,12 @@ export async function syncPostHashtags(params: {
       postId: params.postId,
       hashtagId
     })) as any,
-    { ignoreDuplicates: true }
+    { ignoreDuplicates: true, transaction: params.transaction }
   );
 
   await Hashtag.update(
     { usageCount: literal("usageCount + 1") as any },
-    { where: { id: { [Op.in]: hashtagIds } } }
+    { where: { id: { [Op.in]: hashtagIds } }, transaction: params.transaction }
   );
 
   return tags;

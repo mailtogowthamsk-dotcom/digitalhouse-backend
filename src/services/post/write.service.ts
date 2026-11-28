@@ -1,4 +1,6 @@
-import { Op } from "sequelize";
+import { sequelize } from "../../config/db";
+import { toStorageKeyIfR2 } from "../../utils/r2Client";
+import { UniqueConstraintError, Op, type Transaction } from "sequelize";
 import { Post } from "../../models";
 import type { JobStatus } from "../../models";
 import type { MarketplaceStatus } from "../../constants/marketplace.constants";
@@ -32,6 +34,7 @@ import {
   normalizeMarketplaceFields,
   type PostJobFields
 } from "./mappers";
+import { attachmentKeys, validatePostAttachments } from "./attachments";
 import { getPost } from "./read.service";
 import type { CreatePostPayload, PostDetailDto, UpdatePostPayload } from "./types";
 import {
@@ -43,7 +46,26 @@ import { initialSafetyForCreate } from "../contentSafety/initialSafety";
 import { CONTENT_SAFETY_POLICY_VERSION } from "../../constants/contentSafety.constants";
 import { autoLiveMarketplaceIfEligible } from "../marketplace/liveListingGuard";
 
+async function finishCreatedPost(post: Post, userId: number, additional: string[][] = [], retry = false) {
+  await attachPostMediaFiles(userId, [post.mediaUrl, post.thumbnailUrl, attachmentKeys(post.mediaAttachments), ...additional]);
+  if (!retry || post.safetyDecision === "PENDING" || post.safetyDecision === "PROCESSING") {
+    await afterCreatePostSafety(post);
+  }
+  return getPost(userId, post.id);
+}
+
 export async function createPost(userId: number, payload: CreatePostPayload): Promise<PostDetailDto> {
+  const requestId = payload.create_request_id;
+  if (requestId) {
+    const existing = await Post.findOne({ where: { userId, createRequestId: requestId } });
+    if (existing) {
+      return finishCreatedPost(existing, userId, [], true);
+    }
+  }
+  const attachments = payload.attachment_ids
+    ? await validatePostAttachments(userId, payload.attachment_ids)
+    : null;
+  const cover = attachments?.[0];
   const isJob = payload.post_type === "JOB";
   const isMarketplace = payload.post_type === "MARKETPLACE";
   const isHelp = payload.post_type === "HELP_REQUEST";
@@ -162,7 +184,7 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
     : buildMediaMetaForWrite(payload, mediaResolved.mediaUrl);
 
   const hasMedia = Boolean(
-    mediaMeta.mediaUrl ||
+    cover || mediaMeta.mediaUrl ||
       mediaResolved.marketplaceGallery?.length ||
       (mediaResolved as { helpGallery?: string[] | null }).helpGallery?.length
   );
@@ -183,54 +205,61 @@ export async function createPost(userId: number, payload: CreatePostPayload): Pr
           hasMedia
         });
 
-  const post = await Post.create({
-    userId,
-    postType: payload.post_type,
-    visibility: parsePostVisibility(payload.visibility ?? DEFAULT_POST_VISIBILITY),
-    title: payload.title.trim(),
-    description: payload.description?.trim() ?? null,
-    mediaUrl: mediaMeta.mediaUrl,
-    mediaType: mediaMeta.mediaType,
-    thumbnailUrl: mediaMeta.thumbnailUrl,
-    videoDuration: mediaMeta.videoDuration,
-    mimeType: mediaMeta.mimeType,
-    fileSize: mediaMeta.fileSize,
-    pinned: payload.pinned ?? false,
-    urgent: isHelp ? helpUrgent : payload.urgent ?? false,
-    meetupAt: payload.meetup_at ? new Date(payload.meetup_at) : null,
-    jobStatus: resolvedJobStatus,
-    jobClosedAt: resolvedJobStatus === "CLOSED" ? new Date() : null,
-    ...jobFields,
-    ...marketplaceFields,
-    ...helpFields,
-    ...(isMarketplace ? { marketplaceGallery: mediaResolved.marketplaceGallery } : {}),
-    ...(isHelp ? { helpGallery: (mediaResolved as any).helpGallery ?? helpFields.helpGallery } : {}),
-    safetyDecision: safety.safetyDecision,
-    safetyCategory: safety.safetyCategory,
-    safetyFailureReason: safety.safetyFailureReason,
-    mediaVersion: safety.mediaVersion,
-    moderatedMediaVersion: safety.moderatedMediaVersion,
-    safetyPolicyVersion: safety.safetyPolicyVersion
-  } as any);
+  const persist = async (transaction?: Transaction) => {
+    const created = await Post.create({
+      userId,
+      postType: payload.post_type,
+      visibility: parsePostVisibility(payload.visibility ?? DEFAULT_POST_VISIBILITY),
+      title: payload.title.trim(),
+      description: payload.description?.trim() ?? null,
+      mediaAttachments: attachments,
+      createRequestId: requestId ?? null,
+      mediaUrl: cover?.url ?? mediaMeta.mediaUrl,
+      mediaType: cover?.mediaType ?? mediaMeta.mediaType,
+      thumbnailUrl: cover?.thumbnailUrl ?? mediaMeta.thumbnailUrl,
+      videoDuration: cover?.videoDuration ?? mediaMeta.videoDuration,
+      mimeType: mediaMeta.mimeType,
+      fileSize: mediaMeta.fileSize,
+      pinned: payload.pinned ?? false,
+      urgent: isHelp ? helpUrgent : payload.urgent ?? false,
+      meetupAt: payload.meetup_at ? new Date(payload.meetup_at) : null,
+      jobStatus: resolvedJobStatus,
+      jobClosedAt: resolvedJobStatus === "CLOSED" ? new Date() : null,
+      ...jobFields,
+      ...marketplaceFields,
+      ...helpFields,
+      ...(isMarketplace ? { marketplaceGallery: mediaResolved.marketplaceGallery } : {}),
+      ...(isHelp ? { helpGallery: (mediaResolved as any).helpGallery ?? helpFields.helpGallery } : {}),
+      safetyDecision: safety.safetyDecision,
+      safetyCategory: safety.safetyCategory,
+      safetyFailureReason: safety.safetyFailureReason,
+      mediaVersion: safety.mediaVersion,
+      moderatedMediaVersion: safety.moderatedMediaVersion,
+      safetyPolicyVersion: safety.safetyPolicyVersion
+      } as any, { transaction });
+    await syncPostHashtags({
+      postId: created.id, title: created.title, description: created.description,
+      explicitHashtags: payload.hashtags ?? [], transaction
+    });
+    return created;
+  };
 
-  await syncPostHashtags({
-    postId: post.id,
-    title: post.title,
-    description: post.description,
-    explicitHashtags: payload.hashtags ?? []
-  });
-
-  await attachPostMediaFiles(userId, [
-    post.mediaUrl,
-    post.thumbnailUrl,
-    mediaResolved.marketplaceGallery ?? undefined,
-    (mediaResolved as { helpGallery?: string[] | null }).helpGallery ?? undefined
-  ]);
-
-  await afterCreatePostSafety(post);
+  let post: Post;
+  try {
+    post = requestId ? await sequelize.transaction((transaction) => persist(transaction)) : await persist();
+  } catch (error) {
+    if (!(error instanceof UniqueConstraintError) || !requestId) throw error;
+    const existing = await Post.findOne({ where: { userId, createRequestId: requestId } });
+    if (!existing) throw error;
+    return finishCreatedPost(existing, userId, [], true);
+  }
 
   logFeedEvent(userId, "post_impression", post.id, { action: "create" });
-  return getPost(userId, post.id);
+  return finishCreatedPost(post, userId, [
+    mediaResolved.marketplaceGallery ?? [],
+    (mediaResolved as { helpGallery?: string[] | null }).helpGallery ?? []
+  ]);
+
 }
 
 export async function updatePost(userId: number, postId: number, payload: UpdatePostPayload): Promise<PostDetailDto> {
@@ -244,6 +273,14 @@ export async function updatePost(userId: number, postId: number, payload: Update
     const err = new Error("Forbidden");
     (err as any).status = 403;
     throw err;
+  }
+
+  if (post.mediaAttachments?.length && payload.media_url !== undefined) {
+    if (toStorageKeyIfR2(payload.media_url) !== toStorageKeyIfR2(post.mediaUrl)) {
+      throw Object.assign(new Error("Attachments on this post cannot be replaced with the single-media editor."), { status: 400 });
+    }
+    payload = { ...payload, media_url: undefined, media_type: undefined, thumbnail_url: undefined,
+      video_duration: undefined, mime_type: undefined, file_size: undefined };
   }
 
   const isJob = post.postType === "JOB";

@@ -40,6 +40,14 @@ export const authLimiter = rateLimit({
   message: { ok: false, message: "Too many attempts. Please try again later." }
 });
 
+/** Registration availability checks have a separate quota from login and OTP. */
+export const registrationAvailabilityLimiter = rateLimit({
+  ...common,
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  message: { ok: false, message: "Too many registration checks. Please try again later." }
+});
+
 /** Dedicated admin login limiter (stricter than general auth). */
 export const adminLoginLimiter = rateLimit({
   ...common,
@@ -54,6 +62,14 @@ export const otpRequestLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
   message: { ok: false, message: "Too many login codes requested. Please wait and try again." }
+});
+
+export const registrationEmailCodeLimiter = rateLimit({
+  standardHeaders: true,
+  legacyHeaders: false,
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { ok: false, message: "Too many registration codes requested. Please wait and try again." }
 });
 
 /** Referral code lookup/submit — limits guessing and enumeration. */

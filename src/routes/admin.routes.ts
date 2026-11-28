@@ -1200,6 +1200,12 @@ adminRouter.post(
   requireAdminAction("stories.manage"),
   asyncHandler(AdminStoriesController.publish)
 );
+adminRouter.get(
+  "/stories/:id/viewers",
+  requireAdminModule("stories"),
+  requireAdminAction("stories.manage"),
+  asyncHandler(AdminStoriesController.viewers)
+);
 adminRouter.delete(
   "/stories/:id",
   requireAdminModule("stories"),

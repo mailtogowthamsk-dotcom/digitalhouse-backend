@@ -284,6 +284,7 @@ export async function approveRegistration(
   const nextMobile = user.pendingMobile?.trim() || user.mobile;
   const nextPhoto = user.pendingProfilePhoto?.trim() || user.profilePhoto;
 
+  const approvedAt = new Date();
   await user.update({
     status: "APPROVED",
     mobile: nextMobile,
@@ -292,8 +293,18 @@ export async function approveRegistration(
     pendingProfilePhoto: null,
     registrationAdminRemarks: null,
     registrationRequestedFields: null,
-    registrationReviewedAt: new Date()
+    registrationReviewedAt: approvedAt
   } as any);
+
+  try {
+    const { revokeUserTokens } = await import("../utils/tokenRevocation");
+    await revokeUserTokens(userId, "registration_approved", { approvalStartedAt: approvedAt });
+  } catch (e) {
+    console.warn(
+      "[registration] token revoke after approve failed:",
+      e instanceof Error ? e.message : e
+    );
+  }
 
   await AdminVerification.create({
     userId: user.id,
@@ -311,16 +322,6 @@ export async function approveRegistration(
     });
   } catch {
     /* best-effort */
-  }
-
-  try {
-    const { revokeUserTokens } = await import("../utils/tokenRevocation");
-    await revokeUserTokens(userId, "registration_approved");
-  } catch (e) {
-    console.warn(
-      "[registration] token revoke after approve failed:",
-      e instanceof Error ? e.message : e
-    );
   }
 
   try {

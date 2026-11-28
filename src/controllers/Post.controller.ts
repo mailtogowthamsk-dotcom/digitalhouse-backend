@@ -44,6 +44,8 @@ export async function createPost(req: AuthRequest, res: Response) {
     title: body.title,
     description: body.description ?? null,
     media_url: body.media_url ?? null,
+    attachment_ids: body.attachment_ids,
+    create_request_id: body.create_request_id,
     media_type: (body.media_type ?? null) as import("../constants/postMedia.constants").PostMediaType | null,
     thumbnail_url: body.thumbnail_url ?? null,
     video_duration: body.video_duration ?? null,

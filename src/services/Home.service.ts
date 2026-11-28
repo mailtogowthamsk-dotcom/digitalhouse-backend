@@ -87,6 +87,8 @@ export type FeedItemDto = {
   marketplaceNegotiable?: boolean;
   marketplaceDistrict?: string | null;
   marketplaceExpiresAt?: string | null;
+  captionOnly?: boolean;
+  mediaAttachments?: import("./post/attachments").PostAttachmentDto[];
   marketplaceGallery?: string[];
   marketplaceFeatured?: boolean;
   marketplacePhotoCount?: number;

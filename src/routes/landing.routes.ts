@@ -3,7 +3,7 @@ import { LANDING_CONTACT } from "../constants/landing.constants";
 
 export const landingRouter = Router();
 
-/** GET /api/landing – public landing content (headline for app splash). No auth. */
+/** GET /api/landing – public landing headline. No auth. */
 landingRouter.get("/", (_req: Request, res: Response) => {
   res.status(200).json({ headline: "கல்வெட்டுகளில் நின்ற வீரம்... இனி கணிப்பொறி உலகிலும் வெல்லும்!" });
 });

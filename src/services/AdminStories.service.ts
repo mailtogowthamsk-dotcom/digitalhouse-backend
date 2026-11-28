@@ -34,6 +34,44 @@ function deriveStatus(story: Story, now = new Date()): "active" | "expired" | "d
   return "active";
 }
 
+const VIEWERS_PAGE_SIZE = 50;
+
+export async function listAdminStoryViewers(storyId: number, page: number) {
+  const story = await Story.findOne({
+    where: { id: storyId, isOfficial: true, deletedAt: null },
+    attributes: ["id"]
+  });
+  if (!story) serviceError("Official story not found", 404, "STORY_NOT_FOUND");
+
+  const views = await StoryView.findAll({
+    where: { storyId },
+    attributes: ["viewerId", "viewedAt"],
+    order: [["viewedAt", "DESC"], ["viewerId", "DESC"]],
+    offset: (page - 1) * VIEWERS_PAGE_SIZE,
+    limit: VIEWERS_PAGE_SIZE + 1
+  });
+  const pageViews = views.slice(0, VIEWERS_PAGE_SIZE);
+  const users = pageViews.length
+    ? await User.findAll({
+        where: { id: { [Op.in]: pageViews.map((view) => view.viewerId) } },
+        attributes: ["id", "fullName", "username"]
+      })
+    : [];
+  const byId = new Map(users.map((user) => [user.id, user]));
+  return {
+    hasMore: views.length > VIEWERS_PAGE_SIZE,
+    viewers: pageViews.map((view) => {
+      const user = byId.get(view.viewerId);
+      return {
+        user_id: view.viewerId,
+        name: user?.fullName ?? null,
+        username: user?.username ?? null,
+        viewed_at: view.viewedAt.toISOString()
+      };
+    })
+  };
+}
+
 export async function listAdminStories(params: { includeExpired?: boolean } = {}) {
   const now = new Date();
   const includeExpired = params.includeExpired !== false;

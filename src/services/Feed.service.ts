@@ -1,3 +1,4 @@
+import { publicPostAttachments } from "./post/attachments";
 import { Op, literal, type WhereOptions } from "sequelize";
 import { User, Post, SavedPost } from "../models";
 import { hydrateFeedEngagement } from "./feed/hydrateFeedEngagement";
@@ -61,6 +62,8 @@ export const FEED_POST_ATTRIBUTES = [
   "title",
   "description",
   "mediaUrl",
+  "mediaAttachments",
+  "createRequestId",
   "mediaType",
   "thumbnailUrl",
   "videoDuration",
@@ -783,6 +786,8 @@ export async function buildFeedItemsFromPosts(
         marketplaceExpiresAt: source.marketplaceExpiresAt
           ? source.marketplaceExpiresAt.toISOString()
           : null,
+        captionOnly: Boolean(source.createRequestId),
+        mediaAttachments: await publicPostAttachments(source.mediaAttachments, canSignPrivate),
         marketplaceGallery: source.postType === "MARKETPLACE" ? gallery : [],
         marketplaceFeatured: Boolean(source.marketplaceFeatured),
         marketplacePhotoCount:

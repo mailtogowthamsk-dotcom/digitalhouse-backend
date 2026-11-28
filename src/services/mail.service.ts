@@ -22,6 +22,15 @@ export async function sendOtpEmail(to: string, otp: string, expiresMinutes: numb
   );
 }
 
+export async function sendRegistrationOtpEmail(to: string, code: string, expiresMinutes: number): Promise<void> {
+  await sendOrThrow(
+    to,
+    "Verify your Digital House registration email",
+    `Your Digital House registration code is ${code}. It expires in ${expiresMinutes} minutes. If you did not request this code, you can ignore this email.`,
+    "registration_otp"
+  );
+}
+
 /** Send approval notification to user after admin approves their account */
 export async function sendApprovalEmail(
   to: string,
@@ -33,7 +42,7 @@ export async function sendApprovalEmail(
   await sendOrThrow(
     to,
     "Your Digital House account has been approved",
-    `Hi${name},\n\nYour Digital House account has been approved. Please sign in again with OTP or Google to start using the app. Welcome to the community!${remarkLine}\n\n— Digital House`,
+    `Hi${name},\n\nYour Digital House account has been approved. Open the app and check your registration status to continue. Welcome to the community!${remarkLine}\n\n— Digital House`,
     "registration_approved"
   );
 }

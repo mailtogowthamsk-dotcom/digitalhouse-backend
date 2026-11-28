@@ -48,6 +48,14 @@ export type PostModerationStatus = (typeof POST_MODERATION_STATUSES)[number];
 
 export type { MarketplaceStatus, MarketplaceIntent, MarketplaceCondition };
 
+export type StoredPostAttachment = {
+  mediaFileId: number;
+  url: string;
+  mediaType: "image" | "video";
+  thumbnailUrl: string | null;
+  videoDuration: number | null;
+};
+
 export class Post extends Model<InferAttributes<Post>, InferCreationAttributes<Post>> {
   declare id: number;
   declare userId: number;
@@ -59,6 +67,8 @@ export class Post extends Model<InferAttributes<Post>, InferCreationAttributes<P
   declare title: string;
   declare description: string | null;
   declare mediaUrl: string | null;
+  declare mediaAttachments: import("sequelize").CreationOptional<StoredPostAttachment[] | null>;
+  declare createRequestId: import("sequelize").CreationOptional<string | null>;
   /** image | video | none — legacy rows with mediaUrl backfilled to image */
   declare mediaType: PostMediaType;
   declare thumbnailUrl: string | null;
@@ -155,6 +165,8 @@ Post.init(
     },
     title: { type: DataTypes.STRING(255), allowNull: false },
     description: { type: DataTypes.TEXT, allowNull: true },
+    mediaAttachments: { type: DataTypes.JSON, allowNull: true, field: "media_attachments" },
+    createRequestId: { type: DataTypes.STRING(64), allowNull: true, field: "create_request_id" },
     mediaUrl: { type: DataTypes.STRING(2048), allowNull: true },
     mediaType: {
       type: DataTypes.ENUM(...POST_MEDIA_TYPES),

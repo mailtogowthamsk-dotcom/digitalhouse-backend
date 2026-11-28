@@ -1,11 +1,12 @@
 import { Request, Response, NextFunction } from "express";
-import { verifyAccessToken } from "../utils/jwt.util";
+import { verifyAccessToken, type AccessTokenClaims } from "../utils/jwt.util";
 import { isAccessTokenActive } from "../utils/tokenRevocation";
 import { User } from "../models";
 import { error } from "../utils/response";
 import { logSecurityEvent } from "../utils/securityLog";
 
-export type AuthPayload = { userId: number; iat?: number };
+export type AuthPayload = AccessTokenClaims;
+export type SessionRequest = Request & { user?: User; authClaims?: AccessTokenClaims };
 
 /** Enough for APPROVED / DELETED gate — used on almost every API call. */
 const AUTH_GATE_ATTRIBUTES = ["id", "status"] as const;
@@ -67,7 +68,7 @@ export function invalidateAuthGateCache(userId: number): void {
 }
 
 async function loadUserFromBearer(
-  req: Request & { user?: User },
+  req: SessionRequest,
   res: Response,
   mode: AuthAttrMode
 ): Promise<User | null> {
@@ -77,11 +78,23 @@ async function loadUserFromBearer(
     error(res, "Unauthorized", 401);
     return null;
   }
+  let payload: AuthPayload;
   try {
-    const payload = verifyAccessToken(token) as AuthPayload;
-    if (!(await isAccessTokenActive(payload.userId, payload.iat))) {
+    payload = verifyAccessToken(token) as AuthPayload;
+  } catch {
+    error(res, "Invalid or expired token", 401);
+    return null;
+  }
+
+  try {
+    if (!(await isAccessTokenActive(payload.userId, payload.iat, payload.purpose))) {
       logSecurityEvent("jwt_invalid", { kind: "member", reason: "revoked", userId: payload.userId });
       error(res, "Invalid or expired token", 401);
+      return null;
+    }
+
+    if (mode === "gate" && payload.purpose != null) {
+      error(res, "Complete registration status check to continue", 403);
       return null;
     }
 
@@ -109,9 +122,10 @@ async function loadUserFromBearer(
       return null;
     }
     if (mode === "gate") writeGateCache(user);
+    req.authClaims = payload;
     return user;
   } catch {
-    error(res, "Invalid or expired token", 401);
+    error(res, "Could not verify session. Please try again.", 503);
     return null;
   }
 }
@@ -142,13 +156,13 @@ export async function authMiddleware(req: Request & { user?: User }, res: Respon
  * APPROVED users always allowed; review-path users may upload profile media only.
  */
 export async function registrationMediaAuthMiddleware(
-  req: Request & { user?: User },
+  req: SessionRequest,
   res: Response,
   next: NextFunction
 ) {
   const user = await loadUserFromBearer(req, res, "session");
   if (!user) return;
-  if (user.status === "APPROVED") {
+  if (user.status === "APPROVED" && req.authClaims?.purpose == null) {
     req.user = user;
     return next();
   }
@@ -174,7 +188,10 @@ export async function optionalAuth(
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
   if (!token) return next();
   try {
-    const payload = verifyAccessToken(token) as AuthPayload;
+    const payload = verifyAccessToken(token);
+    if (payload.purpose != null || !(await isAccessTokenActive(payload.userId, payload.iat))) {
+      return next();
+    }
     const cached = readGateCache(payload.userId);
     if (cached) {
       if (cached.status === "APPROVED") req.user = cached;

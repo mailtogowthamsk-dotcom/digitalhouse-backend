@@ -1,0 +1,5 @@
+{
+  "description": "Store registration email challenges and single-use verification proofs",
+  "idempotent": true,
+  "rollback": false
+}

@@ -1,6 +1,9 @@
+import { sequelize } from "../config/db";
+import { consumeRegistrationProof } from "./registrationEmail.service";
+import { Op } from "sequelize";
 import { User } from "../models";
 import { AUTH_PROVIDERS, DEFAULT_APP_COMMUNITY } from "../constants/auth.constants";
-import { ensureLinkedProviders, resolveLoginSource } from "../utils/authProvider.util";
+import { ensureLinkedProviders, mergeLinkedProvider, resolveLoginSource } from "../utils/authProvider.util";
 import { usernameService } from "./Username.service";
 import { assertValidKulam } from "./kulamValidation.service";
 import { ensureUserProfile } from "./ensureUserProfile";
@@ -16,6 +19,7 @@ export type RegisterInput = {
   gender?: string | null;
   dob?: string | null;
   email: string;
+  emailVerificationProof?: string;
   mobile: string;
   occupation?: string | null;
   fatherName: string;
@@ -29,9 +33,40 @@ export type RegisterInput = {
   referralCode?: string | null;
 };
 
+export type VerifiedGoogleRegistration = { sub: string; email: string; authoritativeEmail: boolean };
+
+async function findGoogleRegistration(identity: VerifiedGoogleRegistration): Promise<User | null> {
+  const existing = await findByGoogleId(identity.sub);
+  if (!existing) return null;
+  if (
+    existing.signupProvider === AUTH_PROVIDERS.GOOGLE &&
+    existing.email === identity.email &&
+    existing.profileComplete &&
+    ["PENDING", "PENDING_REVIEW"].includes(existing.status)
+  ) return existing;
+  throw Object.assign(new Error("This Google account is already registered. Sign in with Google to continue."), {
+    status: 409,
+    code: "GOOGLE_ACCOUNT_EXISTS"
+  });
+}
+
 /** One account per email; one per mobile if provided */
-export async function register(data: RegisterInput): Promise<User> {
+export async function register(
+  data: RegisterInput,
+  resumeUserId?: number,
+  googleIdentity?: VerifiedGoogleRegistration
+): Promise<User> {
   const email = data.email.toLowerCase().trim();
+  if (googleIdentity && (resumeUserId !== undefined || email !== googleIdentity.email)) {
+    throw Object.assign(new Error("Use the verified email from your selected Google account."), {
+      status: 400,
+      code: "GOOGLE_EMAIL_MISMATCH"
+    });
+  }
+  if (googleIdentity) {
+    const existing = await findGoogleRegistration(googleIdentity);
+    if (existing) return existing;
+  }
   if (data.govtIdFile?.trim()) {
     throw Object.assign(
       new Error(
@@ -41,8 +76,15 @@ export async function register(data: RegisterInput): Promise<User> {
     );
   }
 
-  const existingEmail = await User.findOne({ where: { email } });
-  if (existingEmail) {
+  const existingEmail = await findByEmail(email);
+  if (resumeUserId !== undefined && existingEmail?.id !== resumeUserId) {
+    throw Object.assign(new Error("Use the email from your signed-in Google account."), { status: 400 });
+  }
+  if (existingEmail && resumeUserId === undefined) {
+    if (googleIdentity && existingEmail.googleId === googleIdentity.sub) {
+      const existing = await findGoogleRegistration(googleIdentity);
+      if (existing) return existing;
+    }
     throw Object.assign(new Error("This email is already registered."), {
       status: 409,
       code: "EMAIL_ALREADY_REGISTERED"
@@ -52,8 +94,8 @@ export async function register(data: RegisterInput): Promise<User> {
   if (data.mobile && data.mobile.trim()) {
     const { assertValidMobile } = await import("../utils/mobile.util");
     const mobile = assertValidMobile(data.mobile);
-    const existingMobile = await User.findOne({ where: { mobile } });
-    if (existingMobile) {
+    const existingMobile = await findByMobile(mobile);
+    if (existingMobile && existingMobile.id !== resumeUserId) {
       throw Object.assign(new Error("This mobile number is already registered."), {
         status: 409,
         code: "MOBILE_ALREADY_REGISTERED"
@@ -64,7 +106,7 @@ export async function register(data: RegisterInput): Promise<User> {
 
   const username = usernameService.normalizeUsername(data.username);
   usernameService.validateUsernameFormat(username);
-  if (!(await usernameService.isUsernameAvailable(username))) {
+  if (!(await usernameService.isUsernameAvailable(username, resumeUserId))) {
     throw Object.assign(new Error("This username is already taken."), {
       status: 409,
       code: "USERNAME_TAKEN"
@@ -91,11 +133,11 @@ export async function register(data: RegisterInput): Promise<User> {
   const referralCode = data.referralCode?.trim() || "";
   if (referralCode) {
     const { referralService } = await import("./Referral.service");
-    await referralService.assertUsableReferralCode(referralCode);
+    await referralService.assertUsableReferralCode(referralCode, resumeUserId);
   }
 
   try {
-    const user = await User.create({
+    const registrationFields = {
       fullName: data.fullName.trim(),
       username,
       gender: data.gender?.trim() || null,
@@ -110,11 +152,46 @@ export async function register(data: RegisterInput): Promise<User> {
       profilePhoto: toStorageKeyIfR2(data.profilePhoto ?? null),
       govtIdType: data.govtIdType?.trim() || null,
       govtIdFile: null,
-      status: "PENDING",
-      signupProvider: AUTH_PROVIDERS.EXISTING_LOGIN,
-      profileComplete: true,
-      linkedProviders: [AUTH_PROVIDERS.EXISTING_LOGIN]
-    } as any);
+      profileComplete: true
+    } as const;
+
+    let user: User;
+    if (resumeUserId !== undefined && existingEmail) {
+      const [updated] = await User.update({
+        ...registrationFields,
+        linkedProviders: mergeLinkedProvider(ensureLinkedProviders(existingEmail), AUTH_PROVIDERS.EXISTING_LOGIN)
+      }, {
+        where: {
+          id: resumeUserId,
+          email,
+          signupProvider: AUTH_PROVIDERS.GOOGLE,
+          profileComplete: false,
+          status: { [Op.in]: ["PENDING", "PENDING_REVIEW"] }
+        }
+      });
+      if (!updated) {
+        throw Object.assign(new Error("This registration cannot be resumed. Please sign in again."), {
+          status: 409
+        });
+      }
+      user = await existingEmail.reload();
+    } else {
+      user = await sequelize.transaction(async (transaction) => {
+        const needsProof = googleIdentity ? !googleIdentity.authoritativeEmail : Boolean(data.emailVerificationProof);
+        if (needsProof) {
+          await consumeRegistrationProof(email, data.emailVerificationProof, transaction);
+        }
+        const provider = googleIdentity ? AUTH_PROVIDERS.GOOGLE : AUTH_PROVIDERS.EXISTING_LOGIN;
+        return User.create({
+          ...registrationFields,
+          status: "PENDING",
+          emailVerified: Boolean(googleIdentity?.authoritativeEmail || needsProof),
+          signupProvider: provider,
+          linkedProviders: [provider],
+          ...(googleIdentity ? { googleId: googleIdentity.sub, providerUserId: googleIdentity.sub } : {})
+        } as any, { transaction });
+      });
+    }
 
     // Seed community + personal so Edit Profile / signup extras are available immediately.
     const profile = await ensureUserProfile(user.id);
@@ -146,6 +223,10 @@ export async function register(data: RegisterInput): Promise<User> {
   } catch (e: any) {
     const isDup =
       e?.name === "SequelizeUniqueConstraintError" || e?.parent?.code === "ER_DUP_ENTRY";
+    if (googleIdentity && (isDup || e?.code === "REGISTRATION_EMAIL_VERIFICATION_REQUIRED")) {
+      const existing = await findGoogleRegistration(googleIdentity);
+      if (existing) return existing;
+    }
     if (isDup) {
       const fields = (e?.fields && typeof e.fields === "object" ? Object.keys(e.fields) : []) as string[];
       const sql = String(e?.parent?.sqlMessage ?? e?.message ?? "").toLowerCase();
@@ -179,6 +260,10 @@ export async function register(data: RegisterInput): Promise<User> {
 
 export async function findByEmail(email: string): Promise<User | null> {
   return User.findOne({ where: { email: email.toLowerCase().trim() } });
+}
+
+export async function findByGoogleId(googleId: string): Promise<User | null> {
+  return User.findOne({ where: { googleId } });
 }
 
 export async function findById(id: number): Promise<User | null> {
@@ -291,9 +376,15 @@ export async function toAdminUser(user: User) {
   };
 }
 
+async function findByMobile(mobile: string): Promise<User | null> {
+  return User.findOne({ where: { mobile } });
+}
+
 export const userService = {
   register,
   findByEmail,
+  findByGoogleId,
+  findByMobile,
   findById,
   toSafeUser,
   toAuthUser,

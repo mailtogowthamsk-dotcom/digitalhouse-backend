@@ -1,4 +1,5 @@
-import { Op } from "sequelize";
+import { Op, QueryTypes } from "sequelize";
+import { sequelize } from "../config/db";
 import { MemberConnection, User } from "../models";
 import { getBlockedUserIds } from "./MatrimonySafety.service";
 import {
@@ -6,6 +7,7 @@ import {
   notifyConnectionRequestReceived
 } from "./Notification.service";
 import { toPublicUrlIfR2 } from "../utils/r2Client";
+import { getArchivedThreadUserIds, getLeftThreadUserIds } from "./ThreadPreference.service";
 import { uniqueByOtherUser } from "./connectionPair";
 
 export type RelationshipStatus =
@@ -425,6 +427,78 @@ export async function listConnections(userId: number): Promise<ConnectionRequest
   return result;
 }
 
+export async function listConnectionsPage(
+  userId: number,
+  limit: number,
+  cursorId?: number,
+  unstartedOnly = false
+) {
+  const excludedIds = new Set([userId, ...(await getBlockedUserIds(userId))]);
+  if (unstartedOnly) {
+    const [archived, left] = await Promise.all([
+      getArchivedThreadUserIds(userId),
+      getLeftThreadUserIds(userId)
+    ]);
+    for (const id of [...archived, ...left]) excludedIds.add(id);
+  }
+
+  const unstartedFilter = unstartedOnly
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM messages AS outgoing
+         WHERE outgoing.senderId = :userId AND outgoing.recipientId = links.otherId
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM messages AS incoming
+         WHERE incoming.senderId = links.otherId AND incoming.recipientId = :userId
+       )`
+    : "";
+  // Group both directions before applying the cursor so legacy duplicate pairs
+  // cannot appear on consecutive pages. Connection IDs provide a stable order.
+  const rows = await sequelize.query<{ id: number; otherId: number; updatedAt: Date }>(
+    `SELECT c.id, peers.otherId, c.updated_at AS updatedAt
+     FROM (
+       SELECT links.otherId, MAX(links.id) AS id
+       FROM (
+         SELECT id, recipient_user_id AS otherId
+         FROM member_connections WHERE requester_user_id = :userId AND status = 'ACCEPTED'
+         UNION ALL
+         SELECT id, requester_user_id AS otherId
+         FROM member_connections WHERE recipient_user_id = :userId AND status = 'ACCEPTED'
+       ) AS links
+       INNER JOIN users AS u ON u.id = links.otherId
+       WHERE u.username IS NOT NULL AND u.username <> ''
+         AND links.otherId NOT IN (:excludedIds)
+         ${unstartedFilter}
+       GROUP BY links.otherId
+       HAVING MAX(links.id) < :cursorId
+       ORDER BY MAX(links.id) DESC
+       LIMIT :pageSize
+     ) AS peers
+     INNER JOIN member_connections AS c ON c.id = peers.id
+     ORDER BY c.id DESC`,
+    {
+      type: QueryTypes.SELECT,
+      replacements: {
+        userId,
+        excludedIds: [...excludedIds],
+        cursorId: cursorId ?? 4_294_967_296,
+        pageSize: limit + 1
+      }
+    }
+  );
+
+  const page = rows.slice(0, limit);
+  const users = await toUserDtoMap(page.map((row) => row.otherId));
+  const connections = page.flatMap((row) => {
+    const user = users.get(row.otherId);
+    return user ? [{ id: row.id, user, createdAt: new Date(row.updatedAt).toISOString() }] : [];
+  });
+  return {
+    connections,
+    nextCursorId: rows.length > limit ? page[page.length - 1].id : null
+  };
+}
+
 export async function countAcceptedConnections(userId: number): Promise<number> {
   const rows = await MemberConnection.findAll({
     where: {
@@ -469,6 +543,7 @@ export const connectionService = {
   disconnect,
   listIncomingRequests,
   listConnections,
+  listConnectionsPage,
   countAcceptedConnections,
   getIncomingRequestCount
 };

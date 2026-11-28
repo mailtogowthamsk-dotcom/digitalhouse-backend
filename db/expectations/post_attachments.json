@@ -1,0 +1,1 @@
+{"tables":[{"name":"posts","columns":["media_attachments","create_request_id"],"indexes":["uq_posts_user_create_request"]}]}

@@ -40,6 +40,19 @@ describe("final production hardening", () => {
     else process.env.MATRIMONY_ALLOW_DEV_PAYMENTS = prevFlag;
   });
 
+  test("approval preserves a verified registration token while explicit revocation ends both sessions", async () => {
+    const userId = 424243;
+    const approvedAt = new Date();
+    const approvalSecond = Math.floor(approvedAt.getTime() / 1000);
+    await revokeUserTokens(userId, "registration_approved", { approvalStartedAt: approvedAt });
+    expect(await isAccessTokenActive(userId, approvalSecond - 10)).toBe(false);
+    expect(await isAccessTokenActive(userId, approvalSecond - 10, "registration")).toBe(true);
+    expect(await isAccessTokenActive(userId, approvalSecond)).toBe(true);
+    await revokeUserTokens(userId, "admin_logout");
+    expect(await isAccessTokenActive(userId, approvalSecond, "registration")).toBe(false);
+    expect(await isAccessTokenActive(userId, approvalSecond)).toBe(false);
+  });
+
   test("token revocation rejects older iat", async () => {
     const userId = 424242;
     const now = Math.floor(Date.now() / 1000);

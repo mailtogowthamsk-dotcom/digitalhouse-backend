@@ -22,6 +22,8 @@ export type PostDetailDto = {
   title: string;
   description: string | null;
   media_url: string | null;
+  caption_only?: boolean;
+  media_attachments?: import("./attachments").PostAttachmentDto[];
   media_type: PostMediaType;
   thumbnail_url: string | null;
   video_duration: number | null;
@@ -134,6 +136,8 @@ export type PostLikesResultDto = {
 };
 
 export type CreatePostPayload = {
+  attachment_ids?: number[];
+  create_request_id?: string;
   post_type: PostType;
   title: string;
   description?: string | null;

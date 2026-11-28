@@ -1,0 +1,9 @@
+{
+  "tables": [
+    {
+      "name": "registration_email_verifications",
+      "columns": ["email", "code_hash", "code_expires_at", "next_send_at", "attempts", "proof_hash", "proof_expires_at"],
+      "indexes": ["PRIMARY"]
+    }
+  ]
+}

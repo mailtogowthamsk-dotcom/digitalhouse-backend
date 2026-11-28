@@ -1,3 +1,4 @@
+import { attachmentKeys } from "../post/attachments";
 import { Op, Transaction } from "sequelize";
 import { sequelize } from "../../config/db";
 import {
@@ -157,7 +158,7 @@ async function storeFingerprint(input: {
 
 function mediaKeysForPost(post: Post): string[] {
   const keys = new Set<string>();
-  for (const raw of [post.mediaUrl, post.thumbnailUrl]) {
+  for (const raw of [post.mediaUrl, post.thumbnailUrl, ...attachmentKeys(post.mediaAttachments)]) {
     if (!raw) continue;
     const k = extractR2KeyFromUrl(raw) ?? raw;
     keys.add(k);
@@ -188,7 +189,8 @@ async function promotePostQuarantineMedia(
     post.mediaUrl,
     post.thumbnailUrl,
     media?.objectKey,
-    media?.fileUrl
+    media?.fileUrl,
+    ...attachmentKeys(post.mediaAttachments)
   ];
   if (post.postType === "MARKETPLACE") {
     inputs.push(...parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl));
@@ -221,6 +223,61 @@ async function findMediaFilesForPost(post: Post): Promise<MediaFile[]> {
     },
     limit: 20
   });
+}
+
+async function reconcileAttachmentSafety(post: Post): Promise<boolean> {
+  const ids = post.mediaAttachments?.map((item) => item.mediaFileId) ?? [];
+  if (!ids.length || (post.safetyDecision !== "PENDING" && post.safetyDecision !== "PROCESSING")) return false;
+  const rows = await MediaFile.findAll({ where: { userId: post.userId, id: { [Op.in]: ids } } });
+  const blocker = rows.find((media) => media.safetyDecision === "BLOCKED") ??
+    rows.find((media) => media.safetyDecision === "REVIEW_REQUIRED" && media.safetyCategory !== "UNCERTAIN");
+  if (blocker) {
+    await Post.update({
+      safetyDecision: blocker.safetyDecision,
+      safetyCategory: blocker.safetyCategory,
+      safetyFailureReason: "ATTACHMENT_REQUIRES_REVIEW",
+      moderatedMediaVersion: null
+    } as any, { where: { id: post.id, mediaVersion: post.mediaVersion, safetyDecision: { [Op.in]: ["PENDING", "PROCESSING"] } } });
+    return true;
+  }
+  if (rows.length !== ids.length || rows.some((media) =>
+    media.processingStatus !== "completed" || !(media.safetyDecision === "SAFE" ||
+      media.safetyDecision === "FAILED" ||
+      (media.safetyDecision === "REVIEW_REQUIRED" && media.safetyCategory === "UNCERTAIN"))
+  )) return false;
+  const text = moderateText(`${post.title}\n${post.description ?? ""}`);
+  if (text.verdict !== "SAFE") return false;
+
+  const mapping = new Map<string, string>();
+  for (const media of rows) {
+    const item = post.mediaAttachments?.find((attachment) => attachment.mediaFileId === media.id);
+    for (const [from, to] of await promoteQuarantineKeys(
+      [media.objectKey, media.fileUrl, item?.url, item?.thumbnailUrl],
+      media.variantsJson
+    )) mapping.set(from, to);
+  }
+  if (attachmentKeys(post.mediaAttachments).some((key) =>
+    isPrivateR2Object(key) && isPrivateR2Object(rewriteStoredKey(key, mapping))
+  )) return false;
+
+  const rewritten = await sequelize.transaction(async (transaction) => {
+    const locked = await Post.findByPk(post.id, { transaction, lock: Transaction.LOCK.UPDATE });
+    if (!locked || locked.deletedAt || locked.mediaVersion !== post.mediaVersion ||
+        (locked.safetyDecision !== "PENDING" && locked.safetyDecision !== "PROCESSING")) return false;
+    await rewritePostMediaKeys(locked, mapping, transaction);
+    return true;
+  });
+  if (!rewritten) return false;
+  const published = await tryPublishIfEligible(post.id, post.mediaVersion, {
+    category: "SAFE", confidence: null, model: LOCAL_MODEL_NAME, modelVersion: LOCAL_MODEL_VERSION,
+    policyVersion: CONTENT_SAFETY_POLICY_VERSION, reason: "ATTACHMENTS_MODERATED"
+  });
+  if (published) {
+    const { mediaService } = await import("../Media.service");
+    await mediaService.applyPublishMappingToMediaFiles(rows, mapping);
+    await deletePromotedQuarantineKeys(mapping);
+  }
+  return published;
 }
 
 /**
@@ -486,6 +543,10 @@ export async function afterCreatePostSafety(post: Post): Promise<void> {
   }
 
   try {
+    if (post.mediaAttachments?.length) {
+      await reconcileAttachmentSafety(post);
+      return;
+    }
     const mediaRows = await findMediaFilesForPost(post);
     const quarantineMedia = mediaRows.filter((m) =>
       (QUARANTINE_MEDIA_MODULES as readonly string[]).includes(m.module)
@@ -821,7 +882,10 @@ async function postsReferencingMedia(media: MediaFile): Promise<Post[]> {
   if (keys.size === 0) return [];
 
   const keyList = [...keys];
-  const or = keyList.flatMap((key) => [{ mediaUrl: key }, { thumbnailUrl: key }]);
+  const or = [
+    ...keyList.flatMap((key) => [{ mediaUrl: key }, { thumbnailUrl: key }]),
+    sequelize.literal(`JSON_CONTAINS(media_attachments, JSON_OBJECT('mediaFileId', ${Number(media.id)})) = 1`)
+  ];
   const byUrl = await Post.findAll({
     where: {
       userId: media.userId,
@@ -942,6 +1006,8 @@ export async function reconcilePendingPostSafety(postId: number): Promise<boolea
     return false;
   }
 
+  if (post.mediaAttachments?.length) return reconcileAttachmentSafety(post);
+
   // Jobs / Helping Hands never belong in the pending safety queue.
   if (post.postType === "JOB" || post.postType === "HELP_REQUEST") {
     await publishPostSkippingSafety(post);
@@ -1017,7 +1083,10 @@ export async function reconcileStuckPendingPosts(
   const stuck = await Post.findAll({
     where: {
       safetyDecision: { [Op.in]: ["PENDING", "PROCESSING"] },
-      postType: { [Op.in]: ["HELP_REQUEST", "MARKETPLACE", "JOB"] },
+      [Op.or]: [
+        { postType: { [Op.in]: ["HELP_REQUEST", "MARKETPLACE", "JOB"] } },
+        { mediaAttachments: { [Op.ne]: null } }
+      ],
       createdAt: { [Op.lt]: new Date(Date.now() - 45_000) }
     },
     order: [["id", "ASC"]],
@@ -1055,7 +1124,15 @@ async function rewritePostMediaKeys(post: Post, mapping: Map<string, string>, tr
     );
   }
   await post.update(
-    { mediaUrl, thumbnailUrl, marketplaceGallery, helpGallery } as any,
+    {
+      mediaUrl, thumbnailUrl, marketplaceGallery, helpGallery,
+      ...(post.mediaAttachments?.length ? {
+        mediaAttachments: post.mediaAttachments.map((item) => ({
+          ...item, url: rewriteStoredKey(item.url, mapping) ?? item.url,
+          thumbnailUrl: rewriteStoredKey(item.thumbnailUrl, mapping)
+        }))
+      } : {})
+    } as any,
     { transaction }
   );
 }
@@ -1077,6 +1154,7 @@ export async function tryPublishIfEligible(
     if (!post) return false;
     if (post.deletedAt || post.moderationStatus === "SOFT_DELETED") return false;
     if (post.mediaVersion !== expectedMediaVersion) return false;
+    if (post.mediaAttachments?.length && post.safetyDecision === "SAFE") return false;
     const text = moderateText(`${post.title}\n${post.description ?? ""}`);
     if (text.verdict !== "SAFE") return false;
     const [affected] = await Post.update(
@@ -1243,6 +1321,10 @@ export async function moderateProcessedMedia(mediaId: number, jobId: number | nu
   }
 
   for (const post of posts) {
+    if (post.mediaAttachments?.length) {
+      await reconcileAttachmentSafety(post);
+      continue;
+    }
     const text = moderateText(`${post.title}\n${post.description ?? ""}`);
     const combined = combinePolicyEvaluations([
       evaluation,
@@ -1425,6 +1507,10 @@ export async function markMediaModerationFailed(mediaId: number, jobId: number |
     postsFromKeys.length === 0 ? await findPendingPostsMatchingMediaBasename(media) : [];
   const posts = postsFromKeys.length ? postsFromKeys : postsBasename;
   for (const post of posts) {
+    if (post.mediaAttachments?.length) {
+      await reconcileAttachmentSafety(post);
+      continue;
+    }
     const text = moderateText(`${post.title}\n${post.description ?? ""}`);
     if (text.verdict !== "SAFE") {
       await Post.update(
@@ -1503,6 +1589,7 @@ export async function adminAllowPost(
   const allowSeeds = [
     post.mediaUrl,
     post.thumbnailUrl,
+    ...attachmentKeys(post.mediaAttachments),
     ...(post.postType === "MARKETPLACE"
       ? parseMarketplaceGallery(post.marketplaceGallery, post.mediaUrl)
       : post.postType === "HELP_REQUEST"

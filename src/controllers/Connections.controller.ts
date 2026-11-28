@@ -25,6 +25,24 @@ export async function listRequests(req: AuthRequest, res: Response) {
 /** GET /api/connections */
 export async function listConnections(req: AuthRequest, res: Response) {
   if (!req.user) return error(res, "Unauthorized", 401);
+  const { limit, cursorId, unstarted } = req.query;
+  if (limit !== undefined || cursorId !== undefined || unstarted !== undefined) {
+    const pageSize = limit === undefined ? 20 : typeof limit === "string" ? Number(limit) : NaN;
+    const cursor = typeof cursorId === "string" ? Number(cursorId) : NaN;
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 20) {
+      return error(res, "limit must be an integer from 1 to 20", 400);
+    }
+    if (cursorId !== undefined && (!Number.isSafeInteger(cursor) || cursor < 1 || cursor > 4_294_967_295)) {
+      return error(res, "Invalid cursorId", 400);
+    }
+    const page = await connectionService.listConnectionsPage(
+      req.user.id,
+      pageSize,
+      cursorId === undefined ? undefined : cursor,
+      unstarted === "1"
+    );
+    return success(res, page);
+  }
   const connections = await connectionService.listConnections(req.user.id);
   return success(res, { connections });
 }

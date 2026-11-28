@@ -1,0 +1,13 @@
+{
+  "tables": [
+    {
+      "name": "member_connections",
+      "columns": ["requester_user_id", "recipient_user_id", "status"],
+      "indexes": [
+        "idx_connection_requester_status",
+        "idx_connection_recipient_status",
+        "uq_connection_pair"
+      ]
+    }
+  ]
+}

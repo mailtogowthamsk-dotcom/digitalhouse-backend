@@ -8,7 +8,7 @@ import {
   type AuthProviderCode
 } from "../constants/auth.constants";
 import { trackAuthEvent } from "./authAnalytics.service";
-import { mergeLinkedProvider, ensureLinkedProviders } from "../utils/authProvider.util";
+import { ensureLinkedProviders } from "../utils/authProvider.util";
 import { toAuthUser } from "./user.service";
 import { registrationStatusService } from "./RegistrationStatus.service";
 import { toStorageKeyIfR2 } from "../utils/r2Client";
@@ -17,6 +17,7 @@ export type GoogleTokenPayload = {
   sub: string;
   email: string;
   email_verified: boolean;
+  authoritativeEmail: boolean;
   name?: string;
   picture?: string;
 };
@@ -31,7 +32,7 @@ function getGoogleClientIds(): string[] {
   return [...new Set(ids.map((v) => v.trim()))];
 }
 
-export async function verifyGoogleIdToken(idToken: string): Promise<GoogleTokenPayload> {
+export async function verifyGoogleIdToken(idToken: string, options?: { allowUnverifiedEmail?: boolean }): Promise<GoogleTokenPayload> {
   const audiences = getGoogleClientIds();
   if (audiences.length === 0) {
     throw Object.assign(new Error("Google Sign-In is not configured on the server."), {
@@ -66,17 +67,19 @@ export async function verifyGoogleIdToken(idToken: string): Promise<GoogleTokenP
   if (!payload?.sub || !payload.email) {
     throw Object.assign(new Error("Invalid Google token."), { status: 401, code: "INVALID_GOOGLE_TOKEN" });
   }
-  if (!payload.email_verified) {
+  if (!payload.email_verified && !options?.allowUnverifiedEmail) {
     throw Object.assign(new Error("Google email is not verified."), {
       status: 403,
       code: "GOOGLE_EMAIL_UNVERIFIED"
     });
   }
 
+  const email = payload.email.toLowerCase().trim();
   return {
     sub: payload.sub,
-    email: payload.email.toLowerCase().trim(),
-    email_verified: true,
+    email,
+    email_verified: payload.email_verified === true,
+    authoritativeEmail: payload.email_verified === true && (email.endsWith("@gmail.com") || Boolean(payload.hd)),
     name: payload.name,
     picture: payload.picture
   };
@@ -90,101 +93,44 @@ export type GoogleAuthResult = {
   needsProfileCompletion: boolean;
 };
 
-export async function authenticateWithGoogle(idToken: string): Promise<GoogleAuthResult> {
-  const google = await verifyGoogleIdToken(idToken);
+export type GoogleRegistrationRequired = {
+  registrationRequired: true;
+  email: string;
+};
 
-  let user = await User.findOne({ where: { googleId: google.sub } });
-  let isNewUser = false;
-  let linkedExistingAccount = false;
+export async function authenticateWithGoogle(
+  idToken: string
+): Promise<GoogleAuthResult | GoogleRegistrationRequired> {
+  const google = await verifyGoogleIdToken(idToken, { allowUnverifiedEmail: true });
 
+  const user = await User.findOne({ where: { googleId: google.sub } });
   if (!user) {
-    const byEmail = await User.findOne({ where: { email: google.email } });
-    if (byEmail) {
-      if (byEmail.googleId && byEmail.googleId !== google.sub) {
-        throw Object.assign(
-          new Error("This email is linked to a different Google account. Contact support."),
-          { status: 409, code: "GOOGLE_ACCOUNT_CONFLICT" }
-        );
-      }
-      const linked = mergeLinkedProvider(ensureLinkedProviders(byEmail), AUTH_PROVIDERS.GOOGLE);
-      await byEmail.update({
-        googleId: google.sub,
-        providerUserId: google.sub,
-        emailVerified: google.email_verified || byEmail.emailVerified,
-        lastLoginProvider: AUTH_PROVIDERS.GOOGLE,
-        linkedProviders: linked,
-        profilePhoto: byEmail.profilePhoto || google.picture || null
-      } as any);
-      user = byEmail;
-      linkedExistingAccount = true;
-      void trackAuthEvent(AUTH_ANALYTICS_EVENTS.GOOGLE_LINKED, {
-        userId: user.id,
-        provider: AUTH_PROVIDERS.GOOGLE
-      });
-      void trackAuthEvent(AUTH_ANALYTICS_EVENTS.GOOGLE_LOGIN, {
-        userId: user.id,
-        provider: AUTH_PROVIDERS.GOOGLE,
-        metadata: { linked: true }
-      });
-    } else {
-      user = await User.create({
-        fullName: (google.name || google.email.split("@")[0]).trim().slice(0, 120),
-        email: google.email,
-        gender: null,
-        dob: null,
-        mobile: null,
-        occupation: null,
-        location: null,
-        community: DEFAULT_APP_COMMUNITY,
-        kulam: null,
-        profilePhoto: google.picture || null,
-        status: "PENDING",
-        signupProvider: AUTH_PROVIDERS.GOOGLE,
-        providerUserId: google.sub,
-        googleId: google.sub,
-        emailVerified: google.email_verified,
-        lastLoginProvider: AUTH_PROVIDERS.GOOGLE,
-        profileComplete: false,
-        linkedProviders: [AUTH_PROVIDERS.GOOGLE]
-      } as any);
-      isNewUser = true;
-      void trackAuthEvent(AUTH_ANALYTICS_EVENTS.GOOGLE_SIGNUP, {
-        userId: user.id,
-        provider: AUTH_PROVIDERS.GOOGLE
+    if (await User.findOne({ where: { email: google.email } })) {
+      throw Object.assign(new Error("This email already has an account. Sign in with email OTP."), {
+        status: 409,
+        code: "GOOGLE_ACCOUNT_CONFLICT"
       });
     }
-  } else {
-    await user.update({
-      emailVerified: google.email_verified || user.emailVerified,
-      lastLoginProvider: AUTH_PROVIDERS.GOOGLE,
-      profilePhoto: user.profilePhoto || google.picture || null
-    } as any);
-    void trackAuthEvent(AUTH_ANALYTICS_EVENTS.GOOGLE_LOGIN, {
-      userId: user.id,
-      provider: AUTH_PROVIDERS.GOOGLE
-    });
+    return { registrationRequired: true, email: google.email };
   }
-
-  if (user.status === "SUSPENDED") {
-    throw Object.assign(new Error("Your account has been suspended. Please contact support."), {
-      status: 403,
-      code: "ACCOUNT_SUSPENDED"
-    });
-  }
-
   registrationStatusService.assertCanIssueSession(user);
+  await user.update({
+    emailVerified: user.emailVerified || (google.authoritativeEmail && user.email === google.email),
+    lastLoginProvider: AUTH_PROVIDERS.GOOGLE,
+    profilePhoto: user.profilePhoto || google.picture || null
+  });
+  void trackAuthEvent(AUTH_ANALYTICS_EVENTS.GOOGLE_LOGIN, { userId: user.id });
 
-  // REJECTED / PENDING / CHANGES_REQUESTED still get a session so the client can
-  // route to Rejected / Waiting / Correction screens. App APIs remain APPROVED-only.
-
-  const accessToken = signAccessToken({ userId: user.id });
+  const accessToken = ["PENDING", "PENDING_REVIEW", "CHANGES_REQUESTED"].includes(user.status)
+    ? signAccessToken({ userId: user.id, purpose: "google_registration", googleSub: google.sub })
+    : signAccessToken({ userId: user.id });
   const needsProfileCompletion = !user.profileComplete;
 
   return {
     accessToken,
     user: toAuthUser(user),
-    isNewUser,
-    linkedExistingAccount,
+    isNewUser: false,
+    linkedExistingAccount: false,
     needsProfileCompletion
   };
 }
@@ -261,11 +207,11 @@ export async function completeGoogleProfile(
     await referralService.assertUsableReferralCode(referralCode, userId);
   }
 
-  await user.update({
+  const [updated] = await User.update({
     username,
     usernameChangedAt: new Date(),
     gender,
-    dob: input.dob,
+    dob: new Date(input.dob),
     district,
     kulam,
     community: DEFAULT_APP_COMMUNITY,
@@ -274,7 +220,10 @@ export async function completeGoogleProfile(
     occupation: input.occupation?.trim() || null,
     profilePhoto: toStorageKeyIfR2(input.profilePhoto ?? null) || user.profilePhoto,
     profileComplete: true
-  } as any);
+  }, { where: { id: userId, profileComplete: false } });
+  if (!updated) {
+    throw Object.assign(new Error("Profile already completed"), { status: 409 });
+  }
 
   const { ensureUserProfile } = await import("./ensureUserProfile");
   const profile = await ensureUserProfile(userId);

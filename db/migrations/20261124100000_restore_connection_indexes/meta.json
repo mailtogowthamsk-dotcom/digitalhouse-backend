@@ -1,0 +1,5 @@
+{
+  "description": "Restore accepted-connection lookup indexes and directed-pair uniqueness",
+  "idempotent": true,
+  "rollback": false
+}
